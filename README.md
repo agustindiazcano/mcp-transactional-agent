@@ -18,6 +18,7 @@ Beyond the core transactional engine, this project explores a second question: *
 | **Phase 2** | Confidence layer (fuzzy scoring + expert system) | In Progress |
 | **Phase 3** | Observability layer (Kalman-based drift detection) | Experimental / Roadmap |
 | **Phase 4** | Ops Dashboard (Read-only React UI) | Experimental / Roadmap |
+| **Phase 5** | ML Comparison Track: TensorFlow/Keras MLP | Experimental / Roadmap |
 
 ---
 
@@ -124,6 +125,26 @@ This phase is a design proposal, not yet implemented. No read-only endpoints or 
 
 ---
 
+## Phase 5 — ML Comparison Track: TensorFlow/Keras MLP (Experimental / Roadmap)
+
+Phase 5 is an offline, out-of-band experiment: a Multilayer Perceptron (MLP), trained with TensorFlow/Keras on the same inputs used by the Phase 2 rule base (`validate_fraud_score`), built to empirically compare a black-box statistical model against the deterministic, auditable expert system — not to replace it.
+
+### Purpose
+The project's core argument (Section 4, Phase 2 ADRs) is that an explicit, rule-traceable mechanism is preferable to an opaque probabilistic one wherever it can achieve comparable results. Phase 5 tests that argument directly instead of asserting it: does an MLP outperform the belief-rule-base on this task, and if so, by how much, and at what cost to auditability? This is also a deliberate, hands-on space to practice TensorFlow/Keras fundamentals (MLP architecture, training loops, evaluation) on a dataset tied to the rest of the project, rather than an unrelated toy problem.
+
+### Scope
+- **Training**: an offline script/notebook, not a production service. A simple Keras Sequential MLP (2-3 dense layers) trained on the same feature set the Phase 2 rule base consumes.
+- **Evaluation**: standard classification metrics (precision, recall, F1) computed against the same labeled cases used to validate the expert system's rules, so the two approaches are compared on identical ground truth.
+- **Comparison surface**: MLP prediction and expert-system verdict are logged side by side for the same transactions, and surfaced in the Phase 4 dashboard as a comparison panel — no new screen required.
+
+### Architectural Constraint
+The MLP is strictly out-of-band: it never participates in the real approval path for `execute_refund` or `validate_fraud_score`, and it never gates a transaction. Its output is logged for comparison only. This preserves the guarantee from Phase 2 — every transaction that auto-approves still does so through the LLM-judge and the auditable rule base, never through the black-box model.
+
+### Status
+This phase is a design proposal, not yet implemented. It exists to scope a future hands-on ML/MLOps track (model training, versioning, and comparison tracking) without touching the transactional decision path.
+
+---
+
 ## Project Structure
 
 This project follows the `src/` layout: all application code lives inside `src/`, giving every internal import an absolute, unambiguous path (`from src.core import database`) and avoiding `PYTHONPATH`/`ModuleNotFoundError` issues across local runs, tests, and Docker.
@@ -180,6 +201,10 @@ Skills are step-by-step guides that teach the AI how to perform complex, project
 - **`db-migration`**: Enforces safe Alembic migration practices, especially for `pgvector` columns.
 - **`debug-worker`**: A troubleshooting guide the AI can use to diagnose RabbitMQ queue issues or idempotency failures.
 - **`trash`**: A shortcut skill (`/trash`) that allows you to quickly tell the AI to run `git restore` and `git clean` if a feature attempt goes wrong.
+- **`tests`**: A runbook to execute local validation (`ruff`, `mypy`, `pytest`) before making a commit.
+- **`commit`**: Reviews changes, generates a Conventional Commits message, and commits safely.
+- **`ship`**: The complete workflow (`/ship`): runs tests, lints, commits, and pushes the code if everything is green.
+- **`push-dev`**: Bypasses all validation checks (`/push-dev`) to commit and push immediately to GitHub.
 
 ### 2. Hooks (Automatic Safety Nets)
 Hooks are scripts that run automatically at specific moments during the AI's execution to enforce safety and quality.
