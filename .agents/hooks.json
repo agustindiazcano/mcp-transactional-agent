@@ -1,0 +1,41 @@
+{
+  "safety-guard": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command|write_to_file|replace_file_content|multi_replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python hooks/safety_guard.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+
+  "lint-check": {
+    "PostToolUse": [
+      {
+        "matcher": "write_to_file|replace_file_content|multi_replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python hooks/lint_check.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  },
+
+  "context-injector": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "python hooks/context_injector.py",
+        "timeout": 5
+      }
+    ]
+  }
+}
