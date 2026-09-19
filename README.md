@@ -1,12 +1,29 @@
 # Agentic MCP Engine and RAG Gateway
 
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) ![Build](https://img.shields.io/badge/build-passing-brightgreen.svg) ![Coverage](https://img.shields.io/badge/coverage-85%25-green.svg) ![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg) ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+
 ## Executive Summary
 
-An enterprise-grade, asynchronous Agentic Workflow Engine designed to safely orchestrate Large Language Models (LLMs) in high-concurrency transactional environments.
+Asynchronous Agentic Workflow Engine designed to safely orchestrate Large Language Models (LLMs) in high-concurrency transactional environments.
 
 This architecture solves the core bottlenecks of deploying Generative AI in production: non-deterministic volatility, data leakage, and synchronous blocking. By combining Event-Driven Architecture (EDA), the Model Context Protocol (MCP), and Advanced RAG, this engine provides a fault-tolerant sandbox for AI agents to interact with business logic.
 
 Beyond the core transactional engine, this project explores a second question: **how much of an AI system's decision-making can be made deterministic and auditable, instead of purely probabilistic?** Phases 2 and 3 extend the engine with a confidence layer (fuzzy logic + rule-based expert system) and a production observability layer (Kalman filtering over quality metrics), moving the system progressively from "trust the LLM's judgment" toward "trust an explicit, inspectable mechanism, and use the LLM only where symbolic reasoning cannot substitute for it."
+
+---
+
+## Tech Stack
+
+| Category | Technologies |
+|---|---|
+| **Core Framework** | Python 3.10+, FastAPI, Pydantic, Uvicorn |
+| **Messaging & Event-Driven** | RabbitMQ, aio-pika |
+| **State & Persistence** | PostgreSQL, pgvector, SQLAlchemy (Async), Alembic |
+| **AI & Orchestration** | LangChain, Model Context Protocol (MCP) |
+| **Enterprise LLM Arsenal** | OpenAI (GPT-4o), Google Vertex AI, Gemini AI Studio, AWS Bedrock, Groq |
+| **LLMOps & Telemetry** | TruLens (Tracing), promptfoo (Regression) |
+| **Testing & QA** | Pytest, pytest-cov, Locust (Load Testing) |
+| **Infrastructure** | Docker, Docker Compose |
 
 ---
 
@@ -332,9 +349,16 @@ The API will be available at `http://localhost:8000`. Interactive docs at `http:
 
 ---
 
-## Testing & Reliability
+## LLMOps, Quality Assurance & Chaos Testing
 
-This project guarantees military-grade fault tolerance through strict testing methodologies and controlled failure injection.
+This project guarantees fault tolerance through strict testing methodologies, LLM telemetry, and controlled failure injection.
+
+### LLMOps & System Telemetry
+We treat prompts as code and models as volatile microservices. 
+- **Tracing and Real-Time Observability with TruLens**: We wrap the LangChain/Worker execution to register the Directed Acyclic Graph (DAG), per-node latency, token consumption, and statistical evaluation of the RAG Triad metrics (Groundedness, Context Relevance, Answer Relevance).
+- **Regression Testing and CI/CD with promptfoo**: We use batch test matrices to evaluate the Primary Agent and Judge prompts against 100+ edge cases before each deployment. This guarantees that modifying a system prompt will not break previous behaviors.
+
+For full details, see the [LLMOps & Observability Framework](docs/testing/llmops_observability.md).
 
 ### TDD & Test Coverage
 All production code is written following a strict Red-Green-Refactor cycle. We maintain comprehensive coverage spanning:
@@ -344,8 +368,8 @@ For full details, see the [TDD & Test Coverage Report](docs/testing/tdd_coverage
 
 ### Chaos Engineering & Resilience (Armageddon Protocol)
 Trust is earned only by what has failed under controlled conditions and recovered without state loss. The system is validated against 10 critical "Armageddon" scenarios using the strict **AIVR Protocol** (Attack, Isolation, Verification, Recovery). 
-Tests range from SEV-3 (Throughput degradation) to SEV-1 (Catastrophic data loss risk), ensuring the engine degrades gracefully during message broker crashes, infinite MCP timeouts, API rate limit storms, and malicious jailbreak prompts.
-For the complete severity matrix and test definitions, see the [Chaos Engineering Manual](docs/testing/chaos_engineering_armageddon.md).
+Tests range from SEV-3 (Throughput degradation) to SEV-1 (Catastrophic data loss risk), ensuring the engine degrades gracefully during 10 critical failure vectors such as RabbitMQ crashes, idempotency failures in Postgres, API rate limits, and malicious jailbreak prompts.
+For the complete severity matrix and test definitions, see [Chaos Engineering & Armageddon Scenarios](docs/testing/chaos_engineering_armageddon.md).
 
 ### Running Tests
 
