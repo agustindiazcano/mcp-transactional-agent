@@ -52,22 +52,61 @@ async def test_worker_idempotency_new_request(db_session: AsyncSession):
         session = AsyncMock()
         yield session
 
-    # We mock the LLM factory and MCP execution
+    # We mock the LLM factory, MCP execution, and Judge
     with patch("src.worker.worker.get_llm") as MockGetLlm, \
          patch("src.worker.worker.sse_client", new=mock_sse_client), \
-         patch("src.worker.worker.ClientSession", new=mock_client_session):
+         patch("src.worker.worker.ClientSession", new=mock_client_session), \
+         patch("src.worker.worker.evaluate_decision", return_value={"verdict": "APPROVE", "reason": "Ok"}) as MockJudge:
              
         # Execute worker process
         await process_message(mock_message, db_session)
         
         # Verify ack was called
         mock_message.ack.assert_called_once()
+        MockJudge.assert_called_once()
         
-        # Verify transaction was saved and marked COMPLETED
+        # Verify transaction status
         result = await db_session.execute(select(Transaction).where(Transaction.request_id == request_id))
         txn = result.scalar_one_or_none()
         assert txn is not None
         assert txn.status == "COMPLETED"
+
+@pytest.mark.asyncio
+async def test_worker_judge_reject(db_session: AsyncSession):
+    """Test that if the judge REJECTS the action, status is PENDING_HUMAN_REVIEW."""
+    request_id = "test-req-reject-123"
+    
+    from sqlalchemy import delete
+    await db_session.execute(delete(Transaction).where(Transaction.request_id == request_id))
+    await db_session.commit()
+    
+    mock_message = AsyncMock()
+    mock_message.body = b'{"request_id": "test-req-reject-123", "user_id": "user1", "claim_text": "Refund $50000"}'
+    
+    from contextlib import asynccontextmanager
+    @asynccontextmanager
+    async def mock_sse_client(*args, **kwargs):
+        yield (AsyncMock(), AsyncMock())
+        
+    @asynccontextmanager
+    async def mock_client_session(*args, **kwargs):
+        session = AsyncMock()
+        yield session
+
+    with patch("src.worker.worker.get_llm") as MockGetLlm, \
+         patch("src.worker.worker.sse_client", new=mock_sse_client), \
+         patch("src.worker.worker.ClientSession", new=mock_client_session), \
+         patch("src.worker.worker.evaluate_decision", return_value={"verdict": "REJECT", "reason": "Amount too high"}) as MockJudge:
+             
+        await process_message(mock_message, db_session)
+        
+        mock_message.ack.assert_called_once()
+        MockJudge.assert_called_once()
+        
+        result = await db_session.execute(select(Transaction).where(Transaction.request_id == request_id))
+        txn = result.scalar_one_or_none()
+        assert txn is not None
+        assert txn.status == "PENDING_HUMAN_REVIEW"
 
 @pytest.mark.asyncio
 async def test_worker_idempotency_existing_request(db_session: AsyncSession):

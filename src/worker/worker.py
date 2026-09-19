@@ -7,6 +7,7 @@ from mcp.client.sse import sse_client
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.agents.judge import evaluate_decision
 from src.agents.llm_factory import get_llm
 from src.core.config import settings
 from src.core.models import Transaction
@@ -53,11 +54,24 @@ async def process_message(message: Any, db_session: AsyncSession):
                 await mcp_session.initialize()
                 
                 # Here the LLM agent would interact with the MCP tools
-                # For step 4B, we mock the final response completion.
+                # For step 5, we mock the final primary decision and pass it to the judge.
                 # In the real system, this invokes the LangChain agent loop.
-                
-        # Mark as completed
-        txn.status = "COMPLETED"
+                mock_primary_action = "execute_refund"
+                mock_primary_args = body
+        
+        # Evaluate with the Guardrail Judge
+        judge_result = await evaluate_decision(
+            action_name=mock_primary_action,
+            action_args=mock_primary_args,
+            context={"request_id": request_id}
+        )
+        
+        if judge_result.get("verdict") == "APPROVE":
+            txn.status = "COMPLETED"
+        else:
+            txn.status = "PENDING_HUMAN_REVIEW"
+            logger.warning(f"Transaction {request_id} rejected by judge: {judge_result.get('reason')}")
+            
         await db_session.commit()
         
         # Ack the message
@@ -69,8 +83,11 @@ async def process_message(message: Any, db_session: AsyncSession):
         await message.nack(requeue=False)
 
 import asyncio
+
 import aio_pika
+
 from src.core.database import get_engine, get_session_maker
+
 
 async def start_worker():
     """
