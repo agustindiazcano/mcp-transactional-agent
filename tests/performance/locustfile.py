@@ -1,6 +1,8 @@
-import uuid
 import random
-from locust import HttpUser, task, between
+import uuid
+
+from locust import HttpUser, between, task
+
 
 class ClaimsUser(HttpUser):
     # Simulate a realistic think time between requests for a single user (e.g. 1 to 3 seconds)

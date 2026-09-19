@@ -59,7 +59,7 @@ async def evaluate_decision(action_name: str, action_args: dict, context: dict) 
             
         return result
         
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Judge evaluation failed: {e}")
         # Fail safe: if the judge crashes or hallucinates, reject the action.
         return {

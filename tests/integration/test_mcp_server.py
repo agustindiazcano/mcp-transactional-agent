@@ -28,7 +28,7 @@ async def test_mcp_sse_endpoint_exists(async_mcp_client):
             async with async_mcp_client.stream("GET", "/sse") as response:
                 # Should return 200 OK and establish the SSE connection
                 assert response.status_code == 200
-    except (asyncio.TimeoutError, TimeoutError):
+    except TimeoutError:
         pass # Expected to timeout because it's a long-lived SSE connection
     
 @pytest.mark.asyncio

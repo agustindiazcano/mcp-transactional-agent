@@ -104,6 +104,6 @@ def test_get_llm_bedrock():
 def test_get_llm_unknown_provider():
     """Test that the factory raises ValueError for an unknown provider."""
     mock_settings = Settings(LLM_PROVIDER="unknown")
-    with patch("src.agents.llm_factory.settings", mock_settings):
-        with pytest.raises(ValueError, match="Unsupported LLM_PROVIDER: unknown"):
+    with patch("src.agents.llm_factory.settings", mock_settings), \
+         pytest.raises(ValueError, match="Unsupported LLM_PROVIDER: unknown"):
             get_llm()
