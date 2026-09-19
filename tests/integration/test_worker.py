@@ -1,0 +1,91 @@
+from unittest.mock import AsyncMock, patch
+
+import pytest
+import pytest_asyncio
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.core.config import settings
+from src.core.database import get_engine, get_session_maker
+from src.core.models import Base, Transaction
+from src.worker.worker import process_message
+
+
+@pytest_asyncio.fixture
+async def db_engine():
+    engine = get_engine(settings.DATABASE_URL)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield engine
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
+
+@pytest_asyncio.fixture
+async def db_session(db_engine):
+    session_maker = get_session_maker(db_engine)
+    async with session_maker() as session:
+        yield session
+
+@pytest.mark.asyncio
+async def test_worker_idempotency_new_request(db_session: AsyncSession):
+    """Test that a new request creates a Transaction and processes it."""
+    request_id = "test-req-new-123"
+    
+    from sqlalchemy import delete
+    # Ensure it doesn't exist
+    await db_session.execute(delete(Transaction).where(Transaction.request_id == request_id))
+    await db_session.commit()
+    
+    # Mock message
+    mock_message = AsyncMock()
+    mock_message.body = b'{"request_id": "test-req-new-123", "user_id": "user1", "claim_text": "Refund $50"}'
+    
+    from contextlib import asynccontextmanager
+    
+    @asynccontextmanager
+    async def mock_sse_client(*args, **kwargs):
+        yield (AsyncMock(), AsyncMock())
+        
+    @asynccontextmanager
+    async def mock_client_session(*args, **kwargs):
+        session = AsyncMock()
+        yield session
+
+    # We mock the LLM factory and MCP execution
+    with patch("src.worker.worker.get_llm") as MockGetLlm, \
+         patch("src.worker.worker.sse_client", new=mock_sse_client), \
+         patch("src.worker.worker.ClientSession", new=mock_client_session):
+             
+        # Execute worker process
+        await process_message(mock_message, db_session)
+        
+        # Verify ack was called
+        mock_message.ack.assert_called_once()
+        
+        # Verify transaction was saved and marked COMPLETED
+        result = await db_session.execute(select(Transaction).where(Transaction.request_id == request_id))
+        txn = result.scalar_one_or_none()
+        assert txn is not None
+        assert txn.status == "COMPLETED"
+
+@pytest.mark.asyncio
+async def test_worker_idempotency_existing_request(db_session: AsyncSession):
+    """Test that an existing COMPLETED request is acked and skipped."""
+    request_id = "test-req-existing-123"
+    
+    # Create existing transaction
+    txn = Transaction(request_id=request_id, payload={"test": "data"}, status="COMPLETED")
+    db_session.add(txn)
+    await db_session.commit()
+    
+    # Mock message
+    mock_message = AsyncMock()
+    mock_message.body = b'{"request_id": "test-req-existing-123", "user_id": "user1", "claim_text": "Refund $50"}'
+    
+    with patch("src.worker.worker.get_llm") as MockGetLlm:
+        await process_message(mock_message, db_session)
+        
+        # It should ack immediately without calling LLM
+        mock_message.ack.assert_called_once()
+        MockGetLlm.assert_not_called()
