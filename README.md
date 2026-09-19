@@ -22,15 +22,33 @@ Beyond the core transactional engine, this project explores a second question: *
 
 ---
 
+## Documentation
+
+Detailed technical design and architectural deep dives for each phase:
+- [Phase 1: Core Engine Architecture](docs/phases/phase_1_core_engine.md)
+
+---
+
 ## Phase 1 — Core Engine (Production-Ready)
 
+### Execution Milestones (Phase 1)
+- Step 1: Core Infrastructure: Async PostgreSQL domain models and Alembic migrations.
+- Step 2: Ingestion Gateway: FastAPI endpoints validating payloads and offloading to RabbitMQ (aio-pika) with immediate HTTP 202 responses.
+- Step 3: Secure MCP Sandbox: HTTP/SSE server running independently to isolate LLM tool execution from internal business logic.
+- Step 4: Asynchronous Worker: Resilient RabbitMQ consumer with strict PostgreSQL idempotency checks to prevent duplicate transactions.
+- Step 5: LLM-as-a-Judge Guardrail: Deterministic interceptor evaluating primary LLM outputs (scope, format, rules) before DB commits, routing to PENDING_HUMAN_REVIEW on failures.
+- Step 6: Enterprise Multi-Cloud Routing: Abstract Factory implementation for seamless, vendor-agnostic LLM swapping.
 ### 1. Provider-Agnostic LLM Routing (SOLID Principles)
 
 Built with an abstract Factory Pattern, the system is fully decoupled from the underlying AI provider. By modifying a single environment variable, the engine dynamically routes inference requests without altering any business logic:
 
-- GCP Vertex AI / Gemini API
-- AWS Bedrock (Claude 3.5 Sonnet / Llama 3)
-- Groq (ultra-low latency Llama 3.3)
+- **OpenAI (GPT-4o)**: The industry standard for complex Tool Calling and reasoning.
+- **Google Vertex AI**: Enterprise-grade deployment inside GCP VPCs with strict data privacy SLAs.
+- **Gemini AI Studio**: High-throughput, massive context window integration for rapid prototyping.
+- **Amazon Bedrock (Claude 3.5 Sonnet / Llama 3)**: AWS-native inference ensuring zero data egress outside the enterprise perimeter.
+- **Groq**: Ultra-low latency LPU inference, strategically routed for millisecond-response LLM-as-a-Judge guardrails.
+
+Thanks to the Abstract Factory pattern implemented in `src/agents/llm_factory.py`, the system allows instantiating different providers for different concurrent components (e.g., GPT-4o for the Primary Agent, Groq for the Judge) without modifying a single line of business logic.
 
 ### 2. Transactional Idempotency and Message Queues
 
@@ -273,9 +291,13 @@ The API will be available at `http://localhost:8000`. Interactive docs at `http:
 |---|---|---|
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 | `RABBITMQ_URL` | Yes | RabbitMQ AMQP connection string |
-| `LLM_PROVIDER` | Yes | Active provider: `gemini`, `groq`, or `bedrock` |
-| `GEMINI_API_KEY` | Conditional | Required when `LLM_PROVIDER=gemini` |
+| `LLM_PROVIDER` | Yes | Active provider: `gemini`, `groq`, `bedrock`, or `openai` |
+| `OPENAI_API_KEY` | Conditional | Required when `LLM_PROVIDER=openai` |
+| `GEMINI_API_KEY` | Conditional | Required when using Gemini AI Studio |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Conditional | Required when using Google Vertex AI |
 | `GROQ_API_KEY` | Conditional | Required when `LLM_PROVIDER=groq` |
+| `AWS_ACCESS_KEY_ID` | Conditional | Required when `LLM_PROVIDER=bedrock` |
+| `AWS_SECRET_ACCESS_KEY` | Conditional | Required when `LLM_PROVIDER=bedrock` |
 | `LANGFUSE_SECRET_KEY` | No | Langfuse telemetry secret key |
 | `LANGFUSE_PUBLIC_KEY` | No | Langfuse telemetry public key |
 | `MCP_SERVER_URL` | Yes | URL of the running MCP server |
