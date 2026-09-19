@@ -26,6 +26,7 @@ Beyond the core transactional engine, this project explores a second question: *
 
 Detailed technical design and architectural deep dives for each phase:
 - [Phase 1: Core Engine Architecture](docs/phases/phase_1_core_engine.md)
+- [Chaos Engineering & Resilience Testing](docs/testing/chaos_engineering_armageddon.md)
 
 ---
 
@@ -368,7 +369,7 @@ A dedicated ML drift-detection model would need its own training data, its own m
 
 ---
 
-## 🚀 Future Roadmap: Algorithmic Rigor & SOTA
+##  Future Roadmap: Algorithmic Rigor & SOTA
 
 - **FSM-Constrained Decoding:** Deterministic logits masking via state machines.
 - **Programmatic Optimization:** Metric-driven prompt tuning as hyperparameter search (e.g., DSPy).
