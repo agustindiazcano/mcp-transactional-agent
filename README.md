@@ -1,5 +1,7 @@
 # Agentic MCP Engine and RAG Gateway
 
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) ![Build](https://img.shields.io/badge/build-passing-brightgreen.svg) ![Coverage](https://img.shields.io/badge/coverage-85%25-green.svg) ![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg) ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+
 ## Executive Summary
 
 An enterprise-grade, asynchronous Agentic Workflow Engine designed to safely orchestrate Large Language Models (LLMs) in high-concurrency transactional environments.
