@@ -10,6 +10,21 @@ Beyond the core transactional engine, this project explores a second question: *
 
 ---
 
+## Tech Stack
+
+| Category | Technologies |
+|---|---|
+| **Core Framework** | Python 3.10+, FastAPI, Pydantic, Uvicorn |
+| **Messaging & Event-Driven** | RabbitMQ, aio-pika |
+| **State & Persistence** | PostgreSQL, pgvector, SQLAlchemy (Async), Alembic |
+| **AI & Orchestration** | LangChain, Model Context Protocol (MCP) |
+| **Enterprise LLM Arsenal** | OpenAI (GPT-4o), Google Vertex AI, Gemini AI Studio, AWS Bedrock, Groq |
+| **LLMOps & Telemetry** | TruLens (Tracing), promptfoo (Regression) |
+| **Testing & QA** | Pytest, pytest-cov, Locust (Load Testing) |
+| **Infrastructure** | Docker, Docker Compose |
+
+---
+
 ## Roadmap Overview
 
 | Phase | Focus | Status |
@@ -334,7 +349,7 @@ The API will be available at `http://localhost:8000`. Interactive docs at `http:
 
 ## LLMOps, Quality Assurance & Chaos Testing
 
-This project guarantees military-grade fault tolerance through strict testing methodologies, LLM telemetry, and controlled failure injection.
+This project guarantees fault tolerance through strict testing methodologies, LLM telemetry, and controlled failure injection.
 
 ### LLMOps & System Telemetry
 We treat prompts as code and models as volatile microservices. 
