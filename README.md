@@ -136,6 +136,8 @@ The project's core argument (Section 4, Phase 2 ADRs) is that an explicit, rule-
 - **Training**: an offline script/notebook, not a production service. A simple Keras Sequential MLP (2-3 dense layers) trained on the same feature set the Phase 2 rule base consumes.
 - **Evaluation**: standard classification metrics (precision, recall, F1) computed against the same labeled cases used to validate the expert system's rules, so the two approaches are compared on identical ground truth.
 - **Comparison surface**: MLP prediction and expert-system verdict are logged side by side for the same transactions, and surfaced in the Phase 4 dashboard as a comparison panel — no new screen required.
+### Model Versioning and Tracking
+Each training run is tracked with MLflow: hyperparameters, evaluation metrics, and the resulting model artifact are logged per run, so a specific MLP prediction can always be traced back to the exact model version and training configuration that produced it. This is what makes the comparison in the Phase 4 dashboard meaningful over time — as the rule base evolves (Phase 2) and the MLP is retrained, both sides of the comparison remain attributable to a specific, reproducible version rather than "whatever was last trained."
 
 ### Architectural Constraint
 The MLP is strictly out-of-band: it never participates in the real approval path for `execute_refund` or `validate_fraud_score`, and it never gates a transaction. Its output is logged for comparison only. This preserves the guarantee from Phase 2 — every transaction that auto-approves still does so through the LLM-judge and the auditable rule base, never through the black-box model.

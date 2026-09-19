@@ -1,12 +1,13 @@
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+import pytest_asyncio
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_engine, get_session_maker
 from src.core.models import Base, Transaction
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db_engine():
     """Create a test engine connected to the local test database."""
     # We assume a test DB is running or we just use SQLite in memory for this simple test,
@@ -27,7 +28,7 @@ async def db_engine():
     await engine.dispose()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def db_session(db_engine):
     """Provide a database session."""
     async_session = get_session_maker(db_engine)
