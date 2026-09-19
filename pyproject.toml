@@ -46,3 +46,6 @@ dev = [
     "ruff",
     "mypy"
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
