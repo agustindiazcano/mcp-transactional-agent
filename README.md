@@ -26,7 +26,6 @@ Beyond the core transactional engine, this project explores a second question: *
 
 Detailed technical design and architectural deep dives for each phase:
 - [Phase 1: Core Engine Architecture](docs/phases/phase_1_core_engine.md)
-- [Chaos Engineering & Resilience Testing](docs/testing/chaos_engineering_armageddon.md)
 
 ---
 
@@ -310,7 +309,22 @@ The API will be available at `http://localhost:8000`. Interactive docs at `http:
 
 ---
 
-## Running Tests
+## Testing & Reliability
+
+This project guarantees military-grade fault tolerance through strict testing methodologies and controlled failure injection.
+
+### TDD & Test Coverage
+All production code is written following a strict Red-Green-Refactor cycle. We maintain comprehensive coverage spanning:
+- **Unit Tests:** Isolated testing of the Multi-Cloud Factory and the deterministic LLM-Judge guardrails.
+- **Integration Tests (E2E):** End-to-end validation of the API Gateway, PostgreSQL persistence, MCP Server, and the Asynchronous Worker's Idempotency checks.
+For full details, see the [TDD & Test Coverage Report](docs/testing/tdd_coverage.md).
+
+### Chaos Engineering & Resilience (Armageddon Protocol)
+Trust is earned only by what has failed under controlled conditions and recovered without state loss. The system is validated against 10 critical "Armageddon" scenarios using the strict **AIVR Protocol** (Attack, Isolation, Verification, Recovery). 
+Tests range from SEV-3 (Throughput degradation) to SEV-1 (Catastrophic data loss risk), ensuring the engine degrades gracefully during message broker crashes, infinite MCP timeouts, API rate limit storms, and malicious jailbreak prompts.
+For the complete severity matrix and test definitions, see the [Chaos Engineering Manual](docs/testing/chaos_engineering_armageddon.md).
+
+### Running Tests
 
 ```bash
 # Full test suite
