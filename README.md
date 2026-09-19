@@ -258,33 +258,39 @@ cd agentic-mcp-engine
 cp .env.example .env
 ```
 
+### 2. Install Dependencies
+
+```bash
+pip install -e .[dev]
+```
+
 Edit `.env` and fill in the required values. See the Environment Variables section below.
 
-### 2. Start the Infrastructure
+### 3. Start the Infrastructure
 
 ```bash
 docker compose up -d postgres rabbitmq
 ```
 
-### 3. Apply Database Migrations
+### 4. Apply Database Migrations
 
 ```bash
 alembic upgrade head
 ```
 
-### 4. Start the MCP Server
+### 5. Start the MCP Server
 
 ```bash
 python -m src.mcp_server.mcp_server
 ```
 
-### 5. Start the Worker
+### 6. Start the Worker
 
 ```bash
 python -m src.worker.worker
 ```
 
-### 6. Start the API Gateway
+### 7. Start the API Gateway
 
 ```bash
 uvicorn src.api.main:app --reload --port 8000

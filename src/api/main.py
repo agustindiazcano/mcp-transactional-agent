@@ -1,4 +1,5 @@
 import os
+from typing import Any
 
 import aio_pika
 from fastapi import FastAPI, status
@@ -10,7 +11,7 @@ app = FastAPI(title="Agentic MCP Engine API")
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
 
 @app.post("/api/v1/claims", status_code=status.HTTP_202_ACCEPTED)
-async def create_claim(request: ClaimRequest):
+async def create_claim(request: ClaimRequest) -> dict[str, Any]:
     # Connect to RabbitMQ
     connection = await aio_pika.connect_robust(RABBITMQ_URL)
     

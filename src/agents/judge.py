@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Any, cast
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -22,7 +23,7 @@ Respond strictly in valid JSON format with exactly these two keys:
 }
 """
 
-async def evaluate_decision(action_name: str, action_args: dict, context: dict) -> dict:
+async def evaluate_decision(action_name: str, action_args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     """
     Evaluates a proposed action using the LLM-as-a-Judge pattern.
     Returns a dictionary with 'verdict' and 'reason'.
@@ -57,9 +58,9 @@ async def evaluate_decision(action_name: str, action_args: dict, context: dict) 
         if "verdict" not in result or result["verdict"] not in ["APPROVE", "REJECT"]:
             raise ValueError("Invalid verdict returned by judge.")
             
-        return result
+        return cast(dict[str, Any], result)
         
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Judge evaluation failed: {e}")
         # Fail safe: if the judge crashes or hallucinates, reject the action.
         return {

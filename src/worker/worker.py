@@ -14,7 +14,7 @@ from src.core.models import Transaction
 
 logger = logging.getLogger(__name__)
 
-async def process_message(message: Any, db_session: AsyncSession):
+async def process_message(message: Any, db_session: AsyncSession) -> None:
     """
     Process an incoming RabbitMQ message.
     Ensures idempotency by checking if the request_id is already completed.
@@ -45,12 +45,12 @@ async def process_message(message: Any, db_session: AsyncSession):
         logger.info(f"Processing transaction {request_id}")
         
         # Instantiate LLM
-        llm = get_llm()
+        _ = get_llm()
         
         # Set up MCP connection (Structure only)
         # We will mock the actual execution for this test/step.
-        async with sse_client(settings.MCP_SERVER_URL) as streams:
-            async with ClientSession(streams[0], streams[1]) as mcp_session:
+        async with sse_client(settings.MCP_SERVER_URL) as streams, \
+                   ClientSession(streams[0], streams[1]) as mcp_session:
                 await mcp_session.initialize()
                 
                 # Here the LLM agent would interact with the MCP tools
@@ -77,7 +77,7 @@ async def process_message(message: Any, db_session: AsyncSession):
         # Ack the message
         await message.ack()
         
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"Error processing message: {e}")
         # In a real scenario, check max retries and nack or send to DLQ
         await message.nack(requeue=False)
@@ -89,7 +89,7 @@ import aio_pika
 from src.core.database import get_engine, get_session_maker
 
 
-async def start_worker():
+async def start_worker() -> None:
     """
     Connect to RabbitMQ and start consuming messages from agent_tasks_queue.
     """
@@ -108,9 +108,8 @@ async def start_worker():
         
         async with queue.iterator() as queue_iter:
             async for message in queue_iter:
-                async with message.process(ignore_processed=True):
-                    # We pass a new db session for each message
-                    async with session_maker() as db_session:
+                async with message.process(ignore_processed=True), \
+                           session_maker() as db_session:
                         await process_message(message, db_session)
 
 if __name__ == "__main__":

@@ -53,7 +53,7 @@ async def test_worker_idempotency_new_request(db_session: AsyncSession):
         yield session
 
     # We mock the LLM factory, MCP execution, and Judge
-    with patch("src.worker.worker.get_llm") as MockGetLlm, \
+    with patch("src.worker.worker.get_llm") as _, \
          patch("src.worker.worker.sse_client", new=mock_sse_client), \
          patch("src.worker.worker.ClientSession", new=mock_client_session), \
          patch("src.worker.worker.evaluate_decision", return_value={"verdict": "APPROVE", "reason": "Ok"}) as MockJudge:
@@ -93,7 +93,7 @@ async def test_worker_judge_reject(db_session: AsyncSession):
         session = AsyncMock()
         yield session
 
-    with patch("src.worker.worker.get_llm") as MockGetLlm, \
+    with patch("src.worker.worker.get_llm") as _, \
          patch("src.worker.worker.sse_client", new=mock_sse_client), \
          patch("src.worker.worker.ClientSession", new=mock_client_session), \
          patch("src.worker.worker.evaluate_decision", return_value={"verdict": "REJECT", "reason": "Amount too high"}) as MockJudge:
