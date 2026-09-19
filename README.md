@@ -368,6 +368,18 @@ A dedicated ML drift-detection model would need its own training data, its own m
 
 ---
 
+## 🚀 Future Roadmap: Algorithmic Rigor & SOTA
+
+- **FSM-Constrained Decoding:** Deterministic logits masking via state machines.
+- **Programmatic Optimization:** Metric-driven prompt tuning as hyperparameter search (e.g., DSPy).
+- **MCTS & Tree of Thoughts:** State-space search with heuristic value functions for complex reasoning.
+- **Conformal Prediction:** Strict mathematical error bounds ($\alpha$) for prediction sets and human delegation.
+- **Rule-Based Reward Models:** Deterministic DPO/RLHF alignment using code evaluators and physical simulators.
+
+For a detailed breakdown of the mathematical and algorithmic techniques planned for future iterations, see the [Advanced AI Roadmap](docs/architecture/advanced_ai_roadmap.md).
+
+---
+
 ## Author
 
 Agustin Diaz-Cano, MS Candidate
