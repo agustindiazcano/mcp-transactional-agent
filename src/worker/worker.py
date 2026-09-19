@@ -67,3 +67,35 @@ async def process_message(message: Any, db_session: AsyncSession):
         logger.error(f"Error processing message: {e}")
         # In a real scenario, check max retries and nack or send to DLQ
         await message.nack(requeue=False)
+
+import asyncio
+import aio_pika
+from src.core.database import get_engine, get_session_maker
+
+async def start_worker():
+    """
+    Connect to RabbitMQ and start consuming messages from agent_tasks_queue.
+    """
+    connection = await aio_pika.connect_robust(settings.RABBITMQ_URL)
+    
+    async with connection:
+        channel = await connection.channel()
+        # Ensure the queue exists
+        queue = await channel.declare_queue("agent_tasks_queue", durable=True)
+        
+        # We need a db engine/session maker for the worker lifecycle
+        engine = get_engine(settings.DATABASE_URL)
+        session_maker = get_session_maker(engine)
+        
+        logger.info("Worker started, waiting for messages...")
+        
+        async with queue.iterator() as queue_iter:
+            async for message in queue_iter:
+                async with message.process(ignore_processed=True):
+                    # We pass a new db session for each message
+                    async with session_maker() as db_session:
+                        await process_message(message, db_session)
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(start_worker())
