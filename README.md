@@ -309,6 +309,15 @@ The API will be available at `http://localhost:8000`. Interactive docs at `http:
 
 ---
 
+## 📊 System Performance & Telemetry (WIP)
+
+- **Test Coverage:** XX.X% (Unit & Integration)
+- **API Ingestion Latency (P95):** XX ms
+- **System Throughput:** XX req/sec (FastAPI -> RabbitMQ)
+- **E2E Agentic Processing Time:** ~X.X sec (Dependiente de LLM API)
+
+---
+
 ## Testing & Reliability
 
 This project guarantees military-grade fault tolerance through strict testing methodologies and controlled failure injection.
@@ -338,6 +347,12 @@ pytest tests/integration/ -v
 
 # Phase 2 confidence layer tests
 pytest tests/unit/confidence/ -v
+
+# Test Coverage
+pytest --cov=src tests/ --cov-report=term-missing
+
+# Stress test (Locust)
+locust -f tests/performance/locustfile.py --headless -u 100 -r 10 --run-time 1m --host http://localhost:8000
 ```
 
 ---
