@@ -4,7 +4,7 @@
 
 ## Executive Summary
 
-An enterprise-grade, asynchronous Agentic Workflow Engine designed to safely orchestrate Large Language Models (LLMs) in high-concurrency transactional environments.
+Asynchronous Agentic Workflow Engine designed to safely orchestrate Large Language Models (LLMs) in high-concurrency transactional environments.
 
 This architecture solves the core bottlenecks of deploying Generative AI in production: non-deterministic volatility, data leakage, and synchronous blocking. By combining Event-Driven Architecture (EDA), the Model Context Protocol (MCP), and Advanced RAG, this engine provides a fault-tolerant sandbox for AI agents to interact with business logic.
 
