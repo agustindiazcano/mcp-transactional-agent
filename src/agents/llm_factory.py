@@ -32,13 +32,15 @@ except ImportError:
     ChatGroq: Any = None  # type: ignore
 
 
-def get_llm() -> BaseChatModel:
+def get_llm(provider: str | None = None) -> BaseChatModel:
     """
     Factory function to instantiate the active LLM provider.
     Switches provider based on the LLM_PROVIDER environment variable/setting.
     Provides an offline 'mock' environment to prevent token drain during local dev.
     """
-    provider = settings.LLM_PROVIDER.lower().strip()
+    if provider is None:
+        provider = settings.LLM_PROVIDER
+    provider = provider.lower().strip()
 
     if provider == "mock":
         # Returns a valid JSON matching what the LLM-as-a-Judge expects
