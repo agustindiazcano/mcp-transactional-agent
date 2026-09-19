@@ -14,7 +14,7 @@ from src.core.models import Transaction
 
 logger = logging.getLogger(__name__)
 
-async def process_message(message: Any, db_session: AsyncSession):
+async def process_message(message: Any, db_session: AsyncSession) -> None:
     """
     Process an incoming RabbitMQ message.
     Ensures idempotency by checking if the request_id is already completed.
@@ -89,7 +89,7 @@ import aio_pika
 from src.core.database import get_engine, get_session_maker
 
 
-async def start_worker():
+async def start_worker() -> None:
     """
     Connect to RabbitMQ and start consuming messages from agent_tasks_queue.
     """
