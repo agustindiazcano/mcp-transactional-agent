@@ -22,10 +22,18 @@ Beyond the core transactional engine, this project explores a second question: *
 
 ---
 
-## Documentation
+## Documentation Index
 
-Detailed technical design and architectural deep dives for each phase:
-- [Phase 1: Core Engine Architecture](docs/phases/phase_1_core_engine.md)
+The project's architectural, reliability, and testing documentation is divided into the following dedicated manuals:
+
+### Architecture & Roadmaps
+- **[Phase 1: Core Engine Architecture](docs/phases/phase_1_core_engine.md):** In-depth technical breakdown of the asynchronous engine, EDA pattern, and MCP Sandbox.
+- **[Advanced AI Roadmap](docs/architecture/advanced_ai_roadmap.md):** SOTA algorithms planned for future phases (FSM decoding, Conformal Prediction, Rule-Based Reward Models).
+
+### Testing & Reliability
+- **[TDD & Test Coverage Report](docs/testing/tdd_coverage.md):** Breakdown of Unit and Integration (E2E) testing coverage.
+- **[Chaos Engineering & Resilience Testing](docs/testing/chaos_engineering_armageddon.md):** The "Armageddon" protocol: 10 critical test cases evaluated under the AIVR protocol to guarantee fault tolerance.
+- **[System Telemetry & Performance Testing](docs/testing/telemetry_performance.md):** Methodologies for load testing (Locust), code coverage, and LLM observability (Langfuse).
 
 ---
 
@@ -309,7 +317,7 @@ The API will be available at `http://localhost:8000`. Interactive docs at `http:
 
 ---
 
-## 📊 System Performance & Telemetry (WIP)
+## System Performance & Telemetry (WIP)
 
 - **Test Coverage:** XX.X% (Unit & Integration)
 - **API Ingestion Latency (P95):** XX ms
