@@ -12,18 +12,20 @@ Description: An asynchronous, fault-tolerant Agentic Workflow engine designed to
 
 Core Pattern: Event-Driven Architecture combined with the Model Context Protocol (MCP). The LLM is completely isolated from the database and business logic. It communicates exclusively through the MCP server to execute tools.
 
-The project is organized in three phases. Phase 1 (core transactional engine) is production-ready. Phase 2 (confidence layer: fuzzy scoring + rule-based expert system) is in progress. Phase 3 (Kalman-based observability) is experimental/roadmap. See Section 5b and 5c for phase-specific directives.
+The project is organized in five phases. Phase 1 (core transactional engine) is production-ready. Phase 2 (confidence layer: fuzzy scoring + rule-based expert system) is in progress. Phase 3 (Kalman-based observability), Phase 4 (Ops Dashboard), and Phase 5 (ML Comparison Track) are experimental/roadmap. See Sections 5a-5e for phase-specific directives.
 
 ## 3. Tech Stack
 
 - API Gateway: FastAPI, Uvicorn, Pydantic (data validation).
 - Message Broker: RabbitMQ, pika (async task consumption).
 - Database and Idempotency: PostgreSQL (with pgvector extension), SQLAlchemy (ORM), Alembic.
-- AI Core: LangChain, Google GenAI (Gemini), Groq API (fallback).
+- AI Core: LangChain, Google GenAI (Gemini), Groq API, OpenAI, AWS Bedrock.
 - Agent Sandbox: Model Context Protocol (MCP) Python SDK.
 - LLMOps (Testing and Guardrails): Promptfoo (shift-left testing), Langfuse (telemetry), LLM-as-a-Judge pattern for runtime output evaluation.
 - Confidence Layer (Phase 2): scikit-fuzzy or a hand-rolled membership-function module for fuzzy scoring; a lightweight declarative rule engine for the Belief Rule Base (BRB).
 - Observability (Phase 3, experimental): a minimal Kalman filter implementation (numpy-based, no heavy ML dependency) over judge/TruLens score time series.
+- Frontend (Phase 4, experimental): React, TypeScript, Vite, TanStack Query.
+- ML Comparison (Phase 5, experimental): TensorFlow, Keras, MLflow.
 
 ## 4. Architecture Directives and Constraints
 
@@ -84,6 +86,17 @@ When asked to build Phase 1 features, follow this logical sequence:
 1. `observability/kalman_monitor.py`: a simple 1D (or low-dimensional) Kalman filter over the time series of judge/TruLens scores already logged by Phase 1. Two tunable parameters only: process noise and measurement noise. Do not reach for a heavier drift-detection model — the point of this phase is that a minimal, transparent estimator is sufficient.
 2. `observability/alerting.py`: fires only when the estimated state exits its confidence band (`KALMAN_ALERT_SIGMA` standard deviations), not on individual outlier scores.
 3. This phase is design/prototype status. Do not wire it into the transactional critical path under any circumstance — see the constraint in Section 4.
+
+## 5d. Development Phases — Phase 4 (Ops Dashboard, Experimental)
+
+1. Scope: A read-only React/TypeScript frontend (Transaction Monitor, Confidence Inspector, Quality Trend).
+2. Architecture Constraint: The UI must act as an external consumer. It fetches data exclusively from new read-only (GET) endpoints under `api/routers/`. It must never connect directly to the database, the MCP server, or the confidence/observability modules.
+
+## 5e. Development Phases — Phase 5 (ML Comparison Track, Experimental)
+
+1. Scope: An offline TensorFlow/Keras MLP trained on the Phase 2 rule base inputs (`validate_fraud_score` features) to compare its accuracy against the deterministic expert system.
+2. Tooling: All training runs and resulting models must be versioned and tracked using MLflow.
+3. Architecture Constraint: The MLP is strictly out-of-band. It never participates in the live transaction approval path. Its output is logged solely for offline comparison against the rule base verdicts.
 
 ## 6. Coding Standards and Non-Negotiable Rules
 
@@ -147,7 +160,7 @@ agentic-mcp-engine/
     alembic/
     alembic.ini
     .env.example
-    requirements.txt
+    pyproject.toml
     docker-compose.yml
     Dockerfile
 ```
@@ -169,9 +182,13 @@ Before writing or modifying any file that touches the following areas, pause and
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `RABBITMQ_URL` | RabbitMQ AMQP connection string |
-| `LLM_PROVIDER` | Active LLM provider: `gemini`, `groq`, or `bedrock` |
+| `LLM_PROVIDER` | Active LLM provider: `gemini`, `groq`, `bedrock`, `openai`, or `vertex` |
+| `OPENAI_API_KEY` | OpenAI API key (when LLM_PROVIDER=openai) |
 | `GEMINI_API_KEY` | Google GenAI API key |
+| `GOOGLE_APPLICATION_CREDENTIALS` | GCP credentials (when using Vertex AI) |
 | `GROQ_API_KEY` | Groq API key |
+| `AWS_ACCESS_KEY_ID` | AWS key (when LLM_PROVIDER=bedrock) |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret (when LLM_PROVIDER=bedrock) |
 | `LANGFUSE_SECRET_KEY` | Langfuse telemetry secret |
 | `LANGFUSE_PUBLIC_KEY` | Langfuse telemetry public key |
 | `MCP_SERVER_URL` | URL of the running MCP server |
