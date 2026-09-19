@@ -22,6 +22,13 @@ Beyond the core transactional engine, this project explores a second question: *
 
 ---
 
+## 📚 Documentation
+
+Detailed technical design and architectural deep dives for each phase:
+- [Phase 1: Core Engine Architecture](docs/phases/phase_1_core_engine.md)
+
+---
+
 ## Phase 1 — Core Engine (Production-Ready)
 
 ### Execution Milestones (Phase 1)
