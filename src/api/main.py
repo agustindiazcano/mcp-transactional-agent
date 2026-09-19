@@ -1,7 +1,8 @@
-from fastapi import FastAPI, status
-import aio_pika
-import json
 import os
+
+import aio_pika
+from fastapi import FastAPI, status
+
 from src.api.schemas import ClaimRequest
 
 app = FastAPI(title="Agentic MCP Engine API")

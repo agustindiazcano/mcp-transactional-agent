@@ -1,8 +1,7 @@
+
 import pytest
 import pytest_asyncio
-from httpx import AsyncClient, ASGITransport
-import os
-import sys
+from httpx import ASGITransport, AsyncClient
 
 # We need to make sure the app can be imported
 # The app will be in src.mcp_server.mcp_server.app

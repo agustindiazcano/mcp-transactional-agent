@@ -1,5 +1,5 @@
-from mcp.server.mcpserver import MCPServer
 import uvicorn
+from mcp.server.mcpserver import MCPServer
 
 mcp = MCPServer("agentic-mcp-engine")
 

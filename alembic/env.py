@@ -17,6 +17,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 import os
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -24,6 +25,7 @@ load_dotenv()
 # add your model's MetaData object here
 # for 'autogenerate' support
 from src.core.models import Base
+
 target_metadata = Base.metadata
 
 # Update the url with DATABASE_URL

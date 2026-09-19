@@ -1,6 +1,7 @@
-from pydantic import BaseModel, Field
-from typing import Optional
 from uuid import uuid4
+
+from pydantic import BaseModel, Field
+
 
 class ClaimRequest(BaseModel):
     user_id: str

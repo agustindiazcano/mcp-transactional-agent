@@ -1,12 +1,11 @@
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+import pytest_asyncio
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_engine, get_session_maker
 from src.core.models import Base, Transaction
 
-
-import pytest_asyncio
 
 @pytest_asyncio.fixture
 async def db_engine():

@@ -1,8 +1,11 @@
+from unittest.mock import AsyncMock, patch
+
 import pytest
 import pytest_asyncio
-from httpx import AsyncClient, ASGITransport
-from unittest.mock import patch, AsyncMock
+from httpx import ASGITransport, AsyncClient
+
 from src.api.main import app
+
 
 @pytest_asyncio.fixture
 async def async_client():
