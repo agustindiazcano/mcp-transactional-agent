@@ -47,6 +47,7 @@ Built with an abstract Factory Pattern, the system is fully decoupled from the u
 - **Gemini AI Studio**: High-throughput, massive context window integration for rapid prototyping.
 - **Amazon Bedrock (Claude 3.5 Sonnet / Llama 3)**: AWS-native inference ensuring zero data egress outside the enterprise perimeter.
 - **Groq**: Ultra-low latency LPU inference, strategically routed for millisecond-response LLM-as-a-Judge guardrails.
+- **Mock (Safe Mode)**: Offline `FakeListChatModel` for local development, returning deterministic valid JSON to prevent token drain without breaking the Judge.
 
 Thanks to the Abstract Factory pattern implemented in `src/agents/llm_factory.py`, the system allows instantiating different providers for different concurrent components (e.g., GPT-4o for the Primary Agent, Groq for the Judge) without modifying a single line of business logic.
 
