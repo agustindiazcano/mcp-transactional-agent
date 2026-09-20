@@ -46,6 +46,7 @@ The project's architectural, reliability, and testing documentation is divided i
 ### Architecture & Roadmaps
 - **[Phase 1: Core Engine Architecture](docs/phases/phase_1_core_engine.md):** In-depth technical breakdown of the asynchronous engine, EDA pattern, and MCP Sandbox.
 - **[Advanced AI Roadmap](docs/architecture/advanced_ai_roadmap.md):** SOTA algorithms planned for future phases (FSM decoding, Conformal Prediction, Rule-Based Reward Models).
+- **[Research & Differentiation Roadmap](docs/deterministic_guardrails_roadmap.md):** Tracks deterministic, auditable, and formally-grounded mechanisms beyond LLM-as-Judge, including classical ML benchmarks.
 
 ### Testing & Reliability
 - **[TDD & Test Coverage Report](docs/testing/tdd_coverage.md):** Breakdown of Unit and Integration (E2E) testing coverage.
