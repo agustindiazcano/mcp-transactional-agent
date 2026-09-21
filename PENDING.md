@@ -4,10 +4,16 @@ Personal working notes. See README.md's Roadmap table and Phase sections for the
 
 ## Priority Order
 
-### Step 1 — Load & Chaos Testing with Locust (Phase 1.C)
-- [ ] `tests/performance/locustfile.py` already exists and runs locally against bare `localhost` — what's left is running a 100+ concurrent simulated-claimant load against the *containerized* (`docker compose`) stack.
-- [ ] Validates: pessimistic locks (`SELECT ... FOR UPDATE`), RabbitMQ, and the Worker hold up under massive concurrency without deadlocks or data corruption.
+### Step 1 — Load & Chaos Testing with Locust (Phase 1.C) — blocked on an open MCP bug
+Attempted for real against the full `docker compose` stack. The Gateway/queue path itself works (2592 reqs, 0 failures, P50=75ms, P95=340ms once the queue wasn't backlogged), but the Worker→MCP session — needed to actually reach the final `SELECT FOR UPDATE` write this step exists to validate — fails. Found and fixed two real bugs in the process (see git log `4691f17`): the MCP SDK's Host-header allowlist didn't include the Docker Compose service name (`mcp_server:8080`), and `message_path` was missing its required trailing slash, causing a redirect the client doesn't follow. A **third** MCP transport bug remains open: a real transaction (run as the container's actual entrypoint process) still fails intermittently with `httpx2.RemoteProtocolError: peer closed connection without sending complete message body` while awaiting the SSE-delivered `initialize()` response. Every isolated reproduction attempt (sequential/concurrent connections, with a real aio-pika connection, the exact `queue.iterator()`+`message.process()` pattern, via `docker exec` inside the same container, with/without backlog, with/without Locust load) succeeded — only the real entrypoint process fails. Root cause not identified after extensive isolated testing; needs a fresh session with fresh eyes, possibly stracing/tcpdumping the actual container process rather than a reproduction.
+- [ ] Root-cause and fix the remaining SSE `initialize()` transport failure.
+- [ ] Once fixed: re-run the 100+ concurrent load test against the containerized stack and confirm the pessimistic locks hold under contention without deadlocks (not actually validated yet — every transaction in every run so far died before reaching the final lock/write step).
 - [ ] Metrics: measure and fill in the README's `System Performance & Telemetry` table with real throughput (req/s) and P95 latency, replacing the placeholder values.
+
+**Side findings from this attempt, not yet fixed:**
+- [ ] `prompt_guard.py` hardcodes `provider="groq"` regardless of `LLM_PROVIDER`, and `langchain-groq` isn't in `pyproject.toml`'s dependencies — `ImportError`s inside the container on every call. Caught by its own fail-open handler (not blocking), but means Judge 2 (Groq) cannot actually run in the Docker deployment as currently packaged.
+- [ ] `src/api/main.py`'s `/api/v1/claims` handler opens a brand-new `aio_pika.connect_robust()` connection per request instead of reusing one — almost certainly why ingestion latency climbed under sustained load before the queue-backlog issue was found and controlled for.
+- [x] No prefetch limit on the Worker's RabbitMQ channel — fixed (`channel.set_qos(prefetch_count=1)`, same commit as above).
 
 ### Step 2 — Cost per Transaction Measurement
 - [ ] Measure real token consumption per stage (RAG embedding + primary agent + judges).
