@@ -2,6 +2,7 @@ from typing import Any, cast
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
+from pydantic import SecretStr
 
 from src.core.config import settings
 
@@ -12,7 +13,7 @@ except ImportError:
     ChatGoogleGenerativeAI: Any = None  # type: ignore
 
 try:
-    from langchain_openai import ChatOpenAI  # type: ignore
+    from langchain_openai import ChatOpenAI
 except ImportError:
     ChatOpenAI: Any = None  # type: ignore
 
@@ -27,7 +28,7 @@ except ImportError:
     ChatBedrock: Any = None  # type: ignore
 
 try:
-    from langchain_groq import ChatGroq  # type: ignore
+    from langchain_groq import ChatGroq
 except ImportError:
     ChatGroq: Any = None  # type: ignore
 
@@ -56,7 +57,7 @@ def get_llm(provider: str | None = None, temperature: float = 0.7, model_name: s
             raise ImportError("langchain-openai is not installed")
         return cast(BaseChatModel, ChatOpenAI(
             model="gpt-4o",
-            api_key=settings.OPENAI_API_KEY,
+            api_key=SecretStr(settings.OPENAI_API_KEY),
             temperature=temperature
         ))
         
@@ -95,7 +96,7 @@ def get_llm(provider: str | None = None, temperature: float = 0.7, model_name: s
         
         return cast(BaseChatModel, ChatGroq(
             model=target_model,
-            api_key=settings.GROQ_API_KEY,
+            api_key=SecretStr(settings.GROQ_API_KEY),
             temperature=temperature
         ))
         

@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
+from pydantic import SecretStr
 
 from src.agents.llm_factory import get_llm
 from src.core.config import Settings
@@ -29,8 +30,9 @@ def test_get_llm_gemini():
         
         assert llm is mock_instance
         MockGemini.assert_called_once_with(
-            model="gemini-1.5-flash",
-            google_api_key="test_key"
+            model="gemini-3.5-flash-lite",
+            google_api_key="test_key",
+            temperature=0.7
         )
 
 
@@ -45,10 +47,12 @@ def test_get_llm_openai():
         llm = get_llm()
         
         assert llm is mock_instance
-        MockOpenAI.assert_called_once_with(
-            model="gpt-4o",
-            api_key="test_key"
-        )
+        MockOpenAI.assert_called_once()
+        call_kwargs = MockOpenAI.call_args.kwargs
+        assert call_kwargs["model"] == "gpt-4o"
+        assert isinstance(call_kwargs["api_key"], SecretStr)
+        assert call_kwargs["api_key"].get_secret_value() == "test_key"
+        assert call_kwargs["temperature"] == 0.7
 
 
 def test_get_llm_groq():
@@ -62,10 +66,12 @@ def test_get_llm_groq():
         llm = get_llm()
         
         assert llm is mock_instance
-        MockGroq.assert_called_once_with(
-            model="llama3-70b-8192",
-            api_key="test_key"
-        )
+        MockGroq.assert_called_once()
+        call_kwargs = MockGroq.call_args.kwargs
+        assert call_kwargs["model"] == "openai/gpt-oss-20b"
+        assert isinstance(call_kwargs["api_key"], SecretStr)
+        assert call_kwargs["api_key"].get_secret_value() == "test_key"
+        assert call_kwargs["temperature"] == 0.7
 
 
 def test_get_llm_vertex():
@@ -80,7 +86,8 @@ def test_get_llm_vertex():
         
         assert llm is mock_instance
         MockVertex.assert_called_once_with(
-            model_name="gemini-1.5-pro"
+            model_name="gemini-1.5-pro",
+            temperature=0.7
         )
 
 
@@ -97,7 +104,8 @@ def test_get_llm_bedrock():
         assert llm is mock_instance
         MockBedrock.assert_called_once_with(
             model_id="anthropic.claude-3-5-sonnet-20240620-v1:0",
-            region_name="us-east-1"
+            region_name="us-east-1",
+            model_kwargs={"temperature": 0.7}
         )
 
 
