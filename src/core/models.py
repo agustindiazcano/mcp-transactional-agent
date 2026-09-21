@@ -1,9 +1,15 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Index, String, UniqueConstraint, func
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import DateTime, Index, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+# Dimension of the configured embeddings provider's output vectors. Default is
+# Gemini's `text-embedding-004` (768 dims) — see Phase 1.D in README.md/CLAUDE.md
+# for why this is provider-agnostic rather than fixed to AWS Bedrock Titan.
+EMBEDDING_DIM = 768
 
 
 class Base(DeclarativeBase):
@@ -29,6 +35,35 @@ class Transaction(Base):
     request_id: Mapped[str] = mapped_column(String, primary_key=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     status: Mapped[str] = mapped_column(String, default="PROCESSING", nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class KnowledgeBase(Base):
+    """Business-rule documents (refund/warranty policy text) available for
+    RAG retrieval (Phase 1.D).
+
+    `source_tier` and `updated_at` exist specifically to feed the Phase 2
+    fuzzy layer's inputs later (source trust tier, document freshness) —
+    see confidence/fuzzy_layer.py.
+    """
+
+    __tablename__ = "knowledge_base"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String, nullable=False)
+    source_tier: Mapped[str] = mapped_column(String, default="official", nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
