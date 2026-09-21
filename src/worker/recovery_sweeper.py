@@ -20,7 +20,7 @@ from worker.py. It is started independently:
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import aio_pika
 from sqlalchemy import select
@@ -43,7 +43,7 @@ async def run_sweep(db_session: AsyncSession, channel: aio_pika.abc.AbstractChan
         db_session: An active async SQLAlchemy session.
         channel: An open aio_pika channel for publishing recovered messages.
     """
-    threshold = datetime.now(tz=timezone.utc) - timedelta(
+    threshold = datetime.now(tz=UTC) - timedelta(
         seconds=settings.SWEEPER_STALE_THRESHOLD_SECONDS
     )
 
@@ -69,7 +69,7 @@ async def run_sweep(db_session: AsyncSession, channel: aio_pika.abc.AbstractChan
         )
 
         # 1. Delete clears the UniqueConstraint so a fresh worker can INSERT cleanly.
-        db_session.delete(txn)
+        await db_session.delete(txn)
 
         # 2. Re-publish the original payload to the queue.
         message = aio_pika.Message(
