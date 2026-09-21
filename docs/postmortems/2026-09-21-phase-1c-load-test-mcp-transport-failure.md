@@ -1,8 +1,8 @@
 # Postmortem: Phase 1.C Load Test — MCP Transport Failures
 
 **Date:** 2026-09-21
-**Status:** Three MCP-adjacent bugs found. Two fixed and verified (`4691f17`). The third — the one that actually blocked every transaction — has been **root-caused** by a parallel debugging session; the fix is proposed but **not yet applied or verified** in this repository. Phase 1.C's load validation (`PENDING.md` Step 1) remains blocked until it is.
-**Commits:** `4691f17` (fixes to date), `5e1ab07` (doc corrections)
+**Status:** Three MCP-adjacent bugs found. Two fixed and verified (`4691f17`). The third — the one that actually blocked every transaction — has been root-caused and **fixed and unit-tested** (`fix/judge-groq-import-crash`, commit `79179f9`); it has **not yet been verified against the real containerized stack** (a Docker rebuild + a live end-to-end transaction, and the Phase 1.C Locust load test) — see "Resolution" below.
+**Commits:** `4691f17` (transport fixes), `5e1ab07` (doc corrections), `79179f9` (the actual fix for the root cause below)
 
 ## Summary
 
@@ -39,7 +39,7 @@ Phase 1.C's original deployment validation (documented as "done" in the commit t
 | 2 | Every message POST: `307 Temporary Redirect`, not followed by the client | `message_path="/message"` (no trailing slash) vs. Starlette `Mount`'s `<path>/<rest>` routing | Changed to `"/messages/"` (SDK default) | Fixed, `4691f17` |
 | 3 | Restarted Worker instantly flooded with the entire historical backlog, making clean re-testing impossible | No `prefetch_count` set on the Worker's RabbitMQ channel | `channel.set_qos(prefetch_count=1)` | Fixed, `4691f17` |
 | 4 | Every message: `relation "transactions" does not exist` (session-specific, not a code bug) | Integration test's `Base.metadata.drop_all()` teardown had wiped the dev DB schema without a corresponding `alembic upgrade head` | Full volume reset + re-migrate | Resolved for this session; the underlying test-hygiene gap is not fixed |
-| 5 | Every real transaction: `TaskGroup (1 sub-exception)` / `RemoteProtocolError` — **the actual blocker this whole postmortem is about** | `evaluate_decision()` (`src/agents/judge.py`) calls `get_llm(provider="groq", ...)` unguarded; `langchain-groq` isn't a declared dependency, so it `ImportError`s inside the MCP session's task group on every call, which anyio reports as a generic transport failure | Add `langchain-groq` to `pyproject.toml` (proposed) | **Diagnosed, not yet applied/verified** — see "Root Cause: Found" below |
+| 5 | Every real transaction: `TaskGroup (1 sub-exception)` / `RemoteProtocolError` — **the actual blocker this whole postmortem is about** | `evaluate_decision()` (`src/agents/judge.py`) calls `get_llm(provider="groq", ...)` unguarded; `langchain-groq` isn't a declared dependency, so it `ImportError`s inside the MCP session's task group on every call, which anyio reports as a generic transport failure | `langchain-groq` declared in `pyproject.toml`; `_run_single_judge()` now constructs its LLM inside its own `try`/`except`, failing that judge closed to `REJECT` instead of raising | **Fixed, `79179f9` — unit-verified; container/end-to-end verification pending** — see "Resolution" below |
 
 ## Root Cause: Found (by a parallel debugging session)
 
@@ -60,12 +60,17 @@ judge2_groq = get_llm(provider="groq", temperature=0.0)   # <- raises here, unca
 
 **How it was actually found:** by writing a minimal, synchronous/async test script and running it *directly inside the already-running Worker container* to isolate connectivity/dependency verification from the application's own concurrency and control flow — deliberately separating "does the transport layer work" from "does the application's use of it work." That script proved the container *could* connect, `initialize()`, and list tools cleanly in isolation (the same conclusion this session's own probes reached, independently, via a similar technique). With the transport cleared, the remaining suspect was the application code path itself, which is what led to inspecting `evaluate_decision()` directly rather than the transport once more. This is now documented as a general practice — see [`docs/architecture/microservices_debugging_protocol.md`](../architecture/microservices_debugging_protocol.md).
 
-**Proposed fix (not yet applied in this repository):**
-1. Add `langchain-groq` to `pyproject.toml`'s `dependencies`.
-2. Rebuild the `worker` image and retest a real transaction end-to-end.
-3. Also revert the temporary `traceback.print_exception(...)` block added to `worker.py`'s outer exception handler during this investigation, once the fix is confirmed — it was a debugging aid, not intended to stay.
+## Resolution (`fix/judge-groq-import-crash`, commit `79179f9`)
 
-This session did not apply or verify this fix; it only documents the diagnosis and the proposed change for whoever applies it next.
+Applied deliberately as **defense-in-depth**, not just the minimal dependency declaration, per the decision this document already called for below (Recommended Next Steps, item 3):
+
+1. **`pyproject.toml`**: `langchain-groq` added to `dependencies` — restores real Groq judging (Judge 2) and, as a side effect, restores `prompt_guard.py`'s real fail-open path (it now actually runs Groq instead of always hitting the same `ImportError`).
+2. **`src/agents/judge.py`**: `_run_single_judge(llm, messages)` was refactored to `_run_single_judge(provider, temperature, messages)`, moving the `get_llm(...)` call *inside* its existing `try`/`except` (the same block that already fails safe to `{"verdict": "REJECT", ...}` on an invocation failure). A judge-construction failure — a missing package, a bad API key, a future refactor that reintroduces this gap for a different provider — now fails that judge closed to `REJECT` instead of raising an uncaught exception out of `evaluate_decision()`. All three call sites (the Gemini/Groq pair and the Supreme Court tie-breaker) were updated.
+3. **Tests** (`tests/unit/test_judge.py`, written and confirmed red before the fix, per this project's TDD workflow): one test calls `_run_single_judge("groq", 0.0, messages)` directly with `get_llm` raising, asserting the exact `REJECT` shape; one reproduces the postmortem's exact scenario through `evaluate_decision()` (Groq construction raises, Gemini approves) and asserts the function returns normally instead of raising.
+4. `worker.py`'s temporary `traceback.print_exception(...)` debug block (Recommended Next Steps, item 2, below) was never actually committed to this repository — it only ever existed as an uncommitted local change on `feat/concurrency-pessimistic-lock`, which has been stashed. Nothing to revert in tracked code.
+
+**Verified:** full unit suite (37/37), `ruff check`, and `mypy --strict` all pass on the fix branch.
+**Not yet verified:** a Docker rebuild of the `worker` image and a real transaction through the full `docker compose` stack (this postmortem's original reproduction case), and the Phase 1.C Locust load test it was blocking (`PENDING.md` Step 1). Those remain the actual close-out condition for this postmortem, and are still open in "Recommended Next Steps" below.
 
 ## What We Ruled Out
 
@@ -90,9 +95,9 @@ None of these reproduced the failure. The real, `docker compose up`-started `wor
 
 ## Recommended Next Steps
 
-1. **Apply and verify the proposed fix**: add `langchain-groq` to `pyproject.toml`'s dependencies, rebuild the `worker` image, and send a real transaction through the full containerized stack. Confirm it reaches `COMPLETED` or `PENDING_HUMAN_REVIEW` cleanly, with no `TaskGroup`/`RemoteProtocolError` in the logs. This is the one item that actually closes out this postmortem.
-2. Revert the temporary `traceback.print_exception(...)` debug block in `worker.py`'s outer exception handler once the fix is verified.
-3. **Decide deliberately** whether `evaluate_decision()`'s Groq dependency should be a hard requirement (add the package) or should degrade like `prompt_guard.py` does (wrap the `get_llm(provider="groq", ...)` call and fall back / fail open) — right now this is the *only* place in the codebase where a missing optional-provider package can silently take down an entire in-flight transaction instead of degrading. Worth a general rule: every `get_llm(provider=X, ...)` call site outside `llm_factory.py` itself should either declare `X`'s package as a hard dependency, or explicitly handle its absence the way `prompt_guard.py` already does.
-4. Re-run Phase 1.C's Step 1 Locust load test once the above is verified — this is the actual blocker that's been in the way since this postmortem started.
+1. ~~Apply and verify the proposed fix~~ — **done at the code level** (see "Resolution" above). **Still open**: rebuild the `worker` image and send a real transaction through the full containerized stack; confirm it reaches `COMPLETED` or `PENDING_HUMAN_REVIEW` cleanly, with no `TaskGroup`/`RemoteProtocolError` in the logs. This is the one item that actually closes out this postmortem.
+2. ~~Revert the temporary `traceback.print_exception(...)` debug block~~ — moot; it was never committed (local-only, stashed on `feat/concurrency-pessimistic-lock`).
+3. ~~Decide deliberately whether `evaluate_decision()`'s Groq dependency should be a hard requirement or degrade like `prompt_guard.py` does~~ — **decided and applied**: hard-required (`langchain-groq` declared) *and* defense-in-depth fail-closed to `REJECT` on construction failure, rather than fail-open — matches the Double-Judge guardrail contract (CLAUDE.md §10) better than silently skipping a judge the way `prompt_guard.py`'s pre-filter can. The general rule this item raised (every `get_llm(provider=X, ...)` call site outside `llm_factory.py` should either declare `X` a hard dependency or explicitly handle its absence) still stands as a project-wide review item beyond this one call site.
+4. Re-run Phase 1.C's Step 1 Locust load test once item 1's container verification passes — this is the actual blocker that's been in the way since this postmortem started.
 5. Fix the Gateway's per-request AMQP connection (`src/api/main.py`) — a reused, pooled connection instead of one per request.
 6. Fix the integration-test teardown footgun (`Base.metadata.drop_all()` silently desyncing the dev DB from `alembic_version`) before it costs someone else the same hour of confusion it cost this session.
