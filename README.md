@@ -71,6 +71,9 @@ The project also examines a second question: **how much of an AI system's decisi
 - **[Failure Injection Tests](docs/testing/chaos_engineering_armageddon.md):** Ten failure scenarios, their severity, and the invariants each one verifies.
 - **[Telemetry & Performance Testing](docs/testing/telemetry_performance.md):** Concurrency testing, coverage, and LLM tracing.
 
+### Postmortems
+- **[2026-09-21: Phase 1.C Load Test — MCP Transport Failures](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md):** Two real MCP transport bugs found and fixed while attempting the Phase 1.C load test; a third remains open and blocks it. What was wrong, what was corrected, what's still open, and the full list of reproduction attempts that didn't work.
+
 ---
 
 ## Phase 1 — Core Engine (Feature-complete, running locally)
