@@ -130,11 +130,16 @@ The LLM never touches the database or internal APIs. It reasons about the reques
 
 Before calling a transactional tool, the agent retrieves the relevant business rules by similarity search over `pgvector`. Implemented as [Phase 1.D](#phase-1d--rag-over-business-rules-pgvector-provider-agnostic-embeddings-done), below: the Worker embeds the incoming claim, retrieves the nearest policy chunk from `knowledge_base`, and injects it into the Double Judge's context. Retrieval is best-effort — a failure logs a warning and processing continues without retrieved context, it never blocks a transaction.
 
-### 5. Evaluation and Regression
+### 5. Evaluation and Regression (design; not yet implemented — see `PENDING.md` Step 3)
 
-- **Regression:** promptfoo test matrices (100+ edge cases) run against the primary agent and judge prompts, so a prompt change that breaks earlier behavior is caught before merge.
-- **Runtime judge:** described in the build sequence above.
-- **RAG evaluation:** TruLens measures context relevance, groundedness, and answer relevance, and records per-node latency and token usage.
+**Implemented today:** the runtime judge (Double LLM-as-a-Judge, described in the build sequence above) and LangChain (`langchain-core`, `langchain-google-genai`, `langchain-groq`) as the orchestration/provider layer behind `src/agents/llm_factory.py`.
+
+**Not yet implemented**, despite being described elsewhere in this repo as if they were running (`docs/testing/telemetry_performance.md`'s Langfuse paragraph, and an earlier version of this section) — no `promptfoo` or `langfuse` dependency is declared in `pyproject.toml`, and nothing in `src/` imports either:
+
+- **Regression (Promptfoo):** a `promptfooconfig.yaml` test matrix (~100 cases — obvious fraud, borderline refunds, prompt-injection attempts) run against the primary agent's and Judge 1/2's prompts as `assert`-style checks in CI, so a prompt or model change that drops accuracy below a threshold (e.g. 95%) blocks the merge instead of shipping silently.
+- **RAG evaluation (TruLens or Ragas):** scoring Phase 1.D's retrieval → judge path on the RAG triad — Context Relevance (is the matched `knowledge_base` chunk actually about the claim?), Groundedness (does the judge's verdict cite only what was retrieved, not invented policy?), and Answer Relevance (does the final decision address the actual claim?).
+- **LLM observability (Langfuse):** `LANGFUSE_SECRET_KEY`/`LANGFUSE_PUBLIC_KEY` are already optional env vars (see the table below), but no callback handler is wired into `src/agents/` or `src/worker/worker.py` yet. Once added, a failed transaction's full trace (embedding time, Prompt Guard token usage, judge input/output, MCP validation failure) becomes inspectable end-to-end instead of reconstructed from log lines.
+- **LangSmith / LangChain native tracing:** `LANGCHAIN_TRACING_V2`, `LANGCHAIN_ENDPOINT`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT` are in `.env.example` but unverified against this project's actual chains. LangSmith and Langfuse overlap significantly (both trace LLM call graphs); `PENDING.md` Step 3 calls out deciding which one earns a permanent place here before wiring both.
 
 ---
 
@@ -524,8 +529,12 @@ uvicorn src.api.main:app --reload --port 8000  # terminal 4
 | `GROQ_API_KEY` | Conditional | Required when `LLM_PROVIDER=groq` |
 | `AWS_ACCESS_KEY_ID` | Conditional | Required when `LLM_PROVIDER=bedrock` |
 | `AWS_SECRET_ACCESS_KEY` | Conditional | Required when `LLM_PROVIDER=bedrock` |
-| `LANGFUSE_SECRET_KEY` | No | Langfuse tracing secret key |
-| `LANGFUSE_PUBLIC_KEY` | No | Langfuse tracing public key |
+| `LANGFUSE_SECRET_KEY` | No | Langfuse tracing secret key (planned, not yet wired in — see `PENDING.md` Step 3) |
+| `LANGFUSE_PUBLIC_KEY` | No | Langfuse tracing public key (planned, not yet wired in — see `PENDING.md` Step 3) |
+| `LANGCHAIN_TRACING_V2` | No | Enables LangSmith tracing for LangChain calls (planned, not yet verified — see `PENDING.md` Step 3) |
+| `LANGCHAIN_ENDPOINT` | No | LangSmith API endpoint |
+| `LANGCHAIN_API_KEY` | No | LangSmith API key |
+| `LANGCHAIN_PROJECT` | No | LangSmith project name for this repo's traces |
 | `MCP_SERVER_URL` | Yes | URL of the MCP server |
 | `MAX_LLM_RETRIES` | No | Maximum LLM retries (default: 3) |
 | `IDEMPOTENCY_TTL_SECONDS` | No | Idempotency window in seconds (default: 86400) |
