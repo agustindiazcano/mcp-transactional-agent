@@ -230,6 +230,7 @@ Before writing or modifying any file that touches the following areas, pause and
 - Any change to `mcp_server.py` that removes or renames an existing tool, as this is a breaking change for live agents.
 - Any change to a rule in `confidence/rules/` that lowers a belief-degree threshold for `execute_refund` or `validate_fraud_score` (this weakens a financial safety gate).
 - Any change to `.env` files or secrets.
+- `PENDING.md` must never be deleted or emptied, by any means (`rm`, `Remove-Item`, `git rm`, shell redirection, `git clean`, etc.) — it is the user's personal working roadmap. Enforced as a hard `deny` in `.claude/hooks/safety_guard.py`, not just an `ask`. Editing its content is fine; removing the file or its content is not.
 - Before running an Alembic upgrade/downgrade command, confirm the current revision (`alembic current`) and the target revision with the user.
 - Before deleting or moving a file that defines database models, router registrations, or MCP tool registrations, list what will be affected and ask for confirmation.
 
