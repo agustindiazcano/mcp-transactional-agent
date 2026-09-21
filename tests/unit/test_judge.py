@@ -26,7 +26,9 @@ async def test_judge_approve():
         
         assert result["verdict"] == "APPROVE"
         assert "reason" in result
-        mock_llm.ainvoke.assert_called_once()
+        # Double Judge: judge1_gemini and judge2_groq each call ainvoke once.
+        # Both approve here, so the Supreme Court cascade is never invoked.
+        assert mock_llm.ainvoke.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -45,5 +47,11 @@ async def test_judge_reject():
         )
         
         assert result["verdict"] == "REJECT"
-        assert result["reason"] == "Amount exceeds allowed limit."
-        mock_llm.ainvoke.assert_called_once()
+        # Both base judges reject, which escalates to the Supreme Court cascade judge
+        # (also mocked here) for a final tie-break — the reason reflects that escalation.
+        assert result["reason"] == (
+            "Supreme Court Final Rejection: Amount exceeds allowed limit. "
+            "(Base judges: REJECT/REJECT)"
+        )
+        # judge1_gemini + judge2_groq + the Supreme Court tie-breaker.
+        assert mock_llm.ainvoke.call_count == 3
