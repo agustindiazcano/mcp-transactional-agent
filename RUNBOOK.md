@@ -48,7 +48,32 @@ uvicorn src.mcp_server.mcp_server:app --port 8080
 python -m src.worker.worker
 ```
 
-## Step 5: Send a Test Prompt (E2E Flow)
+## Step 5: Recovery Sweeper (Optional — Recommended in Production)
+
+The Recovery Sweeper is an independent background process that detects and recovers **zombie transactions** — rows stuck in `PROCESSING` status because the worker that claimed them crashed before completing.
+
+Run it in a **fourth terminal** alongside the worker:
+
+```bash
+python -m src.worker.recovery_sweeper
+```
+
+The sweeper polls every `SWEEPER_INTERVAL_SECONDS` (default: 300s). For local testing you can lower this in `.env`:
+
+```env
+SWEEPER_INTERVAL_SECONDS=30
+SWEEPER_STALE_THRESHOLD_SECONDS=60
+```
+
+To simulate a zombie and test recovery:
+1. Send a POST request to create a transaction.
+2. Kill the worker (`Ctrl+C`) immediately after it logs `"claimed with status PROCESSING"`.
+3. Wait for the sweeper to detect and re-enqueue the row.
+4. Restart the worker — it will process the recovered message cleanly.
+
+> **Why `FOR UPDATE SKIP LOCKED`?** The sweeper uses PostgreSQL's `SKIP LOCKED` hint to non-destructively iterate stale rows. If a live worker still holds a lock on a `PROCESSING` row (e.g., a slow LLM call), the sweeper skips that row without blocking — eliminating the risk of deadlocks.
+
+## Step 6: Send a Test Prompt (E2E Flow)
 
 With all services running, send a test payload to the API Gateway to trigger the end-to-end flow. The API will accept the request and pass it to RabbitMQ, where the worker will pick it up and process it via the MCP Server.
 
@@ -62,8 +87,8 @@ curl -X POST http://localhost:8000/api/v1/claims \
   }'
 ```
 
-## Step 6: Database Verification
+## Step 7: Database Verification
 
-You can verify that the transaction was processed and recorded idempotently by inspecting the PostgreSQL database. 
+You can verify that the transaction was processed and recorded idempotently by inspecting the PostgreSQL database.
 
 Connect to `localhost:5432` using a database client like **DBeaver** or via command line with `psql`. Check the database tables to confirm the `request_id` (`test-req-001`) was inserted successfully. Because of the idempotency checks, sending the exact same `curl` command again will skip reprocessing.

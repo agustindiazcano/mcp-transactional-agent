@@ -108,7 +108,8 @@ The ingestion gateway publishes each request to RabbitMQ and returns `202 Accept
 | Idempotency window | `IDEMPOTENCY_TTL_SECONDS` (default 24 h). A `request_id` replayed after expiry is treated as a new request. |
 | Retries | Up to `MAX_LLM_RETRIES` (default 3) with exponential backoff on rate limits and timeouts. |
 | Exhausted retries | Message moves to the dead-letter queue; no partial effect is committed. |
-| Double Judge rejection | If either Gemini or Llama 3 rejects, the transaction is persisted as `PENDING_HUMAN_REVIEW`; no tool is executed. |
+| Double Judge rejection | If either Gemini or Groq rejects, the transaction is persisted as `PENDING_HUMAN_REVIEW`; no tool is executed. |
+| Stale lock recovery | If a worker crashes mid-flight, the `PROCESSING` row is detected by the Recovery Sweeper (`FOR UPDATE SKIP LOCKED`) and re-enqueued within `SWEEPER_STALE_THRESHOLD_SECONDS` (default 5 min). |
 
 ### 3. MCP Server
 
