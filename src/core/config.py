@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     # MCP
     MCP_SERVER_URL: str = "http://127.0.0.1:8080/sse"
 
+    # MCP Security Boundary (Phase 1.B)
+    # Local-dev defaults below are placeholders, not secrets (the registry
+    # stores only a SHA-256 hash) -- rotate both for any shared/production
+    # deployment, the same convention already used for DATABASE_URL/RABBITMQ_URL.
+    MCP_CLIENTS_FILE: str = "mcp_clients.json"
+    MCP_CLIENT_TOKEN: str = "local-dev-worker-token-change-me"
+    REFUND_MAX_AMOUNT: float = 10000.0
+
     # Worker Settings
     MAX_LLM_RETRIES: int = 3
     IDEMPOTENCY_TTL_SECONDS: int = 86400

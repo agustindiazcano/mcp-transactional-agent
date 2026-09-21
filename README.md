@@ -148,19 +148,19 @@ The project's central claim is that the MCP server is the only path from the LLM
 
 | Control | State |
 |---|---|
-| Client authentication | Not implemented |
-| Per-tool authorization | Not implemented |
-| Server-side argument validation | Partial: type hints only, no business limits |
-| Rate limiting | Not implemented |
-| Audit log | Not implemented (console logs and final transaction state only) |
+| Client authentication | Done — SHA-256 hash + constant-time compare, `src/mcp_server/security/client_registry.py` |
+| Per-tool authorization | Done — per-`client_id` allowlist checked on every `tools/call`, `src/mcp_server/security/middleware.py` |
+| Server-side argument validation | Done — `ExecuteRefundArgs`/`ValidateFraudScoreArgs` in `src/mcp_server/tools/schemas.py`, `extra="forbid"` |
+| Rate limiting | Not implemented — remaining Phase 1.B item, tracked in `PENDING.md` |
+| Audit log | Done — `mcp_audit_logs` table (migration `70b40799328f`), `src/mcp_server/security/audit.py` |
 
 ### Design
 
-1. **Authentication.** Each client (worker type) has its own token. The server stores only SHA-256 hashes of tokens, compares them in constant time, and derives `client_id` from the token, never from a caller-supplied header. Requests without a valid token are rejected before reaching any tool.
-2. **Per-tool authorization.** A server-side allowlist maps each `client_id` to the tools it may call. Tool listing is filtered by identity, so a client does not see tools it cannot use, and calls to non-allowed tools are rejected and audited as denied.
-3. **Argument validation.** Every tool takes a Pydantic model with explicit constraints: positive amounts bounded by a configurable maximum, currency restricted to an enum, and unknown fields rejected. Validation happens on the server regardless of what the LLM serialized.
-4. **Rate limiting.** Limits are per `client_id` and per tool, computed from the audit table over a sliding window. Because the count lives in PostgreSQL, the limit holds across multiple MCP replicas without adding Redis.
-5. **Audit log.** Every invocation, including denied and rate-limited ones, writes a row with timestamp, `client_id`, tool, arguments (PII masked), decision, and result status. The MCP server's database role has `INSERT` and `SELECT` on this table but not `UPDATE` or `DELETE`. If the audit write fails, the tool does not execute (fail closed).
+1. **Authentication.** Each client (worker type) has its own token. The server stores only SHA-256 hashes of tokens, compares them in constant time, and derives `client_id` from the token, never from a caller-supplied header. Requests without a valid token are rejected before reaching any tool — enforced by `MCPSecurityMiddleware`, an ASGI middleware wrapping the whole `mcp.sse_app()`, so both the `/sse` handshake and every `/messages/` JSON-RPC POST are gated the same way.
+2. **Per-tool authorization.** A server-side allowlist (`mcp_clients.json`, path configurable via `MCP_CLIENTS_FILE`) maps each `client_id` to the tools it may call. A `tools/call` request naming a tool outside the caller's allowlist is rejected (HTTP 403) and audited as denied, before the call reaches the MCP server's own tool-dispatch logic. **Known gap:** `tools/list` visibility is not filtered by identity — a client can see a tool's name even if it can't call it — because the SSE transport delivers that response asynchronously over the separate `/sse` stream, outside this POST-request middleware's reach. Execution access is still fully gated; only name visibility leaks.
+3. **Argument validation.** `MCPSecurityMiddleware` validates a `tools/call` request's raw arguments against a strict per-tool Pydantic model (`src/mcp_server/tools/schemas.py`) before the call reaches the tool function: positive amounts bounded by `REFUND_MAX_AMOUNT`, currency restricted to an enum, and unknown fields rejected outright (`extra="forbid"`) — regardless of what the LLM serialized, and independent of the MCP SDK's own looser per-parameter schema, which silently drops unknown fields rather than rejecting them.
+4. **Rate limiting.** Not yet implemented. Design (unchanged from the original plan): limits per `client_id` and per tool, computed from the audit table over a sliding window, so the limit holds across multiple MCP replicas without adding Redis.
+5. **Audit log.** Every invocation, including denied ones, writes a row (`mcp_audit_logs`: timestamp, `client_id`, tool, arguments with PII masked, decision, result). The write happens *before* an allowed call is forwarded to the real MCP app — if it fails, the call is denied (HTTP 503) instead of proceeding (fail closed). A denied call's audit write is best-effort: the call is already rejected regardless of whether the write succeeds. **Known limitation:** the SSE transport delivers a tool's actual result asynchronously, not as this POST's HTTP response, so an ALLOWED row's `result` field records `"invoked"` rather than the eventual success/failure — capturing that would require either a mutable row or a second correlated one, both of which would compromise the insert-only audit trail. The table is insert-only by convention in code (no path updates or deletes a row); a dedicated DB role restricting the MCP server's connection to `INSERT`/`SELECT` is an infra-level follow-up, not yet configured.
 
 ### Prompt-injection invariant
 

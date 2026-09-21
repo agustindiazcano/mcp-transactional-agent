@@ -93,7 +93,12 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
         _ = get_llm()
 
         # ── Step 3: MCP + Self-Correction Loop ──────────────────────────────
-        async with sse_client(settings.MCP_SERVER_URL) as streams, \
+        # Authenticated as this worker's client_id via the Phase 1.B security
+        # boundary (src/mcp_server/security/middleware.py) -- the httpx client
+        # sse_client() builds applies this header to both the initial /sse
+        # handshake and every subsequent /messages/ POST on this connection.
+        mcp_headers = {"Authorization": f"Bearer {settings.MCP_CLIENT_TOKEN}"}
+        async with sse_client(settings.MCP_SERVER_URL, headers=mcp_headers) as streams, \
                    ClientSession(streams[0], streams[1]) as mcp_session:
             await mcp_session.initialize()
 

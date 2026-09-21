@@ -65,9 +65,18 @@ services:
       dockerfile: docker/mcp_server.Dockerfile
     container_name: agentic_mcp_server
     env_file: .env
+    environment:
+      # Phase 1.B: the security boundary's audit log lives in the same
+      # Postgres instance as the transactional engine.
+      DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/agentic_engine
     restart: on-failure:5
     ports:
       - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     networks:
       - agentic_net
 

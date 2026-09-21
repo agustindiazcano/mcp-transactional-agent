@@ -44,6 +44,34 @@ class Transaction(Base):
     )
 
 
+class McpAuditLog(Base):
+    """Immutable audit trail for every MCP tool-call attempt (Phase 1.B).
+
+    Written by `src.mcp_server.security.middleware.MCPSecurityMiddleware`
+    before a tool executes -- see CLAUDE.md Section 4's fail-closed directive:
+    if this insert fails, the call is denied rather than allowed to proceed.
+    Insert-only by convention (no code path updates or deletes a row); the
+    deployment's DB role for the MCP server should grant INSERT/SELECT only.
+    """
+
+    __tablename__ = "mcp_audit_logs"
+    __table_args__ = (
+        Index("ix_mcp_audit_logs_client_id_created_at", "client_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    client_id: Mapped[str] = mapped_column(String, nullable=False)
+    tool: Mapped[str | None] = mapped_column(String, nullable=True)
+    arguments: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    decision: Mapped[str] = mapped_column(String, nullable=False)
+    result: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
 class KnowledgeBase(Base):
     """Business-rule documents (refund/warranty policy text) available for
     RAG retrieval (Phase 1.D).
