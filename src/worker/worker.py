@@ -5,6 +5,7 @@ from typing import Any
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agents.judge import evaluate_decision
@@ -15,107 +16,123 @@ from src.core.models import Transaction
 
 logger = logging.getLogger(__name__)
 
+
 async def process_message(message: Any, db_session: AsyncSession) -> None:
-    """
-    Process an incoming RabbitMQ message.
-    Ensures idempotency by checking if the request_id is already completed.
+    """Process an incoming RabbitMQ message with strict concurrency control.
+
+    Uses an atomic INSERT as the distributed claim mechanism. On IntegrityError,
+    another worker already owns the row — ACK and discard without LLM invocation.
+    Final status write uses SELECT FOR UPDATE (pessimistic lock) to prevent
+    concurrent updates to the same row.
     """
     try:
         body = json.loads(message.body.decode())
         request_id = body.get("request_id")
-        
+
         if not request_id:
             logger.warning("Message missing request_id")
             await message.ack()
             return
 
-        # Check for idempotency
-        result = await db_session.execute(select(Transaction).where(Transaction.request_id == request_id))
-        txn = result.scalar_one_or_none()
-        
-        if txn and txn.status == "COMPLETED":
-            logger.info(f"Transaction {request_id} already COMPLETED. Acking and skipping.")
+        # ── Step 1: Atomic INSERT claim ─────────────────────────────────────
+        # The INSERT itself is the distributed lock. If two workers race on the
+        # same request_id, PostgreSQL's UniqueConstraint ensures only one succeeds.
+        # The loser gets IntegrityError and discards safely.
+        try:
+            txn = Transaction(request_id=request_id, payload=body, status="PROCESSING")
+            db_session.add(txn)
+            await db_session.flush()   # send INSERT; raises IntegrityError on duplicate
+            await db_session.commit()
+            logger.info(f"Transaction {request_id} claimed with status PROCESSING")
+        except IntegrityError:
+            await db_session.rollback()
+            logger.warning(
+                f"Race condition evadida: request_id={request_id} already owned "
+                "by another worker. Discarding."
+            )
             await message.ack()
             return
-            
-        if not txn:
-            txn = Transaction(request_id=request_id, payload=body, status="PENDING")
-            db_session.add(txn)
-            await db_session.commit()
-            
-        logger.info(f"Processing transaction {request_id}")
-        
-        # 1. Pre-Execution Shield (Prompt Guard)
+
+        # ── Step 2: Pre-Execution Shield (Prompt Guard) ─────────────────────
         claim_text = body.get("claim_text", "")
         if claim_text:
             is_injection = await check_for_injection(claim_text)
             if is_injection:
-                txn.status = "BLOCKED_MALICIOUS_PROMPT"
+                # Acquire row lock before updating status
+                res = await db_session.execute(
+                    select(Transaction)
+                    .where(Transaction.request_id == request_id)
+                    .with_for_update()
+                )
+                locked_txn = res.scalar_one()
+                locked_txn.status = "BLOCKED_MALICIOUS_PROMPT"
                 await db_session.commit()
+                logger.warning(f"🚫 Transaction {request_id} blocked: malicious prompt detected.")
                 await message.ack()
                 return
-        
+
         # Instantiate LLM
         _ = get_llm()
-        
-        # Set up MCP connection (Structure only)
-        # We will mock the actual execution for this test/step.
+
+        # ── Step 3: MCP + Self-Correction Loop ──────────────────────────────
         async with sse_client(settings.MCP_SERVER_URL) as streams, \
                    ClientSession(streams[0], streams[1]) as mcp_session:
-                await mcp_session.initialize()
-                
-                # 2. Self-Correction Loop
-                retries = 0
-                max_retries = settings.MAX_LLM_RETRIES
-                
-                judge_result = {}
-                
-                while retries < max_retries:
-                    # Here the LLM agent would interact with the MCP tools
-                    # For step 5, we mock the final primary decision and pass it to the judge.
-                    # In the real system, this invokes the LangChain agent loop.
-                    mock_primary_action = "execute_refund"
-                    mock_primary_args = body
-            
-                    # Evaluate with the Guardrail Judge
-                    judge_result = await evaluate_decision(
-                        action_name=mock_primary_action,
-                        action_args=mock_primary_args,
-                        context={"request_id": request_id}
-                    )
-                    
-                    if judge_result.get("verdict") == "APPROVE":
-                        txn.status = "COMPLETED"
-                        logger.info(
-                            f"✅ Transaction {request_id} APPROVED. "
-                            f"Reason: {judge_result.get('reason')}"
-                        )
-                        break
-                    else:
-                        retries += 1
-                        logger.warning(
-                            f"⚠️  Judge rejected (attempt {retries}/{max_retries}). "
-                            f"Reason: {judge_result.get('reason')}"
-                        )
-                        # In real system, feed judge_result['reason'] back into the agent loop here
-                
-                if judge_result.get("verdict") != "APPROVE":
-                    txn.status = "PENDING_HUMAN_REVIEW"
+            await mcp_session.initialize()
+
+            retries = 0
+            max_retries = settings.MAX_LLM_RETRIES
+            judge_result: dict[str, Any] = {}
+
+            while retries < max_retries:
+                # In the real system this invokes the LangChain agent loop.
+                mock_primary_action = "execute_refund"
+                mock_primary_args = body
+
+                judge_result = await evaluate_decision(
+                    action_name=mock_primary_action,
+                    action_args=mock_primary_args,
+                    context={"request_id": request_id},
+                )
+
+                if judge_result.get("verdict") == "APPROVE":
+                    break
+                else:
+                    retries += 1
                     logger.warning(
-                        f"❌ Transaction {request_id} → PENDING_HUMAN_REVIEW "
-                        f"after {max_retries} attempts. Final reason: {judge_result.get('reason')}"
+                        f"⚠️  Judge rejected (attempt {retries}/{max_retries}). "
+                        f"Reason: {judge_result.get('reason')}"
                     )
+
+        # ── Step 4: Pessimistic lock → final status write ───────────────────
+        res = await db_session.execute(
+            select(Transaction)
+            .where(Transaction.request_id == request_id)
+            .with_for_update()
+        )
+        locked_txn = res.scalar_one()
+
+        if judge_result.get("verdict") == "APPROVE":
+            locked_txn.status = "COMPLETED"
+            logger.info(
+                f"✅ Transaction {request_id} APPROVED. "
+                f"Reason: {judge_result.get('reason')}"
+            )
+        else:
+            locked_txn.status = "PENDING_HUMAN_REVIEW"
+            logger.warning(
+                f"❌ Transaction {request_id} → PENDING_HUMAN_REVIEW "
+                f"after {max_retries} attempts. Final reason: {judge_result.get('reason')}"
+            )
 
         await db_session.commit()
-        logger.info(f"Transaction {request_id} committed to DB with status: {txn.status}")
+        logger.info(f"Transaction {request_id} committed to DB with status: {locked_txn.status}")
 
-        # Ack the message
         await message.ack()
-        
+
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error processing message: {e}")
-        # In a real scenario, check max retries and nack or send to DLQ
         await message.nack(requeue=False)
+
 
 import asyncio
 
