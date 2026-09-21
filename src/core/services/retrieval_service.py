@@ -7,12 +7,14 @@ agents instead.
 """
 import logging
 
+import structlog
 from langchain_core.embeddings import Embeddings
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.repositories import knowledge_base_repository
 
 logger = logging.getLogger(__name__)
+usage_logger = structlog.get_logger("token_usage")
 
 
 async def ingest_document(
@@ -56,6 +58,21 @@ async def retrieve_relevant_policy(
         return None
 
     vector = await embeddings_client.aembed_query(claim_text)
+
+    # LangChain's Embeddings interface exposes no real token usage, unlike
+    # chat models' AIMessage.usage_metadata -- this is a ~4-chars/token
+    # estimate for cost tracking, not a metered figure (estimated=True).
+    estimated_tokens = len(claim_text) // 4
+    usage_logger.info(
+        "llm_token_usage",
+        stage="retrieval_embedding",
+        provider="gemini",
+        input_tokens=estimated_tokens,
+        output_tokens=0,
+        total_tokens=estimated_tokens,
+        estimated=True,
+    )
+
     matches = await knowledge_base_repository.find_most_similar(session, vector, limit=1)
     if not matches:
         return None

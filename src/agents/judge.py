@@ -2,11 +2,14 @@ import json
 import logging
 from typing import Any, cast
 
+import structlog
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.agents.llm_factory import get_llm
+from src.agents.token_usage import extract_usage
 
 logger = logging.getLogger(__name__)
+usage_logger = structlog.get_logger("token_usage")
 
 JUDGE_SYSTEM_PROMPT = """You are an independent LLM-as-a-Judge guardrail for a financial transaction system.
 Your job is to evaluate a proposed action by the primary agent and determine if it should be APPROVED or REJECTED.
@@ -23,10 +26,15 @@ Respond strictly in valid JSON format with exactly these two keys:
 }
 """
 
-async def _run_single_judge(provider: str, temperature: float, messages: list[Any]) -> dict[str, Any]:
+async def _run_single_judge(provider: str, temperature: float, messages: list[Any], stage: str) -> dict[str, Any]:
     try:
         llm = get_llm(provider=provider, temperature=temperature)
         response = await llm.ainvoke(messages)
+
+        usage = extract_usage(response)
+        if usage is not None:
+            usage_logger.info("llm_token_usage", stage=stage, provider=provider, **usage)
+
         content_raw = response.content
         
         # Handle new LangChain format where content might be a list of blocks
@@ -90,8 +98,8 @@ async def evaluate_decision(action_name: str, action_args: dict[str, Any], conte
     # provider package (e.g. langchain-groq) fails that judge closed to REJECT
     # instead of raising out of evaluate_decision().
     results = await asyncio.gather(
-        _run_single_judge("gemini", 0.0, messages),
-        _run_single_judge("groq", 0.0, messages),
+        _run_single_judge("gemini", 0.0, messages, stage="judge1"),
+        _run_single_judge("groq", 0.0, messages, stage="judge2"),
         return_exceptions=True
     )
     
@@ -111,7 +119,7 @@ async def evaluate_decision(action_name: str, action_args: dict[str, Any], conte
         logger.warning(f"Double Judge REJECT or disagreement detected (Gemini={v1}, Groq={v2}). Escalating to Supreme Court Judge...")
         try:
             # Supreme Court tie-breaker
-            supreme_res = await _run_single_judge("gemini", 0.0, messages)
+            supreme_res = await _run_single_judge("gemini", 0.0, messages, stage="supreme_court")
             sv = supreme_res.get("verdict")
             
             if sv == "APPROVE":
