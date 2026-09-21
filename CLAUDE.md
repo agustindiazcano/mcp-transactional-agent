@@ -12,7 +12,7 @@ Description: An asynchronous, fault-tolerant Agentic Workflow engine designed to
 
 Core Pattern: Event-Driven Architecture combined with the Model Context Protocol (MCP). The LLM is completely isolated from the database and business logic. It communicates exclusively through the MCP server to execute tools.
 
-The project is organized around Phase 1 (core transactional engine, production-ready) and three infrastructure sub-phases that harden and operationalize it — Phase 1.B (MCP security boundary: authn, per-tool authz, rate limiting, audit log; in progress), Phase 1.C (containerized local deployment: per-service Dockerfiles + full `docker-compose` orchestration; not started, next action), Phase 1.D (RAG over business rules via `pgvector` + AWS Bedrock Titan Embeddings; not started) — followed by Phase 2 (confidence layer: fuzzy scoring + rule-based expert system, in progress), Phase 3 (pluggable quality drift detection — EWMA default, with CUSUM, Page-Hinkley, and Kalman as selectable detectors — experimental/roadmap), Phase 4 (Ops Dashboard, experimental/roadmap), Phase 5 (ML Comparison Track, experimental/roadmap), and Phase 6 (AWS Serverless cloud migration, experimental/roadmap). See Sections 5a-5f for phase-specific directives.
+The project is organized around Phase 1 (core transactional engine, production-ready) and three infrastructure sub-phases that harden and operationalize it — Phase 1.B (MCP security boundary: authn, per-tool authz, rate limiting, audit log; in progress), Phase 1.C (containerized local deployment: per-service Dockerfiles + full `docker-compose` orchestration; deployment validation done, load validation pending), Phase 1.D (RAG over business rules via `pgvector` + AWS Bedrock Titan Embeddings; not started) — followed by Phase 2 (confidence layer: fuzzy scoring + rule-based expert system, in progress), Phase 3 (pluggable quality drift detection — EWMA default, with CUSUM, Page-Hinkley, and Kalman as selectable detectors — experimental/roadmap), Phase 4 (Ops Dashboard, experimental/roadmap), Phase 5 (ML Comparison Track, experimental/roadmap), and Phase 6 (AWS Serverless cloud migration, experimental/roadmap). See Sections 5a-5f for phase-specific directives.
 
 ## 3. Tech Stack
 
@@ -94,12 +94,12 @@ When asked to build Phase 1 features, follow this logical sequence (all steps be
 4. Rate limiting: per `client_id` and per tool, computed from the audit table over a sliding window (`MCP_RATE_LIMIT_PER_MIN`), so the limit holds across MCP replicas without adding Redis.
 5. Audit log: every invocation (including denied and rate-limited) writes a row with timestamp, `client_id`, tool, arguments (PII masked), decision, and result. See the fail-closed directive in Section 4.
 
-## 5a-ii. Development Phases — Phase 1.C (Containerized Local Deployment, Not Started — Next Action)
+## 5a-ii. Development Phases — Phase 1.C (Containerized Local Deployment, Deployment Validation Done — Load Validation Pending)
 
-1. Dockerfiles: one optimized image per service — Gateway, Worker (+ Recovery Sweeper), MCP server — built from the shared `src/` layout.
-2. `docker-compose.yml`: extend the existing Postgres/RabbitMQ definition to orchestrate all five services on a private network, with health checks gating startup order.
-3. Deployment validation: `docker compose up --build` from a clean checkout, then an end-to-end request through the full stack, confirms Gateway → RabbitMQ → Worker → MCP server → Postgres communication without manual process management.
-4. Load validation: re-run the Locust suite (100+ concurrent simulated claimants) against the containerized stack, confirm the Phase 1 pessimistic locks hold without deadlocks, and publish throughput/P95 latency to the README's System Performance table.
+1. Dockerfiles (done): one image per service under `docker/` — `gateway.Dockerfile`, `worker.Dockerfile` (also used, via command override, for the Recovery Sweeper and a one-shot `migrate` service), `mcp_server.Dockerfile` — each installing only production dependencies as a non-root user.
+2. `docker-compose.yml` (done): all seven services (`postgres`, `rabbitmq`, `migrate`, `mcp_server`, `worker`, `sweeper`, `gateway`) orchestrated on a private `agentic_net` bridge network; the `migrate` service runs `alembic upgrade head` and gates the app services via `service_completed_successfully`.
+3. Deployment validation (done): `docker compose up --build` from a clean checkout brings all seven containers up, with the gateway and MCP server reachable across the network. Known pitfall: RabbitMQ's `-q ping` healthcheck can report healthy before the AMQP listener binds — use `check_port_connectivity` instead, and keep a bounded `restart: on-failure:N` on the app services as defense-in-depth against any other first-boot race.
+4. Load validation (not yet run): re-run the Locust suite (100+ concurrent simulated claimants) against the containerized stack, confirm the Phase 1 pessimistic locks hold without deadlocks, and publish throughput/P95 latency to the README's System Performance table.
 
 ## 5a-iii. Development Phases — Phase 1.D (RAG over Business Rules, Not Started)
 

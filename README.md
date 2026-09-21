@@ -16,7 +16,7 @@ The project also examines a second question: **how much of an AI system's decisi
 
 **What this is**
 
-- A feature-complete core engine that runs locally as separate processes against Dockerized PostgreSQL and RabbitMQ (full-stack containerization is Phase 1.C), with unit tests, integration tests against real PostgreSQL and RabbitMQ, and failure-injection tests.
+- A feature-complete core engine that runs locally under `docker compose` (Phase 1.C), with unit tests, integration tests against real PostgreSQL and RabbitMQ, and failure-injection tests.
 - A reference architecture with documented design decisions (see [Architecture Decision Records](#architecture-decision-records)).
 
 **What this is not (yet)**
@@ -49,7 +49,7 @@ The project also examines a second question: **how much of an AI system's decisi
 |---|---|---|
 | **Phase 1** | Core engine: event-driven pipeline, MCP, guardrails, concurrency control | Feature-complete, running locally |
 | **Phase 1.B** | MCP security boundary: authn, per-tool authz, validation, rate limiting, audit log | In progress |
-| **Phase 1.C** | Containerized local deployment: per-service Dockerfiles, full `docker-compose` orchestration | Not started — next action |
+| **Phase 1.C** | Containerized local deployment: per-service Dockerfiles, full `docker-compose` orchestration | Dockerfiles + orchestration + deployment validation done; load validation (Locust) not yet run |
 | **Phase 1.D** | RAG over business rules: pgvector + AWS Bedrock (Titan Embeddings) | Not started |
 | **Phase 2** | Confidence layer: fuzzy scoring + belief rule base | In progress |
 | **Phase 3** | Quality drift detection (pluggable detector) | Designed, not yet implemented |
@@ -177,18 +177,18 @@ An injected instruction can still influence which of the *allowed* tools the age
 
 ---
 
-## Phase 1.C — Containerized Local Deployment (Not started — next action)
+## Phase 1.C — Containerized Local Deployment (Deployment validation done; load validation pending)
 
 ### Problem
 
-Phase 1 runs today as four processes started by hand in separate terminals (Postgres, RabbitMQ, MCP server, worker, gateway). `docker-compose.yml` currently orchestrates only the two infrastructure dependencies (`postgres`, `rabbitmq`); there are no Dockerfiles and no compose entries for the Gateway, Worker, or MCP server themselves, so the "independent services" boundary Phase 1 is built around (see the [HTTP/SSE ADR](#why-httpsse-for-mcp-transport-not-stdio)) is not yet exercised by an actual deployment.
+Phase 1 ran as four processes started by hand in separate terminals (Postgres, RabbitMQ, MCP server, worker, gateway). `docker-compose.yml` orchestrated only the two infrastructure dependencies (`postgres`, `rabbitmq`); there were no Dockerfiles and no compose entries for the Gateway, Worker, or MCP server themselves, so the "independent services" boundary Phase 1 is built around (see the [HTTP/SSE ADR](#why-httpsse-for-mcp-transport-not-stdio)) was never exercised by an actual deployment.
 
 ### Scope
 
-1. **Dockerfiles:** one optimized image per service — Gateway (FastAPI/Uvicorn), Worker (+ Recovery Sweeper), MCP server — each built from the shared `src/` layout.
-2. **`docker-compose.yml`:** extend the existing Postgres/RabbitMQ definition to orchestrate all five services (Gateway, Worker, MCP server, Postgres, RabbitMQ) on a private network, with health checks gating startup order.
-3. **Deployment validation:** `docker compose up --build` from a clean checkout, followed by an end-to-end request through the full stack, confirms inter-service communication (Gateway → RabbitMQ → Worker → MCP server → Postgres) without manual process management.
-4. **Load validation:** re-run the Locust concurrency suite (100+ simulated concurrent claimants) against the containerized stack instead of bare `localhost`, confirm the pessimistic locks in Phase 1 hold under contention without deadlocks, and publish the resulting throughput and P95 latency into the [System Performance & Telemetry](#system-performance--telemetry) table, replacing the current placeholder values.
+1. **Dockerfiles (done):** one slim `python:3.11` image per service — `docker/gateway.Dockerfile`, `docker/worker.Dockerfile` (also used, via command override, for the Recovery Sweeper and a one-shot `migrate` service), `docker/mcp_server.Dockerfile` — each installing only production dependencies (`pip install .`, not `.[dev]`) and running as a non-root user.
+2. **`docker-compose.yml` (done):** all seven services (`postgres`, `rabbitmq`, `migrate`, `mcp_server`, `worker`, `sweeper`, `gateway`) now run on a private `agentic_net` bridge network. The one-shot `migrate` service runs `alembic upgrade head` and gates the app services via `service_completed_successfully`.
+3. **Deployment validation (done):** `docker compose up --build` from a clean checkout brings all seven containers to a running state, with the Gateway and MCP server reachable through the network from the host (`/docs` on the gateway, `/sse` on the MCP server). One real bug was found and fixed in the process: RabbitMQ's healthcheck (`rabbitmq-diagnostics -q ping`) reported healthy before the AMQP listener on 5672 was actually accepting connections, so on the very first boot the `worker` and `sweeper` containers hit `Connect call failed`. Fixed by switching the healthcheck to `check_port_connectivity` (which verifies the listener itself, not just that the Erlang node is up) and adding a bounded `restart: on-failure:5` to the app services as defense-in-depth.
+4. **Load validation (not yet run):** re-run the Locust concurrency suite (100+ simulated concurrent claimants) against the containerized stack instead of bare `localhost`, confirm the pessimistic locks in Phase 1 hold under contention without deadlocks, and publish the resulting throughput and P95 latency into the [System Performance & Telemetry](#system-performance--telemetry) table, replacing the current placeholder values.
 
 This phase seals the local environment that Phase 1.B secures and Phase 1.D (below) and the AWS migration in [Phase 6](#phase-6--cloud-migration-aws-serverless-designed-not-yet-implemented) build on.
 
@@ -460,37 +460,27 @@ Fill in `.env` (see [Environment Variables](#environment-variables)).
 pip install -e .[dev]
 ```
 
-### 3. Start infrastructure
+### 3. Start the full stack
+
+```bash
+docker compose up --build
+```
+
+This builds and starts all seven services — `postgres`, `rabbitmq`, a one-shot `migrate` step (`alembic upgrade head`), `mcp_server`, `worker`, `sweeper`, and `gateway` — on a private network (Phase 1.C).
+
+API at `http://localhost:8000`, interactive docs at `http://localhost:8000/docs`. RabbitMQ management UI at `http://localhost:15672`.
+
+### Local development (without rebuilding containers)
+
+To iterate on Python code without rebuilding images each time, start only the infrastructure in Docker and run the services directly:
 
 ```bash
 docker compose up -d postgres rabbitmq
-```
-
-### 4. Apply migrations
-
-```bash
 alembic upgrade head
+python -m src.mcp_server.mcp_server      # terminal 2
+python -m src.worker.worker              # terminal 3
+uvicorn src.api.main:app --reload --port 8000  # terminal 4
 ```
-
-### 5. Start the MCP server
-
-```bash
-python -m src.mcp_server.mcp_server
-```
-
-### 6. Start the worker
-
-```bash
-python -m src.worker.worker
-```
-
-### 7. Start the API gateway
-
-```bash
-uvicorn src.api.main:app --reload --port 8000
-```
-
-API at `http://localhost:8000`, interactive docs at `http://localhost:8000/docs`.
 
 ---
 
@@ -587,7 +577,7 @@ Beyond the phases above, the following are candidate directions, not planned wor
 
 ## Known Limitations
 
-- Runs as locally-started processes today; `docker-compose.yml` covers only Postgres and RabbitMQ until Phase 1.C ships per-service Dockerfiles. Even once containerized, it remains single-node with no orchestration, autoscaling, or high availability until Phase 6.
+- Single-node `docker compose` deployment; no orchestration, autoscaling, or high availability until Phase 6.
 - No TLS between internal services; no credential rotation or secret manager (tokens are read from environment and files).
 - No multi-tenancy; one set of business rules per deployment.
 - A database superuser can still modify the audit table; the log is protected against the MCP service, not against a compromised host.

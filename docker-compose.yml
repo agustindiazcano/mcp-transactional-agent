@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -17,6 +15,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - agentic_net
 
   rabbitmq:
     image: rabbitmq:3-management
@@ -30,11 +30,113 @@ services:
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
-      test: rabbitmq-diagnostics -q ping
+      # check_port_connectivity (not `-q ping`) verifies the AMQP listener on 5672 is
+      # actually accepting connections — `ping` alone can pass before the listener binds,
+      # which raced app containers into a connection-refused on first boot.
+      test: rabbitmq-diagnostics -q check_port_connectivity
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 40s
+    networks:
+      - agentic_net
+
+  # One-shot migration runner: applies Alembic migrations against `postgres`,
+  # then exits. App services wait on it via `service_completed_successfully`.
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    container_name: agentic_migrate
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/agentic_engine
+    command: ["alembic", "upgrade", "head"]
+    restart: on-failure:5
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - agentic_net
+
+  mcp_server:
+    build:
+      context: .
+      dockerfile: docker/mcp_server.Dockerfile
+    container_name: agentic_mcp_server
+    env_file: .env
+    restart: on-failure:5
+    ports:
+      - "8080:8080"
+    networks:
+      - agentic_net
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    container_name: agentic_worker
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/agentic_engine
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      MCP_SERVER_URL: http://mcp_server:8080/sse
+    command: ["python", "-m", "src.worker.worker"]
+    restart: on-failure:5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      mcp_server:
+        condition: service_started
+    networks:
+      - agentic_net
+
+  sweeper:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    container_name: agentic_sweeper
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/agentic_engine
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    command: ["python", "-m", "src.worker.recovery_sweeper"]
+    restart: on-failure:5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - agentic_net
+
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/gateway.Dockerfile
+    container_name: agentic_gateway
+    env_file: .env
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    restart: on-failure:5
+    ports:
+      - "8000:8000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - agentic_net
 
 volumes:
   postgres_data:
   rabbitmq_data:
+
+networks:
+  agentic_net:
+    driver: bridge
