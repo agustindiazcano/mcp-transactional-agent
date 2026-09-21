@@ -1,12 +1,12 @@
 # Postmortem: Phase 1.C Load Test — MCP Transport Failures
 
 **Date:** 2026-09-21
-**Status:** Two bugs fixed, one open. Phase 1.C's load validation (`PENDING.md` Step 1) is blocked on the open bug.
-**Commits:** `4691f17` (fixes), `5e1ab07` (doc corrections)
+**Status:** Three MCP-adjacent bugs found. Two fixed and verified (`4691f17`). The third — the one that actually blocked every transaction — has been **root-caused** by a parallel debugging session; the fix is proposed but **not yet applied or verified** in this repository. Phase 1.C's load validation (`PENDING.md` Step 1) remains blocked until it is.
+**Commits:** `4691f17` (fixes to date), `5e1ab07` (doc corrections)
 
 ## Summary
 
-Attempting to run Phase 1.C's Locust load test against the full `docker compose` stack for the first time revealed that "deployment validation: done" — marked done earlier the same day based on HTTP reachability checks (`curl` to `/docs` and `/sse` from the host) — did not mean a real transaction could complete. Every transaction submitted through the containerized stack failed before reaching the point the load test exists to validate (the pessimistic-lock write). Two real, root-caused bugs in the MCP transport configuration were found and fixed. A third failure remains open after extensive isolated testing failed to reproduce it outside the running service.
+Attempting to run Phase 1.C's Locust load test against the full `docker compose` stack for the first time revealed that "deployment validation: done" — marked done earlier the same day based on HTTP reachability checks (`curl` to `/docs` and `/sse` from the host) — did not mean a real transaction could complete. Every transaction submitted through the containerized stack failed before reaching the point the load test exists to validate (the pessimistic-lock write). Two real, root-caused bugs in the MCP transport configuration were found and fixed by this session. A third failure resisted this session's own extensive isolated reproduction attempts entirely; it was subsequently root-caused by a **separate, parallel debugging session** using container-level isolation testing (see "Root Cause: Found" below) — a synchronous `ImportError` inside a guardrail call, raised while inside an `async with`-managed MCP session, that anyio's `TaskGroup` reports as a generic transport failure. That diagnosis is documented here for the record; this session did not independently apply or re-verify the proposed fix.
 
 **Net effect:** the load test has not yet produced a valid reading. No pessimistic-lock behavior under contention has actually been validated in a container environment. `Cost per Transaction` and `System Performance & Telemetry` in README.md remain placeholder values.
 
@@ -39,18 +39,37 @@ Phase 1.C's original deployment validation (documented as "done" in the commit t
 | 2 | Every message POST: `307 Temporary Redirect`, not followed by the client | `message_path="/message"` (no trailing slash) vs. Starlette `Mount`'s `<path>/<rest>` routing | Changed to `"/messages/"` (SDK default) | Fixed, `4691f17` |
 | 3 | Restarted Worker instantly flooded with the entire historical backlog, making clean re-testing impossible | No `prefetch_count` set on the Worker's RabbitMQ channel | `channel.set_qos(prefetch_count=1)` | Fixed, `4691f17` |
 | 4 | Every message: `relation "transactions" does not exist` (session-specific, not a code bug) | Integration test's `Base.metadata.drop_all()` teardown had wiped the dev DB schema without a corresponding `alembic upgrade head` | Full volume reset + re-migrate | Resolved for this session; the underlying test-hygiene gap is not fixed |
+| 5 | Every real transaction: `TaskGroup (1 sub-exception)` / `RemoteProtocolError` — **the actual blocker this whole postmortem is about** | `evaluate_decision()` (`src/agents/judge.py`) calls `get_llm(provider="groq", ...)` unguarded; `langchain-groq` isn't a declared dependency, so it `ImportError`s inside the MCP session's task group on every call, which anyio reports as a generic transport failure | Add `langchain-groq` to `pyproject.toml` (proposed) | **Diagnosed, not yet applied/verified** — see "Root Cause: Found" below |
 
-## Root Cause NOT Found (Open)
+## Root Cause: Found (by a parallel debugging session)
 
-**Symptom:** `httpx2.RemoteProtocolError: peer closed connection without sending complete message body (incomplete chunked read)`, raised client-side while awaiting the SSE-delivered response to `mcp_session.initialize()`. No corresponding error appears in the MCP server's logs for that connection.
+**Symptom:** `httpx2.RemoteProtocolError: peer closed connection without sending complete message body (incomplete chunked read)`, raised client-side while awaiting the SSE-delivered response to `mcp_session.initialize()`. No corresponding error appears in the MCP server's logs for that connection. This session's `init: true` (PID-1 signal handling) hypothesis, recorded in an earlier version of this document as the leading candidate, was **not the cause** — it was never tested, and the actual explanation is unrelated to PID 1 or Docker networking entirely.
 
-**Confirmed:** only the Worker container's actual entrypoint process (`CMD ["python", "-m", "src.worker.worker"]`, running as the container's PID 1) exhibits this failure. It failed on a freshly restarted container's very first message, with zero backlog, prefetch limited to 1, and the Recovery Sweeper stopped — ruling out every environmental confound found along the way.
+**The actual cause:** `src/agents/judge.py`'s `evaluate_decision()` calls `get_llm(provider="groq", temperature=0.0)` to construct Judge 2, unconditionally and with no `try/except` around the call:
 
-**Leading hypothesis, not yet tested:** PID-1-specific signal handling. A process running as PID 1 in a container with no init system does not get the kernel's normal default signal dispositions (notably around `SIGPIPE`/child reaping), which is a well-known class of Docker bugs. Docker Compose has a built-in fix for exactly this: setting `init: true` on a service runs a minimal init (tini) as PID 1 ahead of the application, restoring normal signal handling. This was identified as the most promising next step but **not tried** — this postmortem was written instead of continuing to debug further, per explicit direction to stop and document rather than keep going indefinitely.
+```python
+judge1_gemini = get_llm(provider="gemini", temperature=0.0)
+judge2_groq = get_llm(provider="groq", temperature=0.0)   # <- raises here, uncaught
+```
+
+`langchain-groq` is not in `pyproject.toml`'s dependencies (see `src/agents/prompt_guard.py`'s already-documented, separately-caught instance of the same gap). Inside `get_llm()`, that means `ChatGroq is None`, and the `"groq"` branch does `raise ImportError("langchain-groq is not installed")`. `prompt_guard.py` catches its own copy of this exact error and fails open, which is why that particular symptom never blocked anything. `evaluate_decision()` has no equivalent guard — the `ImportError` propagates straight out of it.
+
+`evaluate_decision()` is `await`ed from inside `src/worker/worker.py`'s `while retries < max_retries:` loop, which is itself inside `async with sse_client(...) as streams, ClientSession(...) as mcp_session:`. `sse_client` is implemented (`mcp/client/sse.py`) as an `@asynccontextmanager` wrapping `anyio.create_task_group()`, with two background tasks (`sse_reader`, `post_writer`) running concurrently with whatever code executes inside the `async with` block. When `evaluate_decision()`'s `ImportError` propagates up through that block, it is thrown back into the `sse_client` generator at its `yield` point — inside its own task group — which triggers the task group's standard behavior on an exception: cancel the still-running background tasks and collect whatever they raise. Cancelling `sse_reader` mid-read of the open SSE HTTP response is what produces the `RemoteProtocolError: peer closed connection` — a real symptom, but a *side effect* of the cancellation, not evidence of an actual network or transport problem. anyio bundles the original `ImportError` and/or the cancellation-driven error into an `ExceptionGroup`, which is exactly what `str()`s down to the generic message this session spent so long chasing: `"unhandled errors in a TaskGroup (1 sub-exception)"`. The real cause was never visible in that message because Python's default logging of an `ExceptionGroup` via `logger.error(f"...{e}")` (a plain `str()`, not `logger.exception(...)`) doesn't print the wrapped traceback.
+
+**This fully explains why this session's isolated reproduction attempts never reproduced it** (see "What We Ruled Out" below): none of those probe scripts ever called `evaluate_decision()` — they only tested `sse_client`/`ClientSession.initialize()` in isolation, so the one line that triggers the failure was never exercised. It also explains why fixing it requires no changes to networking, Docker, or the MCP transport configuration at all.
+
+**How it was actually found:** by writing a minimal, synchronous/async test script and running it *directly inside the already-running Worker container* to isolate connectivity/dependency verification from the application's own concurrency and control flow — deliberately separating "does the transport layer work" from "does the application's use of it work." That script proved the container *could* connect, `initialize()`, and list tools cleanly in isolation (the same conclusion this session's own probes reached, independently, via a similar technique). With the transport cleared, the remaining suspect was the application code path itself, which is what led to inspecting `evaluate_decision()` directly rather than the transport once more. This is now documented as a general practice — see [`docs/architecture/microservices_debugging_protocol.md`](../architecture/microservices_debugging_protocol.md).
+
+**Proposed fix (not yet applied in this repository):**
+1. Add `langchain-groq` to `pyproject.toml`'s `dependencies`.
+2. Rebuild the `worker` image and retest a real transaction end-to-end.
+3. Also revert the temporary `traceback.print_exception(...)` block added to `worker.py`'s outer exception handler during this investigation, once the fix is confirmed — it was a debugging aid, not intended to stay.
+
+This session did not apply or verify this fix; it only documents the diagnosis and the proposed change for whoever applies it next.
 
 ## What We Ruled Out
 
-Every one of the following was tested in isolation and **succeeded** (did not reproduce the failure), narrowing the problem down to something specific about the real, long-running entrypoint process rather than the MCP protocol exchange itself:
+Every one of the following was tested in isolation and **succeeded** (did not reproduce the failure). At the time, this narrowed the problem down to something specific about the real, long-running entrypoint process — which turned out to be the wrong axis entirely. The actual differentiator (see "Root Cause: Found" above) is that none of these ever called `evaluate_decision()`, the one code path that triggers the failure:
 
 - A single MCP session, opened and closed immediately (`docker exec` one-shot script).
 - The same, with the session held open for ~1s of simulated work before closing.
@@ -61,7 +80,7 @@ Every one of the following was tested in isolation and **succeeded** (did not re
 - The exact `queue.iterator()` + `async with message.process(ignore_processed=True)` consumption pattern `start_worker()` uses, processing 15 real messages from a real queue in one long-lived process.
 - Running the unmodified `src.worker.worker` module via `docker exec` inside the *same* running container (same image, same network, same environment variables — verified `MCP_SERVER_URL` resolves identically) instead of as the container's entrypoint.
 
-None of these reproduced the failure. The real, `docker compose up`-started `worker` service fails on nearly every attempt.
+None of these reproduced the failure. The real, `docker compose up`-started `worker` service fails on nearly every attempt — because, unlike every probe above, `process_message()` always reaches `evaluate_decision()`.
 
 ## Impact on the Roadmap
 
@@ -71,9 +90,9 @@ None of these reproduced the failure. The real, `docker compose up`-started `wor
 
 ## Recommended Next Steps
 
-1. **Try `init: true`** on the `worker` service (and, for consistency, the other app services) in `docker-compose.yml` first — cheap, well-understood, directly targets the one confirmed differentiator (PID-1-ness) between every failing case and every succeeding case.
-2. If that doesn't resolve it, capture a packet trace (`tcpdump` inside the container, or Wireshark against the Docker bridge network) during a real failure to see whether the TCP connection is actually reset by the peer or whether this is purely an application-layer read timing issue.
-3. Enable debug-level logging on both `mcp.client.sse` and `uvicorn.error`/`uvicorn.access` for a real failing run to capture more server-side detail than is currently logged.
-4. Consider whether pinning specific `mcp`/`httpx`/`uvicorn` versions (rather than floating latest via `pip install .`) changes the behavior — this environment's exact resolved versions were never recorded.
-5. Fix the two smaller findings regardless of the above: add `langchain-groq` to dependencies (or stop hardcoding `provider="groq"` in `prompt_guard.py` and respect `LLM_PROVIDER`), and give `src/api/main.py` a reused, pooled AMQP connection instead of one per request.
+1. **Apply and verify the proposed fix**: add `langchain-groq` to `pyproject.toml`'s dependencies, rebuild the `worker` image, and send a real transaction through the full containerized stack. Confirm it reaches `COMPLETED` or `PENDING_HUMAN_REVIEW` cleanly, with no `TaskGroup`/`RemoteProtocolError` in the logs. This is the one item that actually closes out this postmortem.
+2. Revert the temporary `traceback.print_exception(...)` debug block in `worker.py`'s outer exception handler once the fix is verified.
+3. **Decide deliberately** whether `evaluate_decision()`'s Groq dependency should be a hard requirement (add the package) or should degrade like `prompt_guard.py` does (wrap the `get_llm(provider="groq", ...)` call and fall back / fail open) — right now this is the *only* place in the codebase where a missing optional-provider package can silently take down an entire in-flight transaction instead of degrading. Worth a general rule: every `get_llm(provider=X, ...)` call site outside `llm_factory.py` itself should either declare `X`'s package as a hard dependency, or explicitly handle its absence the way `prompt_guard.py` already does.
+4. Re-run Phase 1.C's Step 1 Locust load test once the above is verified — this is the actual blocker that's been in the way since this postmortem started.
+5. Fix the Gateway's per-request AMQP connection (`src/api/main.py`) — a reused, pooled connection instead of one per request.
 6. Fix the integration-test teardown footgun (`Base.metadata.drop_all()` silently desyncing the dev DB from `alembic_version`) before it costs someone else the same hour of confusion it cost this session.
