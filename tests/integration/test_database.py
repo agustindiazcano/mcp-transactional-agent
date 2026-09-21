@@ -1,6 +1,6 @@
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_engine, get_session_maker
@@ -14,17 +14,18 @@ async def db_engine():
     # but since we need pgvector eventually, we use asyncpg against the local postgres.
     # For test isolation, we'll connect to the default DB for the test.
     engine = get_engine("postgresql+asyncpg://postgres:password@localhost:5432/agentic_engine")
-    
-    # Create all tables
+
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
-        
+
     yield engine
-    
-    # Teardown
+
+    # Never Base.metadata.drop_all(): that drops every table on Base (including
+    # tables other test files/the live app depend on), silently desyncing the
+    # dev DB from alembic_version -- see the Phase 1.C postmortem. Only clear
+    # this file's own rows.
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+        await conn.execute(text("TRUNCATE TABLE transactions RESTART IDENTITY CASCADE"))
     await engine.dispose()
 
 

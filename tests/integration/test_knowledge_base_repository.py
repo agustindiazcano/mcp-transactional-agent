@@ -26,15 +26,27 @@ def _unit_vector(hot_index: int) -> list[float]:
     return vec
 
 
-@pytest_asyncio.fixture
-async def db_engine():
-    engine = get_engine(settings.DATABASE_URL)
+async def _create_schema(engine) -> None:
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
-    yield engine
+
+
+async def _clear_knowledge_base(engine) -> None:
+    """Clear only the rows this test file inserts. Never Base.metadata.drop_all():
+    that drops every table on Base (including transactions, shared with the
+    live app), silently desyncing the dev DB from alembic_version until a
+    manual `alembic upgrade head` -- see the Phase 1.C postmortem."""
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+        await conn.execute(text("TRUNCATE TABLE knowledge_base RESTART IDENTITY CASCADE"))
+
+
+@pytest_asyncio.fixture
+async def db_engine():
+    engine = get_engine(settings.DATABASE_URL)
+    await _create_schema(engine)
+    yield engine
+    await _clear_knowledge_base(engine)
     await engine.dispose()
 
 
@@ -99,3 +111,37 @@ async def test_find_most_similar_orders_multiple_results_nearest_first(
     )
 
     assert [r.id for r in results] == [near.id, far.id]
+
+
+@pytest.mark.asyncio
+async def test_teardown_clears_rows_without_dropping_the_table_schema() -> None:
+    """Regression test for the Phase 1.C postmortem: the old teardown called
+    Base.metadata.drop_all(), which drops every table on Base (including
+    transactions) and silently desyncs the dev DB from alembic_version.
+    Teardown must only clear this file's own rows, never the schema."""
+    engine = get_engine(settings.DATABASE_URL)
+    await _create_schema(engine)
+
+    session_maker = get_session_maker(engine)
+    async with session_maker() as session:
+        await knowledge_base_repository.insert_chunk(
+            session,
+            source="teardown-regression.md",
+            source_tier="official",
+            content="Row that must be cleared, not schema-dropped.",
+            embedding=_unit_vector(0),
+        )
+        await session.commit()
+
+    await _clear_knowledge_base(engine)
+
+    async with engine.connect() as conn:
+        table_still_exists = await conn.scalar(
+            text("SELECT to_regclass('public.knowledge_base') IS NOT NULL")
+        )
+        row_count = await conn.scalar(text("SELECT count(*) FROM knowledge_base"))
+
+    assert table_still_exists is True
+    assert row_count == 0
+
+    await engine.dispose()

@@ -13,7 +13,10 @@ async def check_for_injection(user_input: str) -> bool:
     Returns True if an injection is detected (unsafe), False otherwise.
     """
     try:
-        # We explicitly request the Groq prompt guard model
+        # Deliberately hardcoded, not gated by LLM_PROVIDER: this is a static,
+        # ultra-low-latency pre-execution shield and must not inherit the
+        # provider configured for the heavy reasoning agent (segregation of
+        # duties, not an oversight — see PENDING.md).
         guard_model = get_llm(
             provider="groq", 
             temperature=0.0, 
