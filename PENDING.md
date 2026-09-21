@@ -37,7 +37,7 @@ Google Cloud offers new accounts a $300 USD trial credit for 90 days. The abstra
 - [ ] Exercise/validate the existing Vertex AI provider branch against real credentials while the trial credit is available.
 
 **Small, unscheduled findings:**
-- [ ] `tests/integration/test_worker.py::test_worker_judge_reject` fails against real infra: it asserts `evaluate_decision` is called exactly once, but the worker's self-correction loop correctly retries up to `MAX_LLM_RETRIES` (3) on REJECT before routing to `PENDING_HUMAN_REVIEW` — the test's assertion is stale, not the worker's behavior (confirmed by the log output: 3 correctly-logged retry attempts, correct final status). Discovered 2026-09-21 while running the full suite against real Postgres+RabbitMQ for the first time in a while (previously masked — this file's `db_engine` fixture needs live infra to even collect). Not fixed here; deselected from the coverage run below.
+- [x] `tests/integration/test_worker.py::test_worker_judge_reject` failed against real infra: it asserted `evaluate_decision` was called exactly once, but the worker's self-correction loop correctly retries up to `MAX_LLM_RETRIES` (3) on REJECT before routing to `PENDING_HUMAN_REVIEW` — the test's assertion was stale, not the worker's behavior. Discovered 2026-09-21 while running the full suite against real Postgres+RabbitMQ for the first time in a while (previously masked — this file's `db_engine` fixture needs live infra to even collect). Fixed (`fix/worker-judge-reject-retry-assertion`, commit `3b877fb`): asserts `MockJudge.call_count == settings.MAX_LLM_RETRIES` instead.
 
 ---
 
