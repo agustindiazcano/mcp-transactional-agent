@@ -9,11 +9,10 @@ Tests:
   2. One zombie row -> DELETE called, payload re-published to RabbitMQ.
 """
 import json
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -23,13 +22,13 @@ def _zombie_txn(request_id: str = "req-zombie-001", payload: dict | None = None)
     txn = MagicMock()
     txn.request_id = request_id
     txn.payload = payload or {"request_id": request_id, "claim_text": "refund 50"}
-    txn.updated_at = datetime(2000, 1, 1, tzinfo=timezone.utc)  # ancient
+    txn.updated_at = datetime(2000, 1, 1, tzinfo=UTC)  # ancient
     return txn
 
 
 def _make_db_session(zombie_rows: list) -> AsyncMock:
     session = AsyncMock()
-    session.delete = MagicMock()
+    session.delete = AsyncMock()
     session.commit = AsyncMock()
 
     scalars_result = MagicMock()

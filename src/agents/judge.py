@@ -47,9 +47,9 @@ async def _run_single_judge(llm: Any, messages: list[Any]) -> dict[str, Any]:
             
         try:
             result = json.loads(content)
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError:
             logger.error(f"Failed to parse JSON. Raw LLM output: {response.content}")
-            raise e
+            raise
         
         # Validate format
         if "verdict" not in result or result["verdict"] not in ["APPROVE", "REJECT"]:
@@ -97,9 +97,9 @@ async def evaluate_decision(action_name: str, action_args: dict[str, Any], conte
     
     res1, res2 = results
     
-    if isinstance(res1, Exception):
+    if isinstance(res1, BaseException):
         res1 = {"verdict": "REJECT", "reason": f"Gemini Judge Exception: {res1!s}"}
-    if isinstance(res2, Exception):
+    if isinstance(res2, BaseException):
         res2 = {"verdict": "REJECT", "reason": f"Groq Judge Exception: {res2!s}"}
         
     v1 = res1.get("verdict")

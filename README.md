@@ -6,7 +6,7 @@
 
 An asynchronous workflow engine for running LLM agents against transactional business logic (refunds, fraud checks) without giving the model direct access to the database or internal APIs.
 
-It addresses three problems that appear when LLMs are placed in a write path: non-deterministic output, uncontrolled access to side-effecting operations, and synchronous blocking on slow inference calls. The engine combines an event-driven pipeline (FastAPI → RabbitMQ → worker), a Model Context Protocol (MCP) server as the only route to side-effecting tools, and retrieval over business rules stored in PostgreSQL/pgvector.
+It addresses three problems that appear when LLMs are placed in a write path: non-deterministic output, uncontrolled access to side-effecting operations, and synchronous blocking on slow inference calls. The engine combines an event-driven pipeline (FastAPI → RabbitMQ → worker) with a Model Context Protocol (MCP) server as the only route to side-effecting tools. Retrieval over business rules stored in PostgreSQL/pgvector is planned (Phase 1.D), not yet built.
 
 The project also examines a second question: **how much of an AI system's decision-making can be made deterministic and auditable instead of probabilistic?** Later phases add a rule-based confidence layer (fuzzy scoring and a belief rule base) and a drift-detection layer over quality metrics. The direction is consistent throughout: use an explicit, inspectable mechanism wherever one can do the job, and use the LLM only where symbolic reasoning cannot replace it.
 
@@ -16,7 +16,7 @@ The project also examines a second question: **how much of an AI system's decisi
 
 **What this is**
 
-- A feature-complete core engine that runs locally under Docker Compose, with unit tests, integration tests against real PostgreSQL and RabbitMQ, and failure-injection tests.
+- A feature-complete core engine that runs locally under `docker compose` (Phase 1.C), with unit tests, integration tests against real PostgreSQL and RabbitMQ, and failure-injection tests.
 - A reference architecture with documented design decisions (see [Architecture Decision Records](#architecture-decision-records)).
 
 **What this is not (yet)**
@@ -35,6 +35,7 @@ The project also examines a second question: **how much of an AI system's decisi
 | **Messaging** | RabbitMQ, aio-pika |
 | **State & Persistence** | PostgreSQL, pgvector, SQLAlchemy (async), Alembic |
 | **AI & Orchestration** | LangChain, Model Context Protocol (MCP) |
+| **RAG Ingestion (Phase 1.D)** | boto3, Amazon Titan Embeddings |
 | **LLM Providers** | OpenAI (GPT-4o), Google Vertex AI, Gemini AI Studio, AWS Bedrock, Groq |
 | **LLM Evaluation & Tracing** | TruLens, Langfuse (optional), promptfoo |
 | **Testing** | Pytest, pytest-cov, Locust |
@@ -46,12 +47,15 @@ The project also examines a second question: **how much of an AI system's decisi
 
 | Phase | Focus | Status |
 |---|---|---|
-| **Phase 1** | Core engine: event-driven pipeline, MCP, RAG, LLM evaluation | Feature-complete, running locally |
+| **Phase 1** | Core engine: event-driven pipeline, MCP, guardrails, concurrency control | Feature-complete, running locally |
 | **Phase 1.B** | MCP security boundary: authn, per-tool authz, validation, rate limiting, audit log | In progress |
+| **Phase 1.C** | Containerized local deployment: per-service Dockerfiles, full `docker-compose` orchestration | Dockerfiles + orchestration + deployment validation done; load validation (Locust) not yet run |
+| **Phase 1.D** | RAG over business rules: pgvector + AWS Bedrock (Titan Embeddings) | Not started |
 | **Phase 2** | Confidence layer: fuzzy scoring + belief rule base | In progress |
 | **Phase 3** | Quality drift detection (pluggable detector) | Designed, not yet implemented |
 | **Phase 4** | Read-only operations dashboard | Designed, not yet implemented |
 | **Phase 5** | Offline comparison: Keras MLP vs. rule base | Designed, not yet implemented |
+| **Phase 6** | Cloud migration: AWS Serverless (API Gateway, SQS, Lambda) | Designed, not yet implemented |
 
 ---
 
@@ -81,6 +85,9 @@ The project also examines a second question: **how much of an AI system's decisi
 7. **Self-Correction Loop:** If the base judges reject a formatting or logic error, the feedback is routed back to the primary agent for self-correction up to `MAX_LLM_RETRIES`.
 8. **Cascade Architecture (Supreme Court):** If the base judges disagree or repeatedly reject, the transaction escalates to a Supreme Court Judge (Gemini 3.5 Flash) for a final tie-breaking decision before falling back to `PENDING_HUMAN_REVIEW`.
 9. **Provider routing:** Abstract Factory for swapping LLM providers per component, with explicit temperature control.
+10. **Concurrency control:** Pessimistic row locking (`SELECT ... FOR UPDATE`) plus a `UniqueConstraint` on `request_id` prevent two workers from processing the same transaction; a background Recovery Sweeper (`FOR UPDATE SKIP LOCKED`) detects `PROCESSING` rows abandoned by a crashed worker and re-queues them.
+
+**Completed in this build sequence:** pessimistic locking and integrity constraints (step 10), the Recovery Sweeper (step 10), the Prompt Guard pre-execution shield (step 5), and the Supreme Court cascade judge (step 8).
 
 ### 1. Provider-Agnostic LLM Routing
 
@@ -117,10 +124,7 @@ The LLM never touches the database or internal APIs. It reasons about the reques
 
 ### 4. Retrieval over Business Rules
 
-Before calling a transactional tool, the agent retrieves the relevant business rules.
-
-- **Vector store:** PostgreSQL with `pgvector`. Embeddings live next to transaction data, so semantic search and business-state queries can run in the same transaction.
-- **Chunking:** Recursive character splitting with overlap, to keep rule clauses intact across chunk boundaries.
+Before calling a transactional tool, the agent is designed to retrieve the relevant business rules by similarity search. This retrieval path is **not yet implemented** — no `pgvector` extension is enabled, no vector column exists on any model, and no embedding pipeline exists yet. Building it is tracked as [Phase 1.D](#phase-1d--rag-over-business-rules-pgvector--aws-bedrock-not-started), below. Phase 1 currently runs without retrieved context.
 
 ### 5. Evaluation and Regression
 
@@ -170,6 +174,37 @@ An injected instruction can still influence which of the *allowed* tools the age
 | A worker identity calling tools outside its role | Traffic interception (no TLS between services yet) |
 | Runaway agent loops issuing repeated tool calls | Credential rotation and secret management |
 | Prompt injection through retrieved documents | Model-provider-side attacks |
+
+---
+
+## Phase 1.C — Containerized Local Deployment (Deployment validation done; load validation pending)
+
+### Problem
+
+Phase 1 ran as four processes started by hand in separate terminals (Postgres, RabbitMQ, MCP server, worker, gateway). `docker-compose.yml` orchestrated only the two infrastructure dependencies (`postgres`, `rabbitmq`); there were no Dockerfiles and no compose entries for the Gateway, Worker, or MCP server themselves, so the "independent services" boundary Phase 1 is built around (see the [HTTP/SSE ADR](#why-httpsse-for-mcp-transport-not-stdio)) was never exercised by an actual deployment.
+
+### Scope
+
+1. **Dockerfiles (done):** one slim `python:3.11` image per service — `docker/gateway.Dockerfile`, `docker/worker.Dockerfile` (also used, via command override, for the Recovery Sweeper and a one-shot `migrate` service), `docker/mcp_server.Dockerfile` — each installing only production dependencies (`pip install .`, not `.[dev]`) and running as a non-root user.
+2. **`docker-compose.yml` (done):** all seven services (`postgres`, `rabbitmq`, `migrate`, `mcp_server`, `worker`, `sweeper`, `gateway`) now run on a private `agentic_net` bridge network. The one-shot `migrate` service runs `alembic upgrade head` and gates the app services via `service_completed_successfully`.
+3. **Deployment validation (done):** `docker compose up --build` from a clean checkout brings all seven containers to a running state, with the Gateway and MCP server reachable through the network from the host (`/docs` on the gateway, `/sse` on the MCP server). One real bug was found and fixed in the process: RabbitMQ's healthcheck (`rabbitmq-diagnostics -q ping`) reported healthy before the AMQP listener on 5672 was actually accepting connections, so on the very first boot the `worker` and `sweeper` containers hit `Connect call failed`. Fixed by switching the healthcheck to `check_port_connectivity` (which verifies the listener itself, not just that the Erlang node is up) and adding a bounded `restart: on-failure:5` to the app services as defense-in-depth.
+4. **Load validation (not yet run):** re-run the Locust concurrency suite (100+ simulated concurrent claimants) against the containerized stack instead of bare `localhost`, confirm the pessimistic locks in Phase 1 hold under contention without deadlocks, and publish the resulting throughput and P95 latency into the [System Performance & Telemetry](#system-performance--telemetry) table, replacing the current placeholder values.
+
+This phase seals the local environment that Phase 1.B secures and Phase 1.D (below) and the AWS migration in [Phase 6](#phase-6--cloud-migration-aws-serverless-designed-not-yet-implemented) build on.
+
+---
+
+## Phase 1.D — RAG over Business Rules (pgvector + AWS Bedrock) (Not started)
+
+### Problem
+
+Phase 1's ["Retrieval over Business Rules"](#4-retrieval-over-business-rules) design describes an agent that looks up relevant policy text before calling a transactional tool. That retrieval path does not exist yet: `pgvector` is not enabled, no model has an embedding column, and there is no ingestion pipeline. Today the agent reasons only from the prompt and the tool arguments.
+
+### Scope
+
+1. **Enable `pgvector`:** an Alembic migration activates the extension and adds the embedding column(s) needed for similarity search.
+2. **Embeddings module:** a `boto3`-based script vectorizes business documents (refund and warranty policy text) using Amazon Titan Embeddings and inserts them into `pgvector`, reusing the existing `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` credentials.
+3. **Dynamic context injection:** before the primary agent call (when `LLM_PROVIDER=bedrock`), the Worker runs a cosine-similarity search over `pgvector` and injects the matched policy text into the system prompt.
 
 ---
 
@@ -223,7 +258,9 @@ See the ADR on drift detection for why EWMA is the default.
 The auditability from Phases 1.B and 2 currently lives in logs and tables. Phase 4 is a small read-only UI that makes it visible.
 
 - **Screens:** transaction monitor (status, judge verdict, rule-base verdict, with `PENDING_HUMAN_REVIEW` highlighted); decision inspector (rules fired, belief degrees, inputs, audit entries); quality trend (raw scores vs. detector output and alerts).
-- **Stack:** React, TypeScript, Vite, TanStack Query, Recharts.
+- **Stack:** React, TypeScript, Vite, TanStack Query, Recharts, Tailwind CSS.
+- **Real-time updates:** the transaction table reflects new/changed rows via WebSocket, SSE, or polling against the read-only endpoints — mechanism to be decided during implementation.
+- **Visual metrics:** throughput, P95 latency, and approved-vs-rejected refund rate, sourced from the same tables the [Cost per Transaction](#cost-per-transaction) and [System Performance & Telemetry](#system-performance--telemetry) sections report manually today.
 - **In scope:** read-only `GET` endpoints under `src/api/routers/`; the UI is an ordinary API consumer.
 - **Out of scope:** write actions, its own auth system, global state libraries, direct access to the database, MCP tools, or the confidence and observability modules.
 
@@ -237,6 +274,19 @@ An offline experiment that tests the project's core argument instead of assertin
 - **Evaluation:** precision, recall, and F1 on the same labeled cases used to validate the rules.
 - **Tracking:** MLflow records hyperparameters, metrics, and the model artifact per run, so each prediction is attributable to a specific model version.
 - **Constraint:** the MLP never participates in the approval path. Its predictions are logged next to the rule-base verdict for comparison only, and surfaced as a panel in the Phase 4 dashboard.
+
+---
+
+## Phase 6 — Cloud Migration (AWS Serverless) (Designed, not yet implemented)
+
+The end state for this project is not a container running on one machine; it is a deployment that costs approximately $5/month, or $0 within free-tier limits, and survives the machine being turned off. Phase 6 re-targets the Phase 1.C container topology at managed AWS services once the local stack, its security boundary, and its load characteristics are proven.
+
+- **IAM and Bedrock:** least-privilege IAM policies scoped to the foundation models the project actually invokes, plus VPC PrivateLink endpoints so inference traffic does not leave the VPC.
+- **Serverless topology:** FastAPI Gateway → API Gateway, RabbitMQ → SQS, Worker → Lambda.
+- **External database:** a serverless PostgreSQL provider (Neon or Supabase) with `pgvector` enabled, chosen to keep the always-on cost at or near $0.
+- **Re-test of load:** repeat the Phase 1.C load validation against the AWS deployment and compare throughput/latency against the local baseline.
+
+This phase depends on Phase 1.C (containerization) and Phase 1.D (pgvector/Bedrock already integrated locally) being complete first.
 
 ---
 
@@ -410,37 +460,27 @@ Fill in `.env` (see [Environment Variables](#environment-variables)).
 pip install -e .[dev]
 ```
 
-### 3. Start infrastructure
+### 3. Start the full stack
+
+```bash
+docker compose up --build
+```
+
+This builds and starts all seven services — `postgres`, `rabbitmq`, a one-shot `migrate` step (`alembic upgrade head`), `mcp_server`, `worker`, `sweeper`, and `gateway` — on a private network (Phase 1.C).
+
+API at `http://localhost:8000`, interactive docs at `http://localhost:8000/docs`. RabbitMQ management UI at `http://localhost:15672`.
+
+### Local development (without rebuilding containers)
+
+To iterate on Python code without rebuilding images each time, start only the infrastructure in Docker and run the services directly:
 
 ```bash
 docker compose up -d postgres rabbitmq
-```
-
-### 4. Apply migrations
-
-```bash
 alembic upgrade head
+python -m src.mcp_server.mcp_server      # terminal 2
+python -m src.worker.worker              # terminal 3
+uvicorn src.api.main:app --reload --port 8000  # terminal 4
 ```
-
-### 5. Start the MCP server
-
-```bash
-python -m src.mcp_server.mcp_server
-```
-
-### 6. Start the worker
-
-```bash
-python -m src.worker.worker
-```
-
-### 7. Start the API gateway
-
-```bash
-uvicorn src.api.main:app --reload --port 8000
-```
-
-API at `http://localhost:8000`, interactive docs at `http://localhost:8000/docs`.
 
 ---
 
@@ -537,7 +577,7 @@ Beyond the phases above, the following are candidate directions, not planned wor
 
 ## Known Limitations
 
-- Single-node Docker Compose deployment; no orchestration, autoscaling, or high availability.
+- Single-node `docker compose` deployment; no orchestration, autoscaling, or high availability until Phase 6.
 - No TLS between internal services; no credential rotation or secret manager (tokens are read from environment and files).
 - No multi-tenancy; one set of business rules per deployment.
 - A database superuser can still modify the audit table; the log is protected against the MCP service, not against a compromised host.

@@ -1,6 +1,7 @@
 import structlog
-from src.agents.llm_factory import get_llm
 from langchain_core.messages import HumanMessage
+
+from src.agents.llm_factory import get_llm
 
 logger = structlog.get_logger(__name__)
 
