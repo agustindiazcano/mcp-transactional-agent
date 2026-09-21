@@ -35,7 +35,7 @@ The project also examines a second question: **how much of an AI system's decisi
 | **Messaging** | RabbitMQ, aio-pika |
 | **State & Persistence** | PostgreSQL, pgvector, SQLAlchemy (async), Alembic |
 | **AI & Orchestration** | LangChain, Model Context Protocol (MCP) |
-| **RAG Ingestion (Phase 1.D)** | boto3, Amazon Titan Embeddings |
+| **RAG Ingestion (Phase 1.D)** | Provider-agnostic embeddings (Gemini `text-embedding-004` by default), `pgvector` — Amazon Titan Embeddings deferred to Phase 6 |
 | **LLM Providers** | OpenAI (GPT-4o), Google Vertex AI, Gemini AI Studio, AWS Bedrock, Groq |
 | **LLM Evaluation & Tracing** | TruLens, Langfuse (optional), promptfoo |
 | **Testing** | Pytest, pytest-cov, Locust |
@@ -50,7 +50,7 @@ The project also examines a second question: **how much of an AI system's decisi
 | **Phase 1** | Core engine: event-driven pipeline, MCP, guardrails, concurrency control | Feature-complete, running locally |
 | **Phase 1.B** | MCP security boundary: authn, per-tool authz, validation, rate limiting, audit log | In progress |
 | **Phase 1.C** | Containerized local deployment: per-service Dockerfiles, full `docker-compose` orchestration | Dockerfiles + orchestration + deployment validation done; load validation (Locust) not yet run |
-| **Phase 1.D** | RAG over business rules: pgvector + AWS Bedrock (Titan Embeddings) | Not started |
+| **Phase 1.D** | RAG over business rules: pgvector + provider-agnostic embeddings (Bedrock Titan swap deferred to Phase 6) | In progress |
 | **Phase 2** | Confidence layer: fuzzy scoring + belief rule base | In progress |
 | **Phase 3** | Quality drift detection (pluggable detector) | Designed, not yet implemented |
 | **Phase 4** | Read-only operations dashboard | Designed, not yet implemented |
@@ -124,7 +124,7 @@ The LLM never touches the database or internal APIs. It reasons about the reques
 
 ### 4. Retrieval over Business Rules
 
-Before calling a transactional tool, the agent is designed to retrieve the relevant business rules by similarity search. This retrieval path is **not yet implemented** — no `pgvector` extension is enabled, no vector column exists on any model, and no embedding pipeline exists yet. Building it is tracked as [Phase 1.D](#phase-1d--rag-over-business-rules-pgvector--aws-bedrock-not-started), below. Phase 1 currently runs without retrieved context.
+Before calling a transactional tool, the agent is designed to retrieve the relevant business rules by similarity search. This retrieval path is **not yet implemented** — no `pgvector` extension is enabled, no vector column exists on any model, and no embedding pipeline exists yet. Building it is tracked as [Phase 1.D](#phase-1d--rag-over-business-rules-pgvector-provider-agnostic-embeddings-in-progress), below. Phase 1 currently runs without retrieved context.
 
 ### 5. Evaluation and Regression
 
@@ -194,17 +194,31 @@ This phase seals the local environment that Phase 1.B secures and Phase 1.D (bel
 
 ---
 
-## Phase 1.D — RAG over Business Rules (pgvector + AWS Bedrock) (Not started)
+## Phase 1.D — RAG over Business Rules (pgvector, provider-agnostic embeddings) (In progress)
 
 ### Problem
 
 Phase 1's ["Retrieval over Business Rules"](#4-retrieval-over-business-rules) design describes an agent that looks up relevant policy text before calling a transactional tool. That retrieval path does not exist yet: `pgvector` is not enabled, no model has an embedding column, and there is no ingestion pipeline. Today the agent reasons only from the prompt and the tool arguments.
 
+### RAG is a pattern; AWS Bedrock is a provider — this phase deliberately decouples the two
+
+Earlier drafts of this phase tied the embedding pipeline to AWS Bedrock (Titan Embeddings). That conflates two independent things: **Retrieval-Augmented Generation** is an architecture pattern (embed → store → similarity search → inject into the prompt), and **AWS Bedrock** is one possible LLM/embeddings provider. Building both at once means getting stuck configuring IAM permissions in the AWS console instead of writing and validating the actual retrieval code.
+
+So Phase 1.D builds **Vector Search and RAG against infrastructure already running locally** — the same PostgreSQL instance the transactional engine already uses, and the Gemini/OpenAI credentials already present in `.env` — with no dependency on an AWS account. Once this works end-to-end on a developer machine, the project can claim RAG and Vector Search honestly. Swapping the embeddings provider to Amazon Titan is a separate, later concern that belongs to [Phase 6](#phase-6--cloud-migration-aws-serverless-designed-not-yet-implemented) (cloud migration), not a prerequisite for Phase 1.D. See the ADR below for the full rationale.
+
+**What "Vector Search" concretely means here:** not a lexical `LIKE '%refund%'` match, but converting text into coordinates in embedding space and retrieving the nearest ones by cosine distance — in this project, literally this query against the `knowledge_base` table:
+
+```sql
+SELECT content FROM knowledge_base ORDER BY embedding <-> :claim_vector LIMIT 1;
+```
+
+(`<->` is `pgvector`'s cosine-distance operator — that operator call is the actual "Vector Search.")
+
 ### Scope
 
-1. **Enable `pgvector`:** an Alembic migration activates the extension and adds the embedding column(s) needed for similarity search.
-2. **Embeddings module:** a `boto3`-based script vectorizes business documents (refund and warranty policy text) using Amazon Titan Embeddings and inserts them into `pgvector`, reusing the existing `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` credentials.
-3. **Dynamic context injection:** before the primary agent call (when `LLM_PROVIDER=bedrock`), the Worker runs a cosine-similarity search over `pgvector` and injects the matched policy text into the system prompt.
+1. **Enable `pgvector` + `knowledge_base` table:** an Alembic migration activates the extension and adds a `knowledge_base` table (`content`, `source`, `source_tier`, `embedding`, timestamps) — the same `source_tier`/freshness columns Phase 2's fuzzy layer will need as inputs.
+2. **Embeddings module:** a script vectorizes business documents (starting with a refund-policy Markdown file) using the embeddings API of whichever provider is already configured (Gemini `text-embedding-004`, 768 dimensions, by default — matching the provider already used elsewhere in this project) and inserts them into `knowledge_base`.
+3. **Dynamic context injection:** before the primary agent call — regardless of which `LLM_PROVIDER` answers — the Worker runs a cosine-similarity search over `knowledge_base` and injects the matched policy text into the system prompt. This is intentionally not gated on `LLM_PROVIDER=bedrock`; retrieval is orthogonal to which model answers.
 
 ---
 
@@ -282,11 +296,12 @@ An offline experiment that tests the project's core argument instead of assertin
 The end state for this project is not a container running on one machine; it is a deployment that costs approximately $5/month, or $0 within free-tier limits, and survives the machine being turned off. Phase 6 re-targets the Phase 1.C container topology at managed AWS services once the local stack, its security boundary, and its load characteristics are proven.
 
 - **IAM and Bedrock:** least-privilege IAM policies scoped to the foundation models the project actually invokes, plus VPC PrivateLink endpoints so inference traffic does not leave the VPC.
+- **Embeddings provider swap:** migrate Phase 1.D's embeddings pipeline from Gemini/OpenAI to Amazon Titan Embeddings via Bedrock, now that the rest of the topology is on AWS. Deliberately not part of Phase 1.D itself — see that phase's ADR for why.
 - **Serverless topology:** FastAPI Gateway → API Gateway, RabbitMQ → SQS, Worker → Lambda.
 - **External database:** a serverless PostgreSQL provider (Neon or Supabase) with `pgvector` enabled, chosen to keep the always-on cost at or near $0.
 - **Re-test of load:** repeat the Phase 1.C load validation against the AWS deployment and compare throughput/latency against the local baseline.
 
-This phase depends on Phase 1.C (containerization) and Phase 1.D (pgvector/Bedrock already integrated locally) being complete first.
+This phase depends on Phase 1.C (containerization) and Phase 1.D (pgvector + a working embeddings pipeline, provider-agnostic, already integrated locally) being complete first.
 
 ---
 
@@ -542,6 +557,10 @@ The audit table has to exist anyway, and counting recent rows in it gives a rate
 ### Why pgvector over a dedicated vector database?
 
 Embeddings live in the same PostgreSQL instance as transaction data, so a single transaction can join semantic search results with live business state. A separate vector database would require a distributed join.
+
+### Why is Phase 1.D's RAG decoupled from AWS Bedrock? (Phase 1.D vs. Phase 6)
+
+RAG (embed → store → similarity search → inject into the prompt) is an architecture pattern; AWS Bedrock is one possible provider of the embedding model inside that pattern. Coupling the two means Phase 1.D can't be validated without first setting up AWS IAM policies and Bedrock model access — infrastructure work that has nothing to do with proving the retrieval logic itself is correct. Phase 1.D instead targets infrastructure already running locally (PostgreSQL/`pgvector`) and an embeddings API already configured (Gemini, matching the provider used elsewhere in the project). Swapping the embeddings call to Amazon Titan is a small, isolated change behind the same interface once the rest of the stack is genuinely moving to AWS — that's Phase 6, not a Phase 1.D prerequisite.
 
 ### Why a cheap, fast model for the judge?
 
