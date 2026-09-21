@@ -23,8 +23,9 @@ Respond strictly in valid JSON format with exactly these two keys:
 }
 """
 
-async def _run_single_judge(llm: Any, messages: list[Any]) -> dict[str, Any]:
+async def _run_single_judge(provider: str, temperature: float, messages: list[Any]) -> dict[str, Any]:
     try:
+        llm = get_llm(provider=provider, temperature=temperature)
         response = await llm.ainvoke(messages)
         content_raw = response.content
         
@@ -71,11 +72,7 @@ async def evaluate_decision(action_name: str, action_args: dict[str, Any], conte
     Returns a dictionary with 'verdict' and 'reason'.
     """
     import asyncio
-    
-    # Instantiate the two strict judges (temperature=0.0 for determinism)
-    judge1_gemini = get_llm(provider="gemini", temperature=0.0)
-    judge2_groq = get_llm(provider="groq", temperature=0.0)
-    
+
     user_prompt = (
         f"Proposed Action: {action_name}\n"
         f"Arguments: {json.dumps(action_args)}\n"
@@ -88,10 +85,13 @@ async def evaluate_decision(action_name: str, action_args: dict[str, Any], conte
         HumanMessage(content=user_prompt)
     ]
     
-    # Run both judges concurrently
+    # Run both judges concurrently (temperature=0.0 for determinism).
+    # LLM construction happens inside _run_single_judge so a missing optional
+    # provider package (e.g. langchain-groq) fails that judge closed to REJECT
+    # instead of raising out of evaluate_decision().
     results = await asyncio.gather(
-        _run_single_judge(judge1_gemini, messages),
-        _run_single_judge(judge2_groq, messages),
+        _run_single_judge("gemini", 0.0, messages),
+        _run_single_judge("groq", 0.0, messages),
         return_exceptions=True
     )
     
@@ -111,8 +111,7 @@ async def evaluate_decision(action_name: str, action_args: dict[str, Any], conte
         logger.warning(f"Double Judge REJECT or disagreement detected (Gemini={v1}, Groq={v2}). Escalating to Supreme Court Judge...")
         try:
             # Supreme Court tie-breaker
-            supreme_judge = get_llm(provider="gemini", temperature=0.0)
-            supreme_res = await _run_single_judge(supreme_judge, messages)
+            supreme_res = await _run_single_judge("gemini", 0.0, messages)
             sv = supreme_res.get("verdict")
             
             if sv == "APPROVE":

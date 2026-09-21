@@ -2,10 +2,10 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, SystemMessage
 
 # We import the module that doesn't exist yet to trigger the red state
-from src.agents.judge import evaluate_decision
+from src.agents.judge import _run_single_judge, evaluate_decision
 
 
 @pytest.mark.asyncio
@@ -55,3 +55,51 @@ async def test_judge_reject():
         )
         # judge1_gemini + judge2_groq + the Supreme Court tie-breaker.
         assert mock_llm.ainvoke.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_run_single_judge_fails_closed_on_construction_error():
+    """_run_single_judge must catch an LLM construction failure (e.g. a missing
+    optional provider package) the same way it already catches an invocation
+    failure. Regression test for the Phase 1.C postmortem: an unguarded
+    get_llm(provider="groq", ...) call used to raise ImportError straight out
+    of evaluate_decision() instead of failing safe to REJECT."""
+    with patch(
+        "src.agents.judge.get_llm",
+        side_effect=ImportError("langchain-groq is not installed"),
+    ):
+        result = await _run_single_judge("groq", 0.0, [SystemMessage(content="x")])
+
+    assert result == {
+        "verdict": "REJECT",
+        "reason": "System Guardrail Error: langchain-groq is not installed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_judge_groq_construction_failure_does_not_crash_evaluate_decision():
+    """Regression test for the Phase 1.C postmortem: a missing langchain-groq
+    package must not crash evaluate_decision() with an uncaught ImportError
+    that propagates out of the MCP session (the actual root cause documented
+    in docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md).
+    """
+
+    def fake_get_llm(*, provider: str, temperature: float = 0.0, **_: object) -> AsyncMock:
+        if provider == "groq":
+            raise ImportError("langchain-groq is not installed")
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke.return_value = AIMessage(
+            content=json.dumps({"verdict": "APPROVE", "reason": "Looks fine."})
+        )
+        return mock_llm
+
+    with patch("src.agents.judge.get_llm", side_effect=fake_get_llm):
+        result = await evaluate_decision(
+            action_name="execute_refund",
+            action_args={"transaction_id": "123", "amount": 50.0},
+            context={"user_id": "user1"},
+        )
+
+    # Must return a well-formed verdict dict; must never raise ImportError.
+    assert result["verdict"] in ("APPROVE", "REJECT")
+    assert "reason" in result

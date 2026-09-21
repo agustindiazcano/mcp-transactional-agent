@@ -20,6 +20,7 @@ dependencies = [
     "pydantic-settings",
     "langchain-core",
     "langchain-google-genai",
+    "langchain-groq",
     "mcp",
     "aio-pika",
     "sqlalchemy",
