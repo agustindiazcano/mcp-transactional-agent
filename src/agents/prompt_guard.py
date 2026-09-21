@@ -2,6 +2,7 @@ import structlog
 from langchain_core.messages import HumanMessage
 
 from src.agents.llm_factory import get_llm
+from src.agents.token_usage import extract_usage
 
 logger = structlog.get_logger(__name__)
 
@@ -29,7 +30,11 @@ async def check_for_injection(user_input: str) -> bool:
         
         logger.info("Scanning input for prompt injection...", length=len(user_input))
         response = await guard_model.ainvoke(messages)
-        
+
+        usage = extract_usage(response)
+        if usage is not None:
+            logger.info("llm_token_usage", stage="prompt_guard", provider="groq", **usage)
+
         output_text = str(response.content).strip().lower()
         
         # The model typically returns safe, unsafe, injection, or jailbreak

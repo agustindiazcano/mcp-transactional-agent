@@ -68,7 +68,7 @@ async def test_run_single_judge_fails_closed_on_construction_error():
         "src.agents.judge.get_llm",
         side_effect=ImportError("langchain-groq is not installed"),
     ):
-        result = await _run_single_judge("groq", 0.0, [SystemMessage(content="x")])
+        result = await _run_single_judge("groq", 0.0, [SystemMessage(content="x")], stage="judge2")
 
     assert result == {
         "verdict": "REJECT",
@@ -103,3 +103,44 @@ async def test_judge_groq_construction_failure_does_not_crash_evaluate_decision(
     # Must return a well-formed verdict dict; must never raise ImportError.
     assert result["verdict"] in ("APPROVE", "REJECT")
     assert "reason" in result
+
+
+@pytest.mark.asyncio
+async def test_run_single_judge_logs_token_usage_when_present():
+    """Cost measurement (PENDING.md Step 1): a response carrying
+    usage_metadata must be logged via usage_logger for later cost
+    calculation."""
+    mock_llm = AsyncMock()
+    mock_llm.ainvoke.return_value = AIMessage(
+        content=json.dumps({"verdict": "APPROVE", "reason": "ok"}),
+        usage_metadata={"input_tokens": 100, "output_tokens": 20, "total_tokens": 120},
+    )
+
+    with patch("src.agents.judge.get_llm", return_value=mock_llm), \
+         patch("src.agents.judge.usage_logger") as mock_usage_logger:
+        await _run_single_judge("gemini", 0.0, [SystemMessage(content="x")], stage="judge1")
+
+    mock_usage_logger.info.assert_called_once_with(
+        "llm_token_usage",
+        stage="judge1",
+        provider="gemini",
+        input_tokens=100,
+        output_tokens=20,
+        total_tokens=120,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_single_judge_does_not_log_usage_when_absent():
+    """Every existing mocked judge response (a bare AIMessage(content=...))
+    carries no usage_metadata -- must stay silent, not crash or log junk."""
+    mock_llm = AsyncMock()
+    mock_llm.ainvoke.return_value = AIMessage(
+        content=json.dumps({"verdict": "APPROVE", "reason": "ok"})
+    )
+
+    with patch("src.agents.judge.get_llm", return_value=mock_llm), \
+         patch("src.agents.judge.usage_logger") as mock_usage_logger:
+        await _run_single_judge("gemini", 0.0, [SystemMessage(content="x")], stage="judge1")
+
+    mock_usage_logger.info.assert_not_called()

@@ -89,3 +89,31 @@ async def test_retrieve_relevant_policy_returns_top_match_content() -> None:
 
     assert result == "Refunds within 30 days of purchase."
     embeddings_client.aembed_query.assert_awaited_once_with("I want a refund")
+
+
+@pytest.mark.asyncio
+async def test_retrieve_relevant_policy_logs_estimated_token_usage() -> None:
+    """Cost measurement (PENDING.md Step 1): LangChain's Embeddings interface
+    exposes no real token usage, so this logs a character-count estimate,
+    flagged estimated=True so it's never confused with a metered figure."""
+    session = AsyncMock()
+    embeddings_client = AsyncMock()
+    embeddings_client.aembed_query = AsyncMock(return_value=[0.1] * 768)
+    claim_text = "I want a refund"  # 15 chars -> 15 // 4 == 3 estimated tokens
+
+    with patch(
+        "src.core.services.retrieval_service.knowledge_base_repository.find_most_similar",
+        new_callable=AsyncMock,
+        return_value=[],
+    ), patch("src.core.services.retrieval_service.usage_logger") as mock_usage_logger:
+        await retrieve_relevant_policy(session, embeddings_client, claim_text)
+
+    mock_usage_logger.info.assert_called_once_with(
+        "llm_token_usage",
+        stage="retrieval_embedding",
+        provider="gemini",
+        input_tokens=3,
+        output_tokens=0,
+        total_tokens=3,
+        estimated=True,
+    )

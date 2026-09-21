@@ -316,17 +316,22 @@ This phase depends on Phase 1.C (containerization) and Phase 1.D (pgvector + a w
 
 In a transactional system, cost per request is a first-class metric alongside latency.
 
-**Status: pending measurement.**
+Measured 2026-09-21 against a single real transaction through the full `docker compose` stack (`LLM_PROVIDER=gemini`), the common/happy path where both base judges agree and the Supreme Court cascade never triggers. This is a single-pass measurement, not an average — cost scales with how many self-correction retries and Supreme Court escalations a given transaction needs (up to `MAX_LLM_RETRIES` × the Judge 1 + Judge 2 + Supreme Court cost below, in the worst case), so treat this as the *floor*, not a bound. Token counts for the three real LLM calls come from `AIMessage.usage_metadata` on each response (`src/agents/token_usage.py`); embedding tokens are a `~4 chars/token` estimate (LangChain's `Embeddings` interface exposes no real usage figure) marked accordingly. There is no "Primary agent" row: `worker.py`'s tool-calling loop currently hardcodes its action rather than making a real LLM call, so that cost doesn't exist yet to measure.
 
 | Stage | Model | Tokens in | Tokens out | Cost / request (USD) |
 |---|---|---|---|---|
-| Retrieval (embedding) | XX | XX | — | X.XXXX |
-| Primary agent | XX | XX | XX | X.XXXX |
-| LLM-as-a-Judge | XX | XX | XX | X.XXXX |
-| Rule base (Phase 2) | — | 0 | 0 | 0.0000 |
-| **Total** | | **XX** | **XX** | **X.XXXX** |
+| Prompt Guard | Groq `llama-prompt-guard-2-22m` | 49 | 0 | $0.0000015 |
+| Retrieval (embedding, **estimated**) | Gemini `gemini-embedding-001` | ~45 | — | ~$0.0000068 |
+| Judge 1 | Gemini `gemini-3.5-flash-lite` | 318 | 81 | $0.0002979 |
+| Judge 2 | Groq `openai/gpt-oss-20b` | 346 | 241 | $0.0000983 |
+| Supreme Court (conditional — not triggered this run) | Gemini `gemini-3.5-flash-lite` | — | — | $0 this run |
+| Primary agent | *(not yet implemented — no real LLM call exists)* | — | — | N/A |
+| Rule base (Phase 2) | — | 0 | 0 | $0.0000 |
+| **Total (this transaction)** | | **~758** | **322** | **~$0.0004** |
 
-Method: token counts taken from each provider's usage fields, logged per request, averaged over the promptfoo regression suite; prices from provider list pricing at the date of measurement.
+Pricing (fetched 2026-09-21, spot-check against the live pricing pages before relying on it — these change): Gemini `gemini-3.5-flash-lite` $0.30/$2.50 per 1M input/output tokens and `gemini-embedding-001` $0.15 per 1M input tokens ([ai.google.dev/gemini-api/docs/pricing](https://ai.google.dev/gemini-api/docs/pricing)); Groq `openai/gpt-oss-20b` $0.075/$0.30 and `llama-prompt-guard-2-22m` $0.03/$0.03 per 1M input/output tokens (third-party aggregators — Groq's own pricing page is JS-rendered and didn't yield a table via automated fetch, but independent sources converged on the same figures).
+
+Method: `src/agents/token_usage.py`'s `extract_usage()` logs a structured `llm_token_usage` line (stage, provider, input/output/total tokens) at every real LLM call site; read back from `docker compose logs worker` for this transaction and priced by hand against the table above. Not yet wired into a running cost dashboard or averaged across the promptfoo regression suite.
 
 ---
 

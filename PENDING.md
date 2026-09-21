@@ -4,9 +4,11 @@ Personal working notes. See README.md's Roadmap table and Phase sections for the
 
 ## Priority Order
 
-### Step 1 — Cost per Transaction Measurement
-- [ ] Measure real token consumption per stage (RAG embedding + primary agent + judges).
-- [ ] Fill in the README's `Cost per Transaction` table with an exact dollar figure ($0.00XX USD per claim) to demonstrate financial control of the system.
+### Step 1 — Cost per Transaction Measurement — done, with caveats
+- [x] Measure real token consumption per stage (`feat/cost-per-transaction-measurement`, commit `dff32e4`): `src/agents/token_usage.py`'s `extract_usage()` logs a structured `llm_token_usage` line at every real LLM call site (Prompt Guard, Judge 1, Judge 2, Supreme Court), reading `AIMessage.usage_metadata`. Two real gaps surfaced while doing this, both resolved by explicit decision rather than fudged:
+  - No real "primary agent" LLM call exists yet — `worker.py`'s tool-calling loop hardcodes its action. That row is N/A in the README, not measured.
+  - LangChain's `Embeddings` interface exposes no token usage at all — the retrieval row is a `~4 chars/token` estimate, flagged `estimated=True` in the logs and in the README.
+- [x] Fill in the README's `Cost per Transaction` table: a single real transaction (happy path, no Supreme Court escalation) cost **~$0.0004** — see the table for the per-stage breakdown and pricing sources (fetched 2026-09-21). This is a single measurement, not an average, and is the floor (cost scales with self-correction retries and Supreme Court escalations) — re-measure once the primary agent is real and/or averaged across more transactions.
 
 ### Step 2 — Zero-Trust MCP Hardening (Phase 1.B)
 - [ ] Server-side authentication via cryptographic Bearer Token (SHA-256 hashes), constant-time compare.
