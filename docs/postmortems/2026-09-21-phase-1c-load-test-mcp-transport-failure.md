@@ -1,14 +1,14 @@
 # Postmortem: Phase 1.C Load Test — MCP Transport Failures
 
 **Date:** 2026-09-21
-**Status:** Three MCP-adjacent bugs found. Two fixed and verified (`4691f17`). The third — the one that actually blocked every transaction — has been root-caused and **fixed and unit-tested** (`fix/judge-groq-import-crash`, commit `79179f9`); it has **not yet been verified against the real containerized stack** (a Docker rebuild + a live end-to-end transaction, and the Phase 1.C Locust load test) — see "Resolution" below.
-**Commits:** `4691f17` (transport fixes), `5e1ab07` (doc corrections), `79179f9` (the actual fix for the root cause below)
+**Status:** CLOSED. All three MCP-adjacent bugs found and fixed. The third — the one that actually blocked every transaction — was root-caused, fixed, unit-tested, and then verified for real: after rebuilding the `worker`/`gateway` images, a real transaction completed cleanly end-to-end, and the Locust load test (100 users, 1 min) ran clean — 2630 requests, 0 failures, P95 87ms (down from the pre-fix 340ms, and flat instead of climbing) — see "Resolution" below.
+**Commits:** `4691f17` (transport fixes), `5e1ab07` (doc corrections), `79179f9` (the fix for the root cause below), `b1791ce` (Gateway AMQP connection pooling, a related side finding), `6968c25`/`288c1ca` (the `drop_all()` teardown footgun, found in three files)
 
 ## Summary
 
 Attempting to run Phase 1.C's Locust load test against the full `docker compose` stack for the first time revealed that "deployment validation: done" — marked done earlier the same day based on HTTP reachability checks (`curl` to `/docs` and `/sse` from the host) — did not mean a real transaction could complete. Every transaction submitted through the containerized stack failed before reaching the point the load test exists to validate (the pessimistic-lock write). Two real, root-caused bugs in the MCP transport configuration were found and fixed by this session. A third failure resisted this session's own extensive isolated reproduction attempts entirely; it was subsequently root-caused by a **separate, parallel debugging session** using container-level isolation testing (see "Root Cause: Found" below) — a synchronous `ImportError` inside a guardrail call, raised while inside an `async with`-managed MCP session, that anyio's `TaskGroup` reports as a generic transport failure. That diagnosis is documented here for the record; this session did not independently apply or re-verify the proposed fix.
 
-**Net effect:** the load test has not yet produced a valid reading. No pessimistic-lock behavior under contention has actually been validated in a container environment. `Cost per Transaction` and `System Performance & Telemetry` in README.md remain placeholder values.
+**Net effect (at the time this postmortem was written):** the load test had not yet produced a valid reading, and no pessimistic-lock behavior under contention had been validated in a container environment. Both are now done — see "Resolution" below and README's [System Performance & Telemetry](../../README.md#system-performance--telemetry) table, which no longer holds placeholder values for those two rows.
 
 ## Why this happened: a real gap in prior validation
 
@@ -69,8 +69,8 @@ Applied deliberately as **defense-in-depth**, not just the minimal dependency de
 3. **Tests** (`tests/unit/test_judge.py`, written and confirmed red before the fix, per this project's TDD workflow): one test calls `_run_single_judge("groq", 0.0, messages)` directly with `get_llm` raising, asserting the exact `REJECT` shape; one reproduces the postmortem's exact scenario through `evaluate_decision()` (Groq construction raises, Gemini approves) and asserts the function returns normally instead of raising.
 4. `worker.py`'s temporary `traceback.print_exception(...)` debug block (Recommended Next Steps, item 2, below) was never actually committed to this repository — it only ever existed as an uncommitted local change on `feat/concurrency-pessimistic-lock`, which has been stashed. Nothing to revert in tracked code.
 
-**Verified:** full unit suite (37/37), `ruff check`, and `mypy --strict` all pass on the fix branch.
-**Not yet verified:** a Docker rebuild of the `worker` image and a real transaction through the full `docker compose` stack (this postmortem's original reproduction case), and the Phase 1.C Locust load test it was blocking (`PENDING.md` Step 1). Those remain the actual close-out condition for this postmortem, and are still open in "Recommended Next Steps" below.
+**Verified, unit-level:** full unit suite (37/37 at the time, later 41+), `ruff check`, and `mypy --strict` all passed on the fix branch.
+**Verified, for real (2026-09-21, after rebuilding the `worker`/`gateway` images):** a real transaction through the full `docker compose` stack completed cleanly end-to-end — Prompt Guard and Judge 2 both made real Groq calls with no crash, the base judges disagreed (Gemini APPROVE / Groq REJECT), correctly escalated to the Supreme Court cascade, and the transaction committed as `COMPLETED`, with no `TaskGroup`/`RemoteProtocolError` anywhere in the logs. The Locust load test (100 users, spawn rate 10, 1 minute) that this bug was blocking then ran clean: 2630 requests, 0 failures, P50 55ms, P95 87ms — down from the pre-fix baseline's P95 340ms, and flat instead of climbing over the run. A sample of the resulting queue backlog was drained through the real worker to confirm correct retry/Supreme-Court/routing behavior under real processing (no deadlocks, no stuck `PROCESSING` rows), then the remainder was purged rather than fully drained — Judge 2, the Supreme Court cascade, and Prompt Guard all hardcode their provider independently of `LLM_PROVIDER`, so draining thousands more messages sequentially would only have burned real Groq/Gemini quota for no additional signal. Full numbers in README's [System Performance & Telemetry](../../README.md#system-performance--telemetry) table. This closes out the postmortem.
 
 ## What We Ruled Out
 
@@ -87,17 +87,17 @@ Every one of the following was tested in isolation and **succeeded** (did not re
 
 None of these reproduced the failure. The real, `docker compose up`-started `worker` service fails on nearly every attempt — because, unlike every probe above, `process_message()` always reaches `evaluate_decision()`.
 
-## Impact on the Roadmap
+## Impact on the Roadmap (historical — see "Resolution" above for final state)
 
-- `PENDING.md` Step 1 (Locust load test) is **blocked** on the open MCP bug, not just "not yet run." Re-attempting it before the root cause is fixed would produce the same result.
-- README.md's Phase 1.C section and roadmap table were corrected from "deployment validation: done" to explicitly distinguish HTTP reachability (verified) from a working transaction (not yet reliable) — see `5e1ab07`.
-- `Cost per Transaction` and `System Performance & Telemetry` tables remain placeholders; they depend on Step 1/Step 2 completing, which depend on this bug being fixed.
+- `PENDING.md`'s Locust load test step was **blocked** on the open MCP bug, not just "not yet run." Re-attempting it before the root cause was fixed would have produced the same result — confirmed true, since it stayed blocked until the fix landed.
+- README.md's Phase 1.C section and roadmap table were corrected from "deployment validation: done" to explicitly distinguish HTTP reachability (verified) from a working transaction (not yet reliable) — see `5e1ab07`. Both are now marked fully done.
+- `System Performance & Telemetry` no longer holds placeholder values for the two rows this postmortem was blocking (P95 latency, throughput). `Cost per Transaction` remains a placeholder — unrelated to this bug, tracked as its own `PENDING.md` step.
 
-## Recommended Next Steps
+## Recommended Next Steps (all done — kept for the record)
 
-1. ~~Apply and verify the proposed fix~~ — **done at the code level** (see "Resolution" above). **Still open**: rebuild the `worker` image and send a real transaction through the full containerized stack; confirm it reaches `COMPLETED` or `PENDING_HUMAN_REVIEW` cleanly, with no `TaskGroup`/`RemoteProtocolError` in the logs. This is the one item that actually closes out this postmortem.
+1. ~~Apply and verify the proposed fix~~ — done, both at the code level (see "Resolution" above) and for real: a real transaction through the full containerized stack reached `COMPLETED` cleanly, with no `TaskGroup`/`RemoteProtocolError` in the logs.
 2. ~~Revert the temporary `traceback.print_exception(...)` debug block~~ — moot; it was never committed (local-only, stashed on `feat/concurrency-pessimistic-lock`).
 3. ~~Decide deliberately whether `evaluate_decision()`'s Groq dependency should be a hard requirement or degrade like `prompt_guard.py` does~~ — **decided and applied**: hard-required (`langchain-groq` declared) *and* defense-in-depth fail-closed to `REJECT` on construction failure, rather than fail-open — matches the Double-Judge guardrail contract (CLAUDE.md §10) better than silently skipping a judge the way `prompt_guard.py`'s pre-filter can. The general rule this item raised (every `get_llm(provider=X, ...)` call site outside `llm_factory.py` should either declare `X` a hard dependency or explicitly handle its absence) still stands as a project-wide review item beyond this one call site.
-4. Re-run Phase 1.C's Step 1 Locust load test once item 1's container verification passes — this is the actual blocker that's been in the way since this postmortem started.
+4. ~~Re-run Phase 1.C's Locust load test~~ — done: 2630 requests, 0 failures, P95 87ms. See "Resolution" above and README's System Performance table.
 5. ~~Fix the Gateway's per-request AMQP connection (`src/api/main.py`)~~ — **done** (`fix/gateway-amqp-connection-pooling`, commit `b1791ce`): a single connection/channel opened via a FastAPI `lifespan` and reused across requests.
-6. Fix the integration-test teardown footgun (`Base.metadata.drop_all()` silently desyncing the dev DB from `alembic_version`) before it costs someone else the same hour of confusion it cost this session.
+6. ~~Fix the integration-test teardown footgun (`Base.metadata.drop_all()` silently desyncing the dev DB from `alembic_version`)~~ — **done**, and it cost this session that same confusion one more time in the process: verifying the fix reproduced the bug live (`relation "knowledge_base" does not exist`) and, while running the full suite for a coverage measurement, the *same* pattern fired from two more files this postmortem never flagged (`test_database.py`, `test_worker.py`). All three fixed the same way — teardown now only clears each file's own rows, never the schema (`fix/integration-test-teardown-and-prompt-guard-docs`).
