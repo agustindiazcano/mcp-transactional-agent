@@ -12,20 +12,24 @@ Description: An asynchronous, fault-tolerant Agentic Workflow engine designed to
 
 Core Pattern: Event-Driven Architecture combined with the Model Context Protocol (MCP). The LLM is completely isolated from the database and business logic. It communicates exclusively through the MCP server to execute tools.
 
-The project is organized in five phases. Phase 1 (core transactional engine) is production-ready. Phase 2 (confidence layer: fuzzy scoring + rule-based expert system) is in progress. Phase 3 (Kalman-based observability), Phase 4 (Ops Dashboard), and Phase 5 (ML Comparison Track) are experimental/roadmap. See Sections 5a-5e for phase-specific directives.
+The project is organized around Phase 1 (core transactional engine, production-ready) and three infrastructure sub-phases that harden and operationalize it — Phase 1.B (MCP security boundary: authn, per-tool authz, rate limiting, audit log; in progress), Phase 1.C (containerized local deployment: per-service Dockerfiles + full `docker-compose` orchestration; deployment validation done, load validation pending), Phase 1.D (RAG over business rules via `pgvector` + AWS Bedrock Titan Embeddings; not started) — followed by Phase 2 (confidence layer: fuzzy scoring + rule-based expert system, in progress), Phase 3 (pluggable quality drift detection — EWMA default, with CUSUM, Page-Hinkley, and Kalman as selectable detectors — experimental/roadmap), Phase 4 (Ops Dashboard, experimental/roadmap), Phase 5 (ML Comparison Track, experimental/roadmap), and Phase 6 (AWS Serverless cloud migration, experimental/roadmap). See Sections 5a-5f for phase-specific directives.
 
 ## 3. Tech Stack
 
 - API Gateway: FastAPI, Uvicorn, Pydantic (data validation).
-- Message Broker: RabbitMQ, pika (async task consumption).
-- Database and Idempotency: PostgreSQL (with pgvector extension), SQLAlchemy (ORM), Alembic.
+- Message Broker: RabbitMQ, aio-pika (async task consumption).
+- Database and Idempotency: PostgreSQL (with pgvector extension, Phase 1.D), SQLAlchemy (async ORM), Alembic.
 - AI Core: LangChain, Google GenAI (Gemini), Groq API, OpenAI, AWS Bedrock.
-- Agent Sandbox: Model Context Protocol (MCP) Python SDK.
-- LLMOps (Testing and Guardrails): Promptfoo (shift-left testing), Langfuse (telemetry), Asymmetric Double LLM-as-a-Judge pattern for runtime output evaluation (Gemini + Llama 3).
+- Agent Sandbox: Model Context Protocol (MCP) Python SDK, over HTTP/SSE transport (see Section 4).
+- LLMOps (Testing and Guardrails): Promptfoo (shift-left testing), Langfuse (telemetry), Asymmetric Double LLM-as-a-Judge pattern for runtime output evaluation (Gemini + Llama 3), plus a Prompt Guard pre-execution filter and a Supreme Court cascade judge for disagreement escalation.
+- Load Testing: Locust (concurrency/chaos validation, Phase 1.C).
+- Containerization (Phase 1.C): Docker, Docker Compose.
+- RAG Ingestion (Phase 1.D): boto3, Amazon Titan Embeddings.
 - Confidence Layer (Phase 2): scikit-fuzzy or a hand-rolled membership-function module for fuzzy scoring; a lightweight declarative rule engine for the Belief Rule Base (BRB).
-- Observability (Phase 3, experimental): a minimal Kalman filter implementation (numpy-based, no heavy ML dependency) over judge/TruLens score time series.
-- Frontend (Phase 4, experimental): React, TypeScript, Vite, TanStack Query.
+- Observability (Phase 3, experimental): a pluggable quality-drift detector over judge/TruLens score time series — EWMA (default), CUSUM, Page-Hinkley, or a minimal Kalman filter (numpy-based, no heavy ML dependency), selected via `DRIFT_DETECTOR`.
+- Frontend (Phase 4, experimental): React, TypeScript, Vite, TanStack Query, Recharts, Tailwind CSS.
 - ML Comparison (Phase 5, experimental): TensorFlow, Keras, MLflow.
+- Cloud Migration (Phase 6, experimental): AWS API Gateway, SQS, Lambda, IAM/VPC PrivateLink, serverless PostgreSQL (Neon or Supabase).
 
 ## 4. Architecture Directives and Constraints
 
@@ -35,8 +39,9 @@ Never write database logic, routing logic, and AI logic in the same file. Use th
 - `src/core/services/` for business logic.
 - `src/core/repositories/` for database access.
 - `src/agents/` for LLM orchestration.
+- `src/mcp_server/security/` for the Phase 1.B authn/authz/rate-limit/audit boundary.
 - `src/confidence/` for the Phase 2 fuzzy layer and expert system.
-- `src/observability/` for the Phase 3 Kalman monitor.
+- `src/observability/` for the Phase 3 pluggable drift detector.
 
 ### Idempotency is Mandatory
 Every incoming request must carry a unique `request_id`. Workers MUST query the database for this ID before invoking the LLM. If the ID already exists, skip processing and return the cached result. This prevents duplicate execution in retry scenarios.
@@ -50,11 +55,14 @@ LLM instantiation must be abstracted behind a factory. The system must switch be
 ### No Direct DB Access from the LLM Layer
 The agent layer must never import or reference any SQLAlchemy model, repository, or database connection. All data access must flow through MCP tool calls.
 
+### MCP Security Boundary is Fail-Closed (Phase 1.B)
+Every MCP tool call must be authenticated before it reaches a tool: the server derives `client_id` from a bearer token, comparing only its SHA-256 hash in constant time — never from a caller-supplied header. Tool visibility and authorization are filtered by that `client_id` against a server-side allowlist; a denied or rate-limited call is rejected before tool execution, not after. Every invocation (including denied and rate-limited ones) must write an audit row (`client_id`, tool, arguments with PII masked, decision, result). If the audit write fails, the tool must not execute — the boundary fails closed, not open. Nothing in the prompt or in retrieved documents may extend a caller's tool access; that determination is made only from the authenticated identity, server-side.
+
 ### No Direct DB or MCP Access from the Confidence Layer (Phase 2)
 The `confidence/` module (fuzzy layer + expert system) must be a pure function of its inputs: retrieval scores, freshness, source tier, and rule inputs passed explicitly. It must never query the database or call MCP tools directly — this keeps every rule firing reproducible and testable in isolation, which is the entire point of using it as an auditable guardrail.
 
-### Kalman Monitor Runs Off the Critical Path (Phase 3)
-The `observability/` module must never block or participate in the request-response cycle. It consumes already-persisted logs asynchronously (batch job or separate consumer), never live judge output. A failure in this module must never affect transaction processing.
+### Drift Detector Runs Off the Critical Path (Phase 3)
+The `observability/` module must never block or participate in the request-response cycle, regardless of which detector (`DRIFT_DETECTOR`) is active. It consumes already-persisted logs asynchronously (batch job or separate consumer), never live judge output. A failure in this module must never affect transaction processing.
 
 ### MCP Transport Protocol: HTTP/SSE (Deliberate Choice, Not `stdio`)
 The worker (MCP client) and `mcp_server.py` (MCP server) communicate over **HTTP/SSE**, connecting via the `MCP_SERVER_URL` environment variable, and run as independent processes/containers.
@@ -64,15 +72,41 @@ This was an explicit choice over the MCP SDK's `stdio` transport. `stdio` requir
 ### Strict Typing
 Type hints are not optional. All code must pass `mypy --strict`, not just `mypy --ignore-missing-imports`. Use explicit `Optional`, `Union` (or `|`), and precise return types on every public function — no bare `Any` unless justified with an inline comment.
 
-## 5a. Development Phases — Phase 1 (Core Engine, Sequential Execution)
+## 5a. Development Phases — Phase 1 (Core Engine, Sequential Execution) — COMPLETE
 
-When asked to build Phase 1 features, follow this logical sequence:
+When asked to build Phase 1 features, follow this logical sequence (all steps below are implemented and running locally):
 
 1. Infrastructure and Domain: Define SQLAlchemy models in `models.py` and the DB connection in `database.py`.
 2. Ingestion Layer: Build FastAPI endpoints in `main.py` to validate requests via Pydantic and push them to RabbitMQ, returning HTTP 202 Accepted.
 3. MCP Server: Implement `mcp_server.py` exposing isolated tools such as `get_user_history` and `execute_refund`.
 4. Worker Layer: Implement `worker.py` to consume RabbitMQ messages, verify idempotency, orchestrate the LLM call through the MCP server, and commit the final transaction.
-5. Guardrails: Intercept the LLM decision with a concurrent dual-judge evaluation (Asymmetric Double LLM-as-a-Judge using Gemini and Llama 3) before persisting the final status to PostgreSQL.
+5. Pre-Execution Shield: A Prompt Guard model (`llama-prompt-guard-2-22m`) intercepts malicious prompts and jailbreak attempts before they reach the primary agent, failing fast.
+6. Guardrails: Intercept the LLM decision with a concurrent dual-judge evaluation (Asymmetric Double LLM-as-a-Judge using Gemini and Llama 3) before persisting the final status to PostgreSQL.
+7. Self-Correction Loop: If the base judges reject on a formatting or logic error, route the feedback back to the primary agent for self-correction up to `MAX_LLM_RETRIES`.
+8. Cascade Architecture (Supreme Court): If the base judges disagree or repeatedly reject, escalate to a Supreme Court Judge (Gemini 3.5 Flash) for a tie-breaking decision before falling back to `PENDING_HUMAN_REVIEW`.
+9. Concurrency Control: Pessimistic row locking (`SELECT ... FOR UPDATE`) plus a `UniqueConstraint` on `request_id` prevent double-processing; a background Recovery Sweeper (`FOR UPDATE SKIP LOCKED`) reclaims and re-queues `PROCESSING` rows abandoned by a crashed worker.
+
+## 5a-i. Development Phases — Phase 1.B (MCP Security Boundary, In Progress)
+
+1. Authentication: each client (worker type) gets its own bearer token; the server stores only its SHA-256 hash, compares in constant time, and derives `client_id` from the token — never from a caller-supplied header.
+2. Per-tool authorization: a server-side allowlist maps `client_id` to permitted tools. Tool listing is filtered by identity; calls to non-allowed tools are rejected and audited as denied.
+3. Argument validation: every tool takes a Pydantic model with explicit business limits (e.g., `REFUND_MAX_AMOUNT`), a restricted currency enum, and rejection of unknown fields — enforced server-side regardless of what the LLM produced.
+4. Rate limiting: per `client_id` and per tool, computed from the audit table over a sliding window (`MCP_RATE_LIMIT_PER_MIN`), so the limit holds across MCP replicas without adding Redis.
+5. Audit log: every invocation (including denied and rate-limited) writes a row with timestamp, `client_id`, tool, arguments (PII masked), decision, and result. See the fail-closed directive in Section 4.
+
+## 5a-ii. Development Phases — Phase 1.C (Containerized Local Deployment, Deployment Validation Done — Load Validation Pending)
+
+1. Dockerfiles (done): one image per service under `docker/` — `gateway.Dockerfile`, `worker.Dockerfile` (also used, via command override, for the Recovery Sweeper and a one-shot `migrate` service), `mcp_server.Dockerfile` — each installing only production dependencies as a non-root user.
+2. `docker-compose.yml` (done): all seven services (`postgres`, `rabbitmq`, `migrate`, `mcp_server`, `worker`, `sweeper`, `gateway`) orchestrated on a private `agentic_net` bridge network; the `migrate` service runs `alembic upgrade head` and gates the app services via `service_completed_successfully`.
+3. Deployment validation (done): `docker compose up --build` from a clean checkout brings all seven containers up, with the gateway and MCP server reachable across the network. Known pitfall: RabbitMQ's `-q ping` healthcheck can report healthy before the AMQP listener binds — use `check_port_connectivity` instead, and keep a bounded `restart: on-failure:N` on the app services as defense-in-depth against any other first-boot race.
+4. Load validation (not yet run): re-run the Locust suite (100+ concurrent simulated claimants) against the containerized stack, confirm the Phase 1 pessimistic locks hold without deadlocks, and publish throughput/P95 latency to the README's System Performance table.
+
+## 5a-iii. Development Phases — Phase 1.D (RAG over Business Rules, Not Started)
+
+1. Enable `pgvector`: an Alembic migration activates the extension and adds the embedding column(s).
+2. Embeddings module: a `boto3` script vectorizes business documents (refund/warranty policy text) via Amazon Titan Embeddings and inserts them into `pgvector`.
+3. Dynamic context injection: before the primary agent call (`LLM_PROVIDER=bedrock`), the Worker runs a cosine-similarity search over `pgvector` and injects the matched policy text into the system prompt.
+4. This phase feeds the Phase 2 fuzzy layer's inputs (similarity score, freshness, source tier) once both are implemented — do not build Phase 2 scoring logic that assumes retrieval exists before this phase ships it.
 
 ## 5b. Development Phases — Phase 2 (Confidence Layer)
 
@@ -81,11 +115,15 @@ When asked to build Phase 1 features, follow this logical sequence:
 3. Integration Point: The rule base output is a second, independent signal alongside the Phase 1 LLM-judge verdict. A transaction auto-approves only if both agree above their respective thresholds (`EXPERT_SYSTEM_CONFIDENCE_THRESHOLD` for the rule base). Disagreement routes to `PENDING_HUMAN_REVIEW`, same as a judge REJECT.
 4. Every rule firing must log: rule id, inputs, belief degree, and the final verdict — this log is what makes the layer auditable; do not skip it to save write volume.
 
-## 5c. Development Phases — Phase 3 (Observability, Experimental)
+## 5c. Development Phases — Phase 3 (Quality Drift Detection, Experimental)
 
-1. `observability/kalman_monitor.py`: a simple 1D (or low-dimensional) Kalman filter over the time series of judge/TruLens scores already logged by Phase 1. Two tunable parameters only: process noise and measurement noise. Do not reach for a heavier drift-detection model — the point of this phase is that a minimal, transparent estimator is sufficient.
-2. `observability/alerting.py`: fires only when the estimated state exits its confidence band (`KALMAN_ALERT_SIGMA` standard deviations), not on individual outlier scores.
-3. This phase is design/prototype status. Do not wire it into the transactional critical path under any circumstance — see the constraint in Section 4.
+The detector is pluggable via `DRIFT_DETECTOR`, over the time series of judge/TruLens scores already logged by Phase 1. Parsimony rule: implement the simplest detector that solves the problem in front of you; reach for a heavier one only when evidence shows the simpler one fails.
+
+1. `EWMA` (default): one smoothing parameter (`EWMA_LAMBDA`), no state-space model — detects gradual drift.
+2. `CUSUM` / `Page-Hinkley`: better suited to abrupt step changes (a prompt deploy, a model or provider switch).
+3. `kalman_monitor.py` (optional): a simple 1D (or low-dimensional) Kalman filter with exactly two tunable parameters — process noise and measurement noise. Assumes a linear-Gaussian state and measurement model; quality scores are bounded in [0, 1] and often skewed, so check that assumption against real data before relying on it.
+4. `observability/alerting.py`: fires only when the active detector's estimate exits its control band (`DRIFT_ALERT_SIGMA` standard deviations), not on individual outlier scores.
+5. This phase is design/prototype status. Do not wire it into the transactional critical path under any circumstance — see the constraint in Section 4. Do not add a trained drift classifier — it would need its own training data and become another opaque component to monitor.
 
 ## 5d. Development Phases — Phase 4 (Ops Dashboard, Experimental)
 
@@ -98,6 +136,14 @@ When asked to build Phase 1 features, follow this logical sequence:
 2. Tooling: All training runs and resulting models must be versioned and tracked using MLflow.
 3. Architecture Constraint: The MLP is strictly out-of-band. It never participates in the live transaction approval path. Its output is logged solely for offline comparison against the rule base verdicts.
 
+## 5f. Development Phases — Phase 6 (AWS Serverless Migration, Experimental)
+
+1. IAM and Bedrock: least-privilege IAM policies scoped to the foundation models actually invoked, plus VPC PrivateLink endpoints so inference traffic stays in the VPC.
+2. Serverless topology: FastAPI Gateway → API Gateway, RabbitMQ → SQS, Worker → Lambda.
+3. External database: a serverless PostgreSQL provider (Neon or Supabase) with `pgvector` enabled.
+4. Re-test of load: repeat the Phase 1.C load validation against the AWS deployment and compare against the local baseline.
+5. Dependency order: this phase assumes Phase 1.C (containerization) and Phase 1.D (`pgvector`/Bedrock integrated locally) are complete — do not begin the Lambda/SQS topology work before both ship.
+
 ## 6. Coding Standards and Non-Negotiable Rules
 
 - Python version: 3.11 or higher.
@@ -108,6 +154,11 @@ When asked to build Phase 1 features, follow this logical sequence:
 - Use `structlog` for structured JSON logging. Never use `print()`.
 - Follow PEP 8. Line length limit is 100 characters.
 - Do not mix concerns: one responsibility per file, one responsibility per function.
+- Do not use blocking I/O inside an `async` function (`time.sleep`, `requests.get`). Use `asyncio.sleep`, `httpx.AsyncClient`, or the async driver already in use (`aio-pika`, `asyncpg`).
+- Do not use `from module import *`. Always use explicit imports.
+- Do not catch `Exception` as a bare catch-all without re-raising or logging the specific error.
+- Do not leave `TODO` comments in code. Either implement the feature or explicitly ask the user to decide.
+- Do not put an HTTP client call (`httpx`, `requests`) inside `src/core/repositories/` — repositories are for database access only; external calls belong in `src/core/services/` or `src/agents/`.
 
 ## 6b. Test-Driven Development Workflow (Mandatory)
 
@@ -121,7 +172,7 @@ Rules that apply this workflow project-wide:
 - Never present a new function or endpoint as done without also presenting its test.
 - If asked to fix a bug, first write a test that reproduces the bug (it must fail), then fix the code until it passes.
 - For Phase 2 rule base entries, "the test" is a fixed input → expected belief-degree/verdict pair. Add it before adding the rule.
-- For the Phase 3 Kalman monitor, tests use synthetic score sequences (known noise + known drift point) to assert the filter detects the drift within a bounded number of steps — do not skip this because it's "just observability."
+- For the Phase 3 drift detector (whichever is active via `DRIFT_DETECTOR`), tests use synthetic score sequences (known noise + known drift point) to assert the detector flags the drift within a bounded number of steps — do not skip this because it's "just observability."
 
 ## 7. File and Directory Layout (The `src/` Pattern)
 
@@ -143,20 +194,24 @@ agentic-mcp-engine/
         mcp_server/          # Tool registry and MCP endpoints (HTTP/SSE)
             mcp_server.py
             tools/
+            security/        # Phase 1.B: authn, authz, rate limiting, audit
         worker/              # RabbitMQ consumer, MCP client
             worker.py
+            recovery_sweeper.py
         confidence/          # Phase 2: fuzzy layer & expert system
             fuzzy_layer.py
             rule_base.py
             rules/
-        observability/       # Phase 3: Kalman monitor (experimental)
-            kalman_monitor.py
+        observability/       # Phase 3: pluggable drift detector (experimental)
+            detectors/       # EWMA, CUSUM, Page-Hinkley, Kalman
             alerting.py
     tests/
         unit/
             confidence/
             observability/
+            security/
         integration/
+        performance/         # Locust load/chaos suite (Phase 1.C)
     alembic/
     alembic.ini
     .env.example
@@ -175,6 +230,10 @@ Before writing or modifying any file that touches the following areas, pause and
 - Any change to `mcp_server.py` that removes or renames an existing tool, as this is a breaking change for live agents.
 - Any change to a rule in `confidence/rules/` that lowers a belief-degree threshold for `execute_refund` or `validate_fraud_score` (this weakens a financial safety gate).
 - Any change to `.env` files or secrets.
+- Before running an Alembic upgrade/downgrade command, confirm the current revision (`alembic current`) and the target revision with the user.
+- Before deleting or moving a file that defines database models, router registrations, or MCP tool registrations, list what will be affected and ask for confirmation.
+
+When refusing an action under this section, always state the correct alternative in the same reply — don't just decline.
 
 ## 9. Environment Variables Reference
 
@@ -194,8 +253,14 @@ Before writing or modifying any file that touches the following areas, pause and
 | `MCP_SERVER_URL` | URL of the running MCP server |
 | `MAX_LLM_RETRIES` | Maximum retry count for LLM calls (default: 3) |
 | `IDEMPOTENCY_TTL_SECONDS` | TTL for idempotency record cache (default: 86400) |
+| `MCP_CLIENTS_FILE` | Phase 1.B, server side: path to the client registry (`client_id`, token hash, allowed tools) |
+| `MCP_CLIENT_TOKEN` | Phase 1.B, worker side: this worker's bearer token for the MCP server |
+| `MCP_RATE_LIMIT_PER_MIN` | Phase 1.B: default calls per minute per client and tool (default: 30) |
+| `REFUND_MAX_AMOUNT` | Phase 1.B: upper bound enforced by `execute_refund` validation (default: 10000) |
 | `EXPERT_SYSTEM_CONFIDENCE_THRESHOLD` | Phase 2: minimum belief degree required for rule-base auto-approval (default: 0.85) |
-| `KALMAN_ALERT_SIGMA` | Phase 3: standard deviations from estimated state that trigger a drift alert (default: 2.0) |
+| `DRIFT_DETECTOR` | Phase 3: active detector — `ewma`, `cusum`, `page_hinkley`, or `kalman` (default: `ewma`) |
+| `EWMA_LAMBDA` | Phase 3: EWMA smoothing factor (default: 0.2) |
+| `DRIFT_ALERT_SIGMA` | Phase 3: control-limit width in standard deviations that triggers a drift alert (default: 3.0) |
 
 ## 10. Asymmetric Double LLM-as-a-Judge Guardrail Contract
 
@@ -204,9 +269,9 @@ Every LLM decision must pass through the concurrent Double Judge (Gemini + Llama
 - Is the output well-formed and parseable?
 - Does the decision contradict any business rule (e.g., refund exceeds the original transaction amount)?
 
-If EITHER judge returns a REJECT verdict, the transaction must be flagged with status `PENDING_HUMAN_REVIEW` and a human-readable reason must be logged.
+If EITHER judge rejects on a formatting or logic error, the feedback is routed back to the primary agent for self-correction, up to `MAX_LLM_RETRIES` (see Section 5a, step 7). If the judges disagree or continue to reject after retries are exhausted, the transaction escalates to a Supreme Court cascade judge for a tie-breaking decision (Section 5a, step 8) before falling back to `PENDING_HUMAN_REVIEW` with a human-readable reason logged.
 
-For `execute_refund` and `validate_fraud_score` specifically (Phase 2 active), the Double Judge verdict (requiring APPROVE from both) and the expert-system verdict are both required before auto-approval. Either one alone routes to `PENDING_HUMAN_REVIEW`.
+For `execute_refund` and `validate_fraud_score` specifically (Phase 2 active), the Double Judge verdict (requiring APPROVE from both, after any self-correction/cascade resolution above) and the expert-system verdict are both required before auto-approval. Either one alone routes to `PENDING_HUMAN_REVIEW`.
 
 ## 11. Git and Branching Conventions
 
