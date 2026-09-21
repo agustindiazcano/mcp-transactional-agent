@@ -2,7 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import settings
@@ -17,8 +17,12 @@ async def db_engine():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield engine
+    # Never Base.metadata.drop_all(): that drops every table on Base (including
+    # tables other test files/the live app depend on), silently desyncing the
+    # dev DB from alembic_version -- see the Phase 1.C postmortem. Only clear
+    # this file's own rows.
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+        await conn.execute(text("TRUNCATE TABLE transactions RESTART IDENTITY CASCADE"))
     await engine.dispose()
 
 @pytest_asyncio.fixture
