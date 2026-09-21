@@ -23,36 +23,33 @@ Respond strictly in valid JSON format with exactly these two keys:
 }
 """
 
-async def evaluate_decision(action_name: str, action_args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    """
-    Evaluates a proposed action using the LLM-as-a-Judge pattern.
-    Returns a dictionary with 'verdict' and 'reason'.
-    """
-    llm = get_llm()
-    # If the LLM supports setting temperature, we'd ideally set it to 0.0 here,
-    # but the factory handles the instantiation. We'll rely on the default or 
-    # bind temperature=0.0 if supported. For safety, we just invoke it.
-    
-    user_prompt = (
-        f"Proposed Action: {action_name}\n"
-        f"Arguments: {json.dumps(action_args)}\n"
-        f"Context: {json.dumps(context)}\n\n"
-        f"Evaluate this proposed action based on the criteria."
-    )
-    
-    messages = [
-        SystemMessage(content=JUDGE_SYSTEM_PROMPT),
-        HumanMessage(content=user_prompt)
-    ]
-    
+async def _run_single_judge(llm: Any, messages: list[Any]) -> dict[str, Any]:
     try:
         response = await llm.ainvoke(messages)
-        # Clean the response content if it contains markdown JSON blocks
-        content = str(response.content).strip()
-        content = content.removeprefix("```json")
-        content = content.removesuffix("```")
+        content_raw = response.content
+        
+        # Handle new LangChain format where content might be a list of blocks
+        if isinstance(content_raw, list):
+            content = "".join([
+                block.get("text", "") if isinstance(block, dict) else str(block) 
+                for block in content_raw
+            ])
+        else:
+            content = str(content_raw)
             
-        result = json.loads(content.strip())
+        content = content.strip()
+        
+        # Extract JSON block using regex to handle variations in markdown formatting
+        import re
+        match = re.search(r'\{.*\}', content, re.DOTALL)
+        if match:
+            content = match.group(0)
+            
+        try:
+            result = json.loads(content)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON. Raw LLM output: {response.content}")
+            raise e
         
         # Validate format
         if "verdict" not in result or result["verdict"] not in ["APPROVE", "REJECT"]:
@@ -67,3 +64,76 @@ async def evaluate_decision(action_name: str, action_args: dict[str, Any], conte
             "verdict": "REJECT",
             "reason": f"System Guardrail Error: {e!s}"
         }
+
+async def evaluate_decision(action_name: str, action_args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    """
+    Evaluates a proposed action using the Double LLM-as-a-Judge pattern.
+    Returns a dictionary with 'verdict' and 'reason'.
+    """
+    import asyncio
+    
+    # Instantiate the two strict judges (temperature=0.0 for determinism)
+    judge1_gemini = get_llm(provider="gemini", temperature=0.0)
+    judge2_groq = get_llm(provider="groq", temperature=0.0)
+    
+    user_prompt = (
+        f"Proposed Action: {action_name}\n"
+        f"Arguments: {json.dumps(action_args)}\n"
+        f"Context: {json.dumps(context)}\n\n"
+        f"Evaluate this proposed action based on the criteria."
+    )
+    
+    messages = [
+        SystemMessage(content=JUDGE_SYSTEM_PROMPT),
+        HumanMessage(content=user_prompt)
+    ]
+    
+    # Run both judges concurrently
+    results = await asyncio.gather(
+        _run_single_judge(judge1_gemini, messages),
+        _run_single_judge(judge2_groq, messages),
+        return_exceptions=True
+    )
+    
+    res1, res2 = results
+    
+    if isinstance(res1, Exception):
+        res1 = {"verdict": "REJECT", "reason": f"Gemini Judge Exception: {res1!s}"}
+    if isinstance(res2, Exception):
+        res2 = {"verdict": "REJECT", "reason": f"Groq Judge Exception: {res2!s}"}
+        
+    v1 = res1.get("verdict")
+    v2 = res2.get("verdict")
+    
+    if v1 == "APPROVE" and v2 == "APPROVE":
+        return {"verdict": "APPROVE", "reason": "Approved by both Gemini and Groq (GPT-OSS)."}
+    else:
+        logger.warning(f"Double Judge REJECT or disagreement detected (Gemini={v1}, Groq={v2}). Escalating to Supreme Court Judge...")
+        try:
+            # Supreme Court tie-breaker
+            supreme_judge = get_llm(provider="gemini", temperature=0.0)
+            supreme_res = await _run_single_judge(supreme_judge, messages)
+            sv = supreme_res.get("verdict")
+            
+            if sv == "APPROVE":
+                return {
+                    "verdict": "APPROVE", 
+                    "reason": f"Supreme Court Override: {supreme_res.get('reason')} (Base judges initially rejected/disagreed)"
+                }
+            else:
+                return {
+                    "verdict": "REJECT",
+                    "reason": f"Supreme Court Final Rejection: {supreme_res.get('reason')} (Base judges: {v1}/{v2})"
+                }
+        except Exception as e:
+            logger.error(f"Supreme Court failed or API key missing, falling back to base judges: {e}")
+            reasons = []
+            if v1 == "REJECT":
+                reasons.append(f"Gemini: {res1.get('reason')}")
+            if v2 == "REJECT":
+                reasons.append(f"Groq: {res2.get('reason')}")
+                
+            return {
+                "verdict": "REJECT",
+                "reason": " | ".join(reasons)
+            }
