@@ -168,9 +168,16 @@ async def start_worker() -> None:
     Connect to RabbitMQ and start consuming messages from agent_tasks_queue.
     """
     connection = await aio_pika.connect_robust(settings.RABBITMQ_URL)
-    
+
     async with connection:
         channel = await connection.channel()
+        # Without a prefetch limit, RabbitMQ pushes the entire queue backlog to
+        # this consumer's local buffer as soon as it subscribes, regardless of
+        # how fast process_message() actually drains it. This worker processes
+        # one message at a time (see the loop below), so prefetch=1 makes
+        # RabbitMQ hand over the next message only once the current one is
+        # acked/nacked, instead of flooding the client with a large backlog.
+        await channel.set_qos(prefetch_count=1)
         # Ensure the queue exists
         queue = await channel.declare_queue("agent_tasks_queue", durable=True)
         
