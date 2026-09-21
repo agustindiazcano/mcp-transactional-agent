@@ -115,3 +115,47 @@ def test_get_llm_unknown_provider():
     with patch("src.agents.llm_factory.settings", mock_settings), \
          pytest.raises(ValueError, match="Unsupported LLM_PROVIDER: unknown"):
             get_llm()
+
+
+def test_get_embeddings_mock_returns_deterministic_768dim_vectors():
+    """The 'mock' embeddings provider needs no API key and matches the
+    knowledge_base table's vector(768) column."""
+    from src.agents.llm_factory import get_embeddings
+
+    embeddings = get_embeddings(provider="mock")
+
+    vec_a = embeddings.embed_query("refund request")
+    vec_b = embeddings.embed_query("refund request")
+    vec_c = embeddings.embed_query("something else entirely")
+
+    assert len(vec_a) == 768
+    assert vec_a == vec_b  # deterministic for the same input
+    assert vec_a != vec_c
+
+
+def test_get_embeddings_gemini_uses_text_embedding_004():
+    from src.agents.llm_factory import get_embeddings
+
+    mock_settings = Settings(LLM_PROVIDER="gemini", GEMINI_API_KEY="test_key")
+    with patch("src.agents.llm_factory.settings", mock_settings), \
+         patch("src.agents.llm_factory.GoogleGenerativeAIEmbeddings") as MockEmbeddings:
+        mock_instance = MagicMock()
+        MockEmbeddings.return_value = mock_instance
+
+        embeddings = get_embeddings()
+
+        assert embeddings is mock_instance
+        MockEmbeddings.assert_called_once()
+        call_kwargs = MockEmbeddings.call_args.kwargs
+        assert call_kwargs["model"] == "models/gemini-embedding-001"
+        assert call_kwargs["api_key"].get_secret_value() == "test_key"
+        assert call_kwargs["output_dimensionality"] == 768
+
+
+def test_get_embeddings_unknown_provider_raises():
+    from src.agents.llm_factory import get_embeddings
+
+    mock_settings = Settings(LLM_PROVIDER="unknown")
+    with patch("src.agents.llm_factory.settings", mock_settings), \
+         pytest.raises(ValueError, match="No embeddings provider configured"):
+            get_embeddings()

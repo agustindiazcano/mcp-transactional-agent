@@ -7,8 +7,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 # Dimension of the configured embeddings provider's output vectors. Default is
-# Gemini's `text-embedding-004` (768 dims) — see Phase 1.D in README.md/CLAUDE.md
-# for why this is provider-agnostic rather than fixed to AWS Bedrock Titan.
+# Gemini's `gemini-embedding-001`, truncated from its native 3072 dims to 768
+# via `output_dimensionality` — see Phase 1.D in README.md/CLAUDE.md for why
+# this is provider-agnostic rather than fixed to AWS Bedrock Titan.
 EMBEDDING_DIM = 768
 
 

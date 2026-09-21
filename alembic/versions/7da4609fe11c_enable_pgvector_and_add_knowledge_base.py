@@ -19,8 +19,9 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 # Must match src/core/models.py's KnowledgeBase.embedding dimension (Gemini
-# text-embedding-004 by default). See Phase 1.D in README.md/CLAUDE.md for
-# why this is provider-agnostic rather than fixed to AWS Bedrock Titan.
+# gemini-embedding-001, truncated from 3072 to 768 dims, by default). See
+# Phase 1.D in README.md/CLAUDE.md for why this is provider-agnostic rather
+# than fixed to AWS Bedrock Titan.
 EMBEDDING_DIM = 768
 
 

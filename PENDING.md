@@ -7,15 +7,6 @@ Personal working notes. See README.md's Roadmap table and Phase sections for the
 - [ ] **Strict validation (Pydantic):** hard business limits on tool arguments — e.g. reject refunds above `REFUND_MAX_AMOUNT` at the interface, no matter what the LLM asks for.
 - [ ] **Rate limiting:** per-endpoint request quota, against fund-draining and DoS.
 
-## Phase 1.D: RAG — Common Pattern First, Bedrock Later
-RAG is an architecture pattern; AWS Bedrock is a cloud provider. Building both at once means getting stuck configuring IAM permissions in the AWS console instead of writing code. So: build RAG against what's already running (local PostgreSQL, Gemini/OpenAI credentials already in `.env`), validate it end-to-end, *then* treat the Bedrock/Titan swap as a separate, later step (folded into Phase 6, not required to check "RAG" off the list).
-
-- [ ] **Enable pgvector + `knowledge_base` table:** Alembic migration activating the extension and creating the table (`content`, `source`, `source_tier`, `embedding`, timestamps).
-- [ ] **Embeddings script:** vectorize a refund-policy Markdown file using the embeddings API of whichever provider is already configured (Gemini `text-embedding-004` by default) and insert into `knowledge_base`.
-- [ ] **Dynamic context injection:** modify the Worker to run a cosine-similarity search (`embedding <-> claim_vector`) before calling the LLM, and inject the matched policy text into the system prompt — regardless of which `LLM_PROVIDER` answers.
-
-> **What "Vector Search" actually is:** not a lexical `LIKE '%refund%'` match — convert text into coordinates in embedding space (a several-hundred-dimension vector) and retrieve the nearest ones by cosine distance. In this project that's literally: `SELECT content FROM knowledge_base ORDER BY embedding <-> :claim_vector LIMIT 1;` — the `<->` operator is the real "Vector Search" at the SQL level.
-
 ## Phase 1.C: Load Validation (the one open item in this phase)
 - [ ] **Concurrency simulation:** 100+ concurrent requests (simulated claimants) against the *containerized* stack (not bare `localhost`) to stress the Gateway and queue — `tests/performance/locustfile.py` already exists and runs locally; this is about re-running it against `docker compose` and at scale.
 - [ ] **Concurrency validation:** confirm the pessimistic locks (`SELECT ... FOR UPDATE`) hold without deadlocks under that load.
@@ -40,4 +31,5 @@ RAG is an architecture pattern; AWS Bedrock is a cloud provider. Building both a
 ## Already done (not repeated above — see README.md for full detail)
 - Phase 1 core engine: event-driven pipeline, MCP server, idempotency, Double Judge, Prompt Guard, self-correction loop, Supreme Court cascade judge, pessimistic locking + Recovery Sweeper.
 - Phase 1.C, mostly: per-service Dockerfiles, full `docker-compose` orchestration (7 services), `docker compose up --build` deployment validation. Only load validation (above) remains open in this phase.
+- **Phase 1.D, fully: RAG — common pattern, not tied to Bedrock.** `pgvector` extension + `knowledge_base` table (Alembic migration `7da4609fe11c`); `scripts/ingest_knowledge_base.py` chunks `docs/policies/refund_policy.md` and embeds it via Gemini `gemini-embedding-001` (truncated to 768 dims); the Worker runs a real cosine-similarity search (`embedding <=> claim_vector`, pgvector's `<=>` operator — not `<->`, which is L2/Euclidean distance, a mistake caught and fixed while implementing this) and injects the matched policy into the Double Judge's context, fail-open on any retrieval error. Validated end-to-end against the real Gemini API and a real Postgres. The Bedrock/Titan swap stays deferred to Phase 6.
 - `mypy --strict` and the unit test suite are green.

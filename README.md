@@ -6,7 +6,7 @@
 
 An asynchronous workflow engine for running LLM agents against transactional business logic (refunds, fraud checks) without giving the model direct access to the database or internal APIs.
 
-It addresses three problems that appear when LLMs are placed in a write path: non-deterministic output, uncontrolled access to side-effecting operations, and synchronous blocking on slow inference calls. The engine combines an event-driven pipeline (FastAPI → RabbitMQ → worker) with a Model Context Protocol (MCP) server as the only route to side-effecting tools. Retrieval over business rules stored in PostgreSQL/pgvector is planned (Phase 1.D), not yet built.
+It addresses three problems that appear when LLMs are placed in a write path: non-deterministic output, uncontrolled access to side-effecting operations, and synchronous blocking on slow inference calls. The engine combines an event-driven pipeline (FastAPI → RabbitMQ → worker), a Model Context Protocol (MCP) server as the only route to side-effecting tools, and retrieval over business rules stored in PostgreSQL/pgvector (Phase 1.D).
 
 The project also examines a second question: **how much of an AI system's decision-making can be made deterministic and auditable instead of probabilistic?** Later phases add a rule-based confidence layer (fuzzy scoring and a belief rule base) and a drift-detection layer over quality metrics. The direction is consistent throughout: use an explicit, inspectable mechanism wherever one can do the job, and use the LLM only where symbolic reasoning cannot replace it.
 
@@ -35,7 +35,7 @@ The project also examines a second question: **how much of an AI system's decisi
 | **Messaging** | RabbitMQ, aio-pika |
 | **State & Persistence** | PostgreSQL, pgvector, SQLAlchemy (async), Alembic |
 | **AI & Orchestration** | LangChain, Model Context Protocol (MCP) |
-| **RAG Ingestion (Phase 1.D)** | Provider-agnostic embeddings (Gemini `text-embedding-004` by default), `pgvector` — Amazon Titan Embeddings deferred to Phase 6 |
+| **RAG Ingestion (Phase 1.D)** | Provider-agnostic embeddings (Gemini `gemini-embedding-001`, truncated to 768 dims, by default), `pgvector` — Amazon Titan Embeddings deferred to Phase 6 |
 | **LLM Providers** | OpenAI (GPT-4o), Google Vertex AI, Gemini AI Studio, AWS Bedrock, Groq |
 | **LLM Evaluation & Tracing** | TruLens, Langfuse (optional), promptfoo |
 | **Testing** | Pytest, pytest-cov, Locust |
@@ -50,7 +50,7 @@ The project also examines a second question: **how much of an AI system's decisi
 | **Phase 1** | Core engine: event-driven pipeline, MCP, guardrails, concurrency control | Feature-complete, running locally |
 | **Phase 1.B** | MCP security boundary: authn, per-tool authz, validation, rate limiting, audit log | In progress |
 | **Phase 1.C** | Containerized local deployment: per-service Dockerfiles, full `docker-compose` orchestration | Dockerfiles + orchestration + deployment validation done; load validation (Locust) not yet run |
-| **Phase 1.D** | RAG over business rules: pgvector + provider-agnostic embeddings (Bedrock Titan swap deferred to Phase 6) | In progress |
+| **Phase 1.D** | RAG over business rules: pgvector + provider-agnostic embeddings (Bedrock Titan swap deferred to Phase 6) | Done — validated end-to-end locally |
 | **Phase 2** | Confidence layer: fuzzy scoring + belief rule base | In progress |
 | **Phase 3** | Quality drift detection (pluggable detector) | Designed, not yet implemented |
 | **Phase 4** | Read-only operations dashboard | Designed, not yet implemented |
@@ -124,7 +124,7 @@ The LLM never touches the database or internal APIs. It reasons about the reques
 
 ### 4. Retrieval over Business Rules
 
-Before calling a transactional tool, the agent is designed to retrieve the relevant business rules by similarity search. This retrieval path is **not yet implemented** — no `pgvector` extension is enabled, no vector column exists on any model, and no embedding pipeline exists yet. Building it is tracked as [Phase 1.D](#phase-1d--rag-over-business-rules-pgvector-provider-agnostic-embeddings-in-progress), below. Phase 1 currently runs without retrieved context.
+Before calling a transactional tool, the agent retrieves the relevant business rules by similarity search over `pgvector`. Implemented as [Phase 1.D](#phase-1d--rag-over-business-rules-pgvector-provider-agnostic-embeddings-done), below: the Worker embeds the incoming claim, retrieves the nearest policy chunk from `knowledge_base`, and injects it into the Double Judge's context. Retrieval is best-effort — a failure logs a warning and processing continues without retrieved context, it never blocks a transaction.
 
 ### 5. Evaluation and Regression
 
@@ -194,11 +194,11 @@ This phase seals the local environment that Phase 1.B secures and Phase 1.D (bel
 
 ---
 
-## Phase 1.D — RAG over Business Rules (pgvector, provider-agnostic embeddings) (In progress)
+## Phase 1.D — RAG over Business Rules (pgvector, provider-agnostic embeddings) (Done)
 
-### Problem
+### Problem (as it stood before this phase)
 
-Phase 1's ["Retrieval over Business Rules"](#4-retrieval-over-business-rules) design describes an agent that looks up relevant policy text before calling a transactional tool. That retrieval path does not exist yet: `pgvector` is not enabled, no model has an embedding column, and there is no ingestion pipeline. Today the agent reasons only from the prompt and the tool arguments.
+Phase 1's ["Retrieval over Business Rules"](#4-retrieval-over-business-rules) design describes an agent that looks up relevant policy text before calling a transactional tool. Before this phase, that retrieval path didn't exist: `pgvector` wasn't enabled, no model had an embedding column, and there was no ingestion pipeline. The agent reasoned only from the prompt and the tool arguments.
 
 ### RAG is a pattern; AWS Bedrock is a provider — this phase deliberately decouples the two
 
@@ -209,16 +209,19 @@ So Phase 1.D builds **Vector Search and RAG against infrastructure already runni
 **What "Vector Search" concretely means here:** not a lexical `LIKE '%refund%'` match, but converting text into coordinates in embedding space and retrieving the nearest ones by cosine distance — in this project, literally this query against the `knowledge_base` table:
 
 ```sql
-SELECT content FROM knowledge_base ORDER BY embedding <-> :claim_vector LIMIT 1;
+SELECT content FROM knowledge_base ORDER BY embedding <=> :claim_vector LIMIT 1;
 ```
 
-(`<->` is `pgvector`'s cosine-distance operator — that operator call is the actual "Vector Search.")
+(`<=>` is `pgvector`'s cosine-distance operator — not `<->`, which is L2/Euclidean distance — that operator call is the actual "Vector Search.")
 
 ### Scope
 
-1. **Enable `pgvector` + `knowledge_base` table:** an Alembic migration activates the extension and adds a `knowledge_base` table (`content`, `source`, `source_tier`, `embedding`, timestamps) — the same `source_tier`/freshness columns Phase 2's fuzzy layer will need as inputs.
-2. **Embeddings module:** a script vectorizes business documents (starting with a refund-policy Markdown file) using the embeddings API of whichever provider is already configured (Gemini `text-embedding-004`, 768 dimensions, by default — matching the provider already used elsewhere in this project) and inserts them into `knowledge_base`.
-3. **Dynamic context injection:** before the primary agent call — regardless of which `LLM_PROVIDER` answers — the Worker runs a cosine-similarity search over `knowledge_base` and injects the matched policy text into the system prompt. This is intentionally not gated on `LLM_PROVIDER=bedrock`; retrieval is orthogonal to which model answers.
+1. **Enable `pgvector` + `knowledge_base` table (done):** Alembic migration `7da4609fe11c` activates the extension and adds a `knowledge_base` table (`content`, `source`, `source_tier`, `embedding vector(768)`, timestamps) — the same `source_tier`/freshness columns Phase 2's fuzzy layer will need as inputs. Validated against a real Postgres: `upgrade`/`downgrade`/`upgrade` round-trips cleanly, `\d knowledge_base` confirms the column and the enabled `vector` extension.
+2. **Embeddings module (done):** `scripts/ingest_knowledge_base.py` chunks `docs/policies/refund_policy.md` (paragraph-aware, overlapping — `src/core/services/chunking.py`) and embeds each chunk via `src/agents/llm_factory.py`'s new `get_embeddings()` factory, default Gemini `gemini-embedding-001` truncated from its native 3072 dims to 768 via `output_dimensionality`. Run for real against the live API: 4 chunks ingested into `knowledge_base`.
+3. **Dynamic context injection (done):** before the Double Judge call — regardless of which `LLM_PROVIDER` answers — the Worker (`src/worker/worker.py`) embeds the incoming claim and runs a cosine-similarity search (`src/core/repositories/knowledge_base_repository.py`, pgvector's `<=>` operator via SQLAlchemy's `.cosine_distance()`) over `knowledge_base`, injecting the top match into `evaluate_decision`'s `context`. Not gated on `LLM_PROVIDER=bedrock`. Retrieval is best-effort and fails open — an embeddings/DB error is logged and processing continues without retrieved context, mirroring `prompt_guard.py`'s fail-open design; this was verified with a dedicated test that forces `get_embeddings()` to raise and asserts the transaction still completes.
+4. **What was actually retrieved for real claims (manual end-to-end check against the live API):** "I bought a laptop 10 days ago and want a full refund" matched the standard refund-window chunk; "My account has requested 5 refunds this month" matched the refund-amount-limits-and-fraud-flags chunk — the pipeline surfaces genuinely relevant policy text, not just plumbing that runs without erroring.
+
+One correction made while building this: the original design mislabeled `<->` as pgvector's cosine-distance operator. It is actually **L2/Euclidean distance** — `<=>` is cosine distance. All references (docs, migration, repository) were fixed to use `<=>` and `.cosine_distance()` before writing any query code, since building "cosine similarity search" on the wrong operator would have silently ranked results by the wrong metric.
 
 ---
 
