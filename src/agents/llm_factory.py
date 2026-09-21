@@ -1,5 +1,7 @@
+import hashlib
 from typing import Any, cast
 
+from langchain_core.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from pydantic import SecretStr
@@ -8,9 +10,13 @@ from src.core.config import settings
 
 # Optional imports for various cloud providers
 try:
-    from langchain_google_genai import ChatGoogleGenerativeAI
+    from langchain_google_genai import (
+        ChatGoogleGenerativeAI,
+        GoogleGenerativeAIEmbeddings,
+    )
 except ImportError:
     ChatGoogleGenerativeAI: Any = None  # type: ignore
+    GoogleGenerativeAIEmbeddings: Any = None  # type: ignore
 
 try:
     from langchain_openai import ChatOpenAI
@@ -102,3 +108,64 @@ def get_llm(provider: str | None = None, temperature: float = 0.7, model_name: s
         
     else:
         raise ValueError(f"Unsupported LLM_PROVIDER: {provider}")
+
+
+class _DeterministicHashEmbeddings(Embeddings):
+    """Dependency-free deterministic embeddings for local dev/tests.
+
+    Mirrors get_llm()'s 'mock' provider (no API spend). langchain_core's own
+    fake embeddings (DeterministicFakeEmbedding) require numpy, which is not
+    a project dependency, so this hand-rolled version uses only hashlib.
+    Vectors are stable per input text but carry no real semantic meaning —
+    suitable for exercising the retrieval *pipeline* in tests, not for
+    asserting anything about which document is "most similar".
+    """
+
+    def __init__(self, dim: int = 768) -> None:
+        self.dim = dim
+
+    def _vector(self, text: str) -> list[float]:
+        digest = hashlib.sha256(text.encode()).digest()
+        return [digest[i % len(digest)] / 255.0 for i in range(self.dim)]
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self._vector(t) for t in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._vector(text)
+
+
+def get_embeddings(provider: str | None = None) -> Embeddings:
+    """
+    Factory function for the embeddings client used by Phase 1.D RAG retrieval.
+
+    Deliberately separate from get_llm()'s chat-model provider list and not
+    tied to AWS Bedrock Titan Embeddings -- see README.md's Phase 1.D ADR for
+    why RAG is decoupled from a specific cloud provider. The Bedrock/Titan
+    embeddings path is Phase 6 work, not implemented here.
+
+    Args:
+        provider: Override the default provider from settings. Currently
+            supports 'gemini' (also used for 'vertex', same embedding model)
+            and 'mock'.
+    """
+    if provider is None:
+        provider = settings.LLM_PROVIDER
+    provider = provider.lower().strip()
+
+    if provider == "mock":
+        return _DeterministicHashEmbeddings(dim=768)
+
+    if provider in ("gemini", "vertex"):
+        if GoogleGenerativeAIEmbeddings is None:
+            raise ImportError("langchain-google-genai is not installed")
+        return cast(Embeddings, GoogleGenerativeAIEmbeddings(
+            model="models/gemini-embedding-001",
+            api_key=SecretStr(settings.GEMINI_API_KEY),
+            output_dimensionality=768,
+        ))
+
+    raise ValueError(
+        f"No embeddings provider configured for LLM_PROVIDER={provider!r}. "
+        "Phase 1.D currently supports 'gemini'/'vertex' and 'mock'."
+    )

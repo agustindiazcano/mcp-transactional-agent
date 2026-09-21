@@ -21,6 +21,19 @@ import re
 import sys
 
 # ---------------------------------------------------------------------------
+# Hard-blocked commands: never executed, no "Always Allow" override possible.
+# PENDING.md is the user's personal working roadmap. It must never be deleted
+# or emptied by any tool call, regardless of git-tracked status — see
+# CLAUDE.md Section 8.
+# ---------------------------------------------------------------------------
+DENY_COMMAND_PATTERNS: list[tuple[str, str]] = [
+    (r"(?i)\b(rm|del|erase)\b[^|&;\n]*PENDING\.md", "Deleting PENDING.md is not allowed — it must never be removed."),
+    (r"(?i)Remove-Item[^|&;\n]*PENDING\.md", "Deleting PENDING.md is not allowed — it must never be removed."),
+    (r"(?i)git\s+rm[^|&;\n]*PENDING\.md", "Deleting PENDING.md (even via git rm) is not allowed."),
+    (r"(?<!>)>\s*PENDING\.md\b", "Truncating/overwriting PENDING.md via shell redirection is not allowed."),
+]
+
+# ---------------------------------------------------------------------------
 # Patterns that indicate destructive intent in a shell command (Bash or
 # PowerShell tool_input.command).
 # ---------------------------------------------------------------------------
@@ -54,6 +67,9 @@ PROTECTED_FILE_PATTERNS: list[tuple[str, str]] = [
 
 
 def check_command(command_line: str) -> tuple[str, str]:
+    for pattern, label in DENY_COMMAND_PATTERNS:
+        if re.search(pattern, command_line):
+            return "deny", label
     for pattern, label in DESTRUCTIVE_COMMAND_PATTERNS:
         if re.search(pattern, command_line):
             return "ask", f"Potentially destructive operation: {label}. Confirm before allowing."

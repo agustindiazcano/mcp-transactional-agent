@@ -23,6 +23,7 @@ dependencies = [
     "mcp",
     "aio-pika",
     "sqlalchemy",
+    "pgvector",
     "alembic",
     "asyncpg",
     "psycopg2-binary",

@@ -9,10 +9,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agents.judge import evaluate_decision
-from src.agents.llm_factory import get_llm
+from src.agents.llm_factory import get_embeddings, get_llm
 from src.agents.prompt_guard import check_for_injection
 from src.core.config import settings
 from src.core.models import Transaction
+from src.core.services.retrieval_service import retrieve_relevant_policy
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,23 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                 await message.ack()
                 return
 
+        # ── Step 2.5: Retrieval (Phase 1.D RAG, provider-agnostic) ──────────
+        # Best-effort: a retrieval/embeddings failure must never block
+        # transaction processing (same fail-open principle as prompt_guard.py).
+        # Once the primary agent's own LangChain loop exists (still mocked
+        # below), this is what its system prompt should be built from; today
+        # the Double Judge's `context` is the only real LLM call site
+        # available to carry it, so that's where it's threaded in.
+        retrieved_policy: str | None = None
+        if claim_text:
+            try:
+                embeddings_client = get_embeddings()
+                retrieved_policy = await retrieve_relevant_policy(
+                    db_session, embeddings_client, claim_text
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Retrieval skipped for {request_id}: {e}")
+
         # Instantiate LLM
         _ = get_llm()
 
@@ -83,6 +101,10 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
             max_retries = settings.MAX_LLM_RETRIES
             judge_result: dict[str, Any] = {}
 
+            judge_context: dict[str, Any] = {"request_id": request_id}
+            if retrieved_policy:
+                judge_context["retrieved_policy"] = retrieved_policy
+
             while retries < max_retries:
                 # In the real system this invokes the LangChain agent loop.
                 mock_primary_action = "execute_refund"
@@ -91,7 +113,7 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                 judge_result = await evaluate_decision(
                     action_name=mock_primary_action,
                     action_args=mock_primary_args,
-                    context={"request_id": request_id},
+                    context=judge_context,
                 )
 
                 if judge_result.get("verdict") == "APPROVE":
