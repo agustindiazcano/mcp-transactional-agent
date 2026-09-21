@@ -49,7 +49,7 @@ The project also examines a second question: **how much of an AI system's decisi
 |---|---|---|
 | **Phase 1** | Core engine: event-driven pipeline, MCP, guardrails, concurrency control | Feature-complete, running locally |
 | **Phase 1.B** | MCP security boundary: authn, per-tool authz, validation, rate limiting, audit log | In progress |
-| **Phase 1.C** | Containerized local deployment: per-service Dockerfiles, full `docker-compose` orchestration | Dockerfiles + orchestration done; HTTP reachability validated; root cause of the real-transaction failure identified and fixed at the code level (see [postmortem](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md)) — unit-tested; container rebuild and load validation not yet re-run |
+| **Phase 1.C** | Containerized local deployment: per-service Dockerfiles, full `docker-compose` orchestration | Done — deployment and load validated against the real containerized stack (see [postmortem](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md)) |
 | **Phase 1.D** | RAG over business rules: pgvector + provider-agnostic embeddings (Bedrock Titan swap deferred to Phase 6) | Done — validated end-to-end locally |
 | **Phase 2** | Confidence layer: fuzzy scoring + belief rule base | In progress |
 | **Phase 3** | Quality drift detection (pluggable detector) | Designed, not yet implemented |
@@ -73,7 +73,7 @@ The project also examines a second question: **how much of an AI system's decisi
 - **[Telemetry & Performance Testing](docs/testing/telemetry_performance.md):** Concurrency testing, coverage, and LLM tracing.
 
 ### Postmortems
-- **[2026-09-21: Phase 1.C Load Test — MCP Transport Failures](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md):** Three MCP-adjacent bugs found while attempting the Phase 1.C load test. Two fixed and verified. The third — the actual blocker — was root-caused by isolating the transport plane from the application plane: an unguarded `get_llm(provider="groq", ...)` call inside the Double Judge, not a networking issue at all. Fixed and unit-tested (`fix/judge-groq-import-crash`); container/load-test verification still pending. Full timeline, root cause, and every reproduction attempt that didn't work.
+- **[2026-09-21: Phase 1.C Load Test — MCP Transport Failures](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md):** Three MCP-adjacent bugs found while attempting the Phase 1.C load test. All three fixed and verified against the real containerized stack, including a re-run of the Locust load test. Full timeline, root cause, and every reproduction attempt that didn't work.
 
 ---
 
@@ -181,7 +181,7 @@ An injected instruction can still influence which of the *allowed* tools the age
 
 ---
 
-## Phase 1.C — Containerized Local Deployment (Deployment validation done; load validation pending)
+## Phase 1.C — Containerized Local Deployment (Done — deployment and load validated)
 
 ### Problem
 
@@ -191,8 +191,8 @@ Phase 1 ran as four processes started by hand in separate terminals (Postgres, R
 
 1. **Dockerfiles (done):** one slim `python:3.11` image per service — `docker/gateway.Dockerfile`, `docker/worker.Dockerfile` (also used, via command override, for the Recovery Sweeper and a one-shot `migrate` service), `docker/mcp_server.Dockerfile` — each installing only production dependencies (`pip install .`, not `.[dev]`) and running as a non-root user.
 2. **`docker-compose.yml` (done):** all seven services (`postgres`, `rabbitmq`, `migrate`, `mcp_server`, `worker`, `sweeper`, `gateway`) now run on a private `agentic_net` bridge network. The one-shot `migrate` service runs `alembic upgrade head` and gates the app services via `service_completed_successfully`.
-3. **Deployment validation (partial — HTTP reachability done, a real transaction not yet reliable, root cause identified):** `docker compose up --build` from a clean checkout brings all seven containers to a running state, with the Gateway and MCP server reachable through the network from the host (`/docs` on the gateway, `/sse` on the MCP server). One boot-order bug was found and fixed here: RabbitMQ's healthcheck (`rabbitmq-diagnostics -q ping`) reported healthy before the AMQP listener on 5672 was actually accepting connections, so on the very first boot the `worker` and `sweeper` containers hit `Connect call failed`. Fixed by switching the healthcheck to `check_port_connectivity` and adding a bounded `restart: on-failure:5` to the app services. Attempting the load test in Step 1 of `PENDING.md` surfaced a deeper gap this reachability check didn't catch: a real Worker→MCP-server session failed on nearly every transaction, even after fixing two other real MCP transport bugs (Host-header allowlist, message-path redirect — see git log `4691f17`). Root cause: not a transport issue at all — `evaluate_decision()`'s unguarded `get_llm(provider="groq", ...)` call `ImportError`s (the `langchain-groq` package is undeclared), and that exception, raised inside the MCP session's `async with` block, gets reported by anyio's `TaskGroup` as a generic transport failure. Full diagnosis in the [postmortem](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md); **fixed** (`fix/judge-groq-import-crash`): `langchain-groq` is now a declared dependency, and `_run_single_judge()` (`src/agents/judge.py`) constructs its LLM inside its own `try`/`except`, so a judge-construction failure now fails that judge closed to `REJECT` — the same fail-safe path invocation failures already used — instead of raising out of `evaluate_decision()` into the MCP session. Covered by two new regression tests in `tests/unit/test_judge.py`; full unit suite, `ruff`, and `mypy --strict` all pass. Not yet verified against the real containerized stack — see Load validation, below.
-4. **Load validation (not yet run — no longer blocked by the bug above, but not yet re-attempted):** re-run the Locust concurrency suite (100+ simulated concurrent claimants) against the containerized stack instead of bare `localhost`, confirm the pessimistic locks in Phase 1 hold under contention without deadlocks, and publish the resulting throughput and P95 latency into the [System Performance & Telemetry](#system-performance--telemetry) table, replacing the current placeholder values.
+3. **Deployment validation (done):** `docker compose up --build` from a clean checkout brings all seven containers to a running state, with the Gateway and MCP server reachable through the network from the host (`/docs` on the gateway, `/sse` on the MCP server). One boot-order bug was found and fixed here: RabbitMQ's healthcheck (`rabbitmq-diagnostics -q ping`) reported healthy before the AMQP listener on 5672 was actually accepting connections, so on the very first boot the `worker` and `sweeper` containers hit `Connect call failed`. Fixed by switching the healthcheck to `check_port_connectivity` and adding a bounded `restart: on-failure:5` to the app services. Attempting the Locust load test surfaced a deeper gap this reachability check didn't catch: a real Worker→MCP-server session failed on nearly every transaction, even after fixing two other real MCP transport bugs (Host-header allowlist, message-path redirect — see git log `4691f17`). Root cause: not a transport issue at all — `evaluate_decision()`'s unguarded `get_llm(provider="groq", ...)` call `ImportError`s (the `langchain-groq` package is undeclared), and that exception, raised inside the MCP session's `async with` block, gets reported by anyio's `TaskGroup` as a generic transport failure. Full diagnosis in the [postmortem](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md); **fixed and verified** (`fix/judge-groq-import-crash`, merged): `langchain-groq` is now a declared dependency, and `_run_single_judge()` (`src/agents/judge.py`) constructs its LLM inside its own `try`/`except`, so a judge-construction failure now fails that judge closed to `REJECT` — the same fail-safe path invocation failures already used — instead of raising out of `evaluate_decision()` into the MCP session. After rebuilding the `worker`/`gateway` images, a real transaction through the full stack completed cleanly end-to-end: Prompt Guard and Judge 2 both ran real Groq calls with no crash, the base judges disagreed (Gemini APPROVE / Groq REJECT), correctly escalated to the Supreme Court cascade, and the transaction committed as `COMPLETED` — no `TaskGroup`/`RemoteProtocolError` anywhere in the logs.
+4. **Load validation (done):** re-ran the Locust concurrency suite (100 simulated concurrent claimants, spawn rate 10, 1 minute, `LLM_PROVIDER=mock` override on the worker for the primary agent) against the containerized stack instead of bare `localhost`. Results in [System Performance & Telemetry](#system-performance--telemetry) below — zero failures, and P95 latency stayed flat (87ms) instead of climbing over the run the way the pre-fix Gateway did. Drained a sample of the resulting backlog through the real worker, not the full ~2600 — Judge 2, the Supreme Court cascade, and Prompt Guard all hardcode their provider (Groq/Gemini) independently of `LLM_PROVIDER`, so even a mock override still makes real API calls per message, and draining thousands sequentially would burn real quota for no additional signal. Confirmed clean, correct routing under real processing on the sample drained: retries, Supreme Court escalation, and final `COMPLETED`/`PENDING_HUMAN_REVIEW` outcomes, with no deadlocks and no stuck `PROCESSING` rows.
 
 This phase seals the local environment that Phase 1.B secures and Phase 1.D (below) and the AWS migration in [Phase 6](#phase-6--cloud-migration-aws-serverless-designed-not-yet-implemented) build on.
 
@@ -332,14 +332,14 @@ Method: token counts taken from each provider's usage fields, logged per request
 
 ## System Performance & Telemetry
 
-**Status: pending measurement.** The table is intentionally kept as a placeholder until real numbers are available.
+Measured 2026-09-21 against the full `docker compose` stack (Locust: 100 users, spawn rate 10, 1 minute, `--host http://localhost:8000`, worker's primary agent on `LLM_PROVIDER=mock` — Judge 2/Supreme Court/Prompt Guard still hit real Groq/Gemini regardless, since they hardcode their provider by design).
 
 | Metric | Value |
 |---|---|
-| Test coverage (unit + integration) | XX.X% |
-| API ingestion latency, P95 (FastAPI → RabbitMQ) | XX ms |
-| Ingestion throughput (local, concurrency smoke test) | XX req/s |
-| End-to-end processing time (LLM-dependent) | ~X.X s |
+| Test coverage (unit + integration) | 82% (47/48 tests; 1 pre-existing failing test unrelated to this measurement, see `PENDING.md`) |
+| API ingestion latency, P95 (FastAPI → RabbitMQ) | 87 ms (P50 55 ms, P99 120 ms) |
+| Ingestion throughput (local, concurrency smoke test) | 45.5 req/s average over the run (~49 req/s steady-state), 2630 requests, 0 failures |
+| End-to-end processing time (LLM-dependent) | Not precisely benchmarked; a single real transaction (Prompt Guard → RAG retrieval → primary agent → Double Judge → Supreme Court cascade) observed completing within a few seconds outside load |
 
 ---
 
