@@ -56,7 +56,7 @@ class McpAuditLog(Base):
 
     __tablename__ = "mcp_audit_logs"
     __table_args__ = (
-        Index("ix_mcp_audit_logs_client_id_created_at", "client_id", "created_at"),
+        Index("ix_mcp_audit_logs_client_id_tool_created_at", "client_id", "tool", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)

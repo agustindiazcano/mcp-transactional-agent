@@ -16,6 +16,7 @@ AuditDecision = Literal[
     "DENIED_UNAUTHENTICATED",
     "DENIED_UNAUTHORIZED",
     "DENIED_VALIDATION",
+    "DENIED_RATE_LIMITED",
 ]
 
 # Argument keys whose values are masked before being written to the audit

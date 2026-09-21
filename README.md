@@ -23,7 +23,7 @@ The project also examines a second question: **how much of an AI system's decisi
 
 - Not deployed. There is no production deploy target, no CI/CD pipeline, no SLOs, and no incident runbook.
 - Not load tested. The Locust suite is a concurrency smoke test against `localhost`; it does not measure capacity under real network, cold-start, or resource-contention conditions.
-- Not hardened. The MCP server currently accepts unauthenticated calls; closing this is Phase 1.B.
+- Not TLS-terminated between internal services, and no credential rotation or secret manager (tokens are read from environment and files) — Phase 1.B closed the authentication/authorization/rate-limiting/audit gap; these two remain open.
 
 ---
 
@@ -48,7 +48,7 @@ The project also examines a second question: **how much of an AI system's decisi
 | Phase | Focus | Status |
 |---|---|---|
 | **Phase 1** | Core engine: event-driven pipeline, MCP, guardrails, concurrency control | Feature-complete, running locally |
-| **Phase 1.B** | MCP security boundary: authn, per-tool authz, validation, rate limiting, audit log | In progress |
+| **Phase 1.B** | MCP security boundary: authn, per-tool authz, validation, rate limiting, audit log | Done |
 | **Phase 1.C** | Containerized local deployment: per-service Dockerfiles, full `docker-compose` orchestration | Done — deployment and load validated against the real containerized stack (see [postmortem](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md)) |
 | **Phase 1.D** | RAG over business rules: pgvector + provider-agnostic embeddings (Bedrock Titan swap deferred to Phase 6) | Done — validated end-to-end locally |
 | **Phase 2** | Confidence layer: fuzzy scoring + belief rule base | In progress |
@@ -124,7 +124,7 @@ The ingestion gateway publishes each request to RabbitMQ and returns `202 Accept
 
 ### 3. MCP Server
 
-The LLM never touches the database or internal APIs. It reasons about the request and asks the MCP server to run a tool (`execute_refund`, `validate_fraud_score`). The server is a separate process, so a malformed or hallucinated tool call can only reach what the server exposes. Securing that boundary is Phase 1.B.
+The LLM never touches the database or internal APIs. It reasons about the request and asks the MCP server to run a tool (`execute_refund`, `validate_fraud_score`). The server is a separate process, so a malformed or hallucinated tool call can only reach what the server exposes. Securing that boundary is [Phase 1.B](#phase-1b--mcp-security-boundary-done), below.
 
 ### 4. Retrieval over Business Rules
 
@@ -143,11 +143,11 @@ Before calling a transactional tool, the agent retrieves the relevant business r
 
 ---
 
-## Phase 1.B — MCP Security Boundary (In progress)
+## Phase 1.B — MCP Security Boundary (Done)
 
-### Problem
+### Problem (as it stood before this phase)
 
-The project's central claim is that the MCP server is the only path from the LLM to side-effecting operations. In the current code that path is open: the server accepts unauthenticated HTTP on port 8080, exposes every tool to every caller, relies only on type hints for argument validation, applies no rate limits, and keeps no audit record. Anyone with network access to the server can call `execute_refund` directly, bypassing the agent, the judge, and the rule base.
+The project's central claim is that the MCP server is the only path from the LLM to side-effecting operations. Before this phase that path was open: the server accepted unauthenticated HTTP on port 8080, exposed every tool to every caller, relied only on type hints for argument validation, applied no rate limits, and kept no audit record. Anyone with network access to the server could call `execute_refund` directly, bypassing the agent, the judge, and the rule base.
 
 ### Current state
 
@@ -156,15 +156,17 @@ The project's central claim is that the MCP server is the only path from the LLM
 | Client authentication | Done — SHA-256 hash + constant-time compare, `src/mcp_server/security/client_registry.py` |
 | Per-tool authorization | Done — per-`client_id` allowlist checked on every `tools/call`, `src/mcp_server/security/middleware.py` |
 | Server-side argument validation | Done — `ExecuteRefundArgs`/`ValidateFraudScoreArgs` in `src/mcp_server/tools/schemas.py`, `extra="forbid"` |
-| Rate limiting | Not implemented — remaining Phase 1.B item, tracked in `PENDING.md` |
-| Audit log | Done — `mcp_audit_logs` table (migration `70b40799328f`), `src/mcp_server/security/audit.py` |
+| Rate limiting | Done — sliding-window COUNT over `mcp_audit_logs`, `src/mcp_server/security/rate_limiter.py`, `MCP_RATE_LIMIT_PER_MIN` |
+| Audit log | Done — `mcp_audit_logs` table (migration `70b40799328f`, index adjusted in `5f889de3a5a3`), `src/mcp_server/security/audit.py` |
+
+**Known, accepted limitation:** `tools/list` visibility isn't filtered by identity (a client can see a tool's name even if it can't call it) — the SSE transport delivers that response asynchronously over the `/sse` stream, outside the reach of the POST-request middleware this boundary is built on. Execution access is still fully gated for every control above; only name visibility leaks. See item 2 below and `PENDING.md`.
 
 ### Design
 
 1. **Authentication.** Each client (worker type) has its own token. The server stores only SHA-256 hashes of tokens, compares them in constant time, and derives `client_id` from the token, never from a caller-supplied header. Requests without a valid token are rejected before reaching any tool — enforced by `MCPSecurityMiddleware`, an ASGI middleware wrapping the whole `mcp.sse_app()`, so both the `/sse` handshake and every `/messages/` JSON-RPC POST are gated the same way.
 2. **Per-tool authorization.** A server-side allowlist (`mcp_clients.json`, path configurable via `MCP_CLIENTS_FILE`) maps each `client_id` to the tools it may call. A `tools/call` request naming a tool outside the caller's allowlist is rejected (HTTP 403) and audited as denied, before the call reaches the MCP server's own tool-dispatch logic. **Known gap:** `tools/list` visibility is not filtered by identity — a client can see a tool's name even if it can't call it — because the SSE transport delivers that response asynchronously over the separate `/sse` stream, outside this POST-request middleware's reach. Execution access is still fully gated; only name visibility leaks.
 3. **Argument validation.** `MCPSecurityMiddleware` validates a `tools/call` request's raw arguments against a strict per-tool Pydantic model (`src/mcp_server/tools/schemas.py`) before the call reaches the tool function: positive amounts bounded by `REFUND_MAX_AMOUNT`, currency restricted to an enum, and unknown fields rejected outright (`extra="forbid"`) — regardless of what the LLM serialized, and independent of the MCP SDK's own looser per-parameter schema, which silently drops unknown fields rather than rejecting them.
-4. **Rate limiting.** Not yet implemented. Design (unchanged from the original plan): limits per `client_id` and per tool, computed from the audit table over a sliding window, so the limit holds across multiple MCP replicas without adding Redis.
+4. **Rate limiting.** `src/mcp_server/security/rate_limiter.py`'s `is_rate_limited()` counts `mcp_audit_logs` rows for the calling `client_id`+tool in the trailing 1-minute window (default `MCP_RATE_LIMIT_PER_MIN=30`) and denies with HTTP 429 (`decision="DENIED_RATE_LIMITED"`) once the count is at or over the limit — computed from the audit table itself, not a separate counter or Redis, so the limit holds across multiple MCP replicas. Counts every row regardless of `decision`, including past denials, so retrying with bad arguments or a disallowed tool still consumes quota instead of bypassing the limit for free. Runs after the free, in-memory tool-allowlist check and before argument validation, so an over-quota client stops costing validation work too. The check itself fails closed the same way the audit write does: a failed COUNT query denies (503) rather than failing open. `mcp_audit_logs`'s index was swapped from `(client_id, created_at)` to `(client_id, tool, created_at)` (migration `5f889de3a5a3`) to match this query's shape.
 5. **Audit log.** Every invocation, including denied ones, writes a row (`mcp_audit_logs`: timestamp, `client_id`, tool, arguments with PII masked, decision, result). The write happens *before* an allowed call is forwarded to the real MCP app — if it fails, the call is denied (HTTP 503) instead of proceeding (fail closed). A denied call's audit write is best-effort: the call is already rejected regardless of whether the write succeeds. **Known limitation:** the SSE transport delivers a tool's actual result asynchronously, not as this POST's HTTP response, so an ALLOWED row's `result` field records `"invoked"` rather than the eventual success/failure — capturing that would require either a mutable row or a second correlated one, both of which would compromise the insert-only audit trail. The table is insert-only by convention in code (no path updates or deletes a row); a dedicated DB role restricting the MCP server's connection to `INSERT`/`SELECT` is an infra-level follow-up, not yet configured.
 
 ### Prompt-injection invariant

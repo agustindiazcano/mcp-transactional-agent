@@ -4,7 +4,7 @@ import json
 
 import pytest
 import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy import select, text
 
 from src.core.config import settings
@@ -198,3 +198,116 @@ async def test_tool_call_without_allowlisted_tool_is_denied_and_audited(db_engin
 
     assert len(rows) == 1
     assert rows[0].decision == "DENIED_UNAUTHORIZED"
+
+
+def _refund_call_payload(transaction_id: str) -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "execute_refund",
+            "arguments": {"transaction_id": transaction_id, "amount": 10.0, "currency": "USD"},
+        },
+    }
+
+
+async def _call_tool(client: AsyncClient, *, token: str, payload: dict) -> Response:
+    return await client.post(
+        "/messages/?session_id=00000000-0000-0000-0000-000000000000",
+        headers={"Authorization": f"Bearer {token}"},
+        content=json.dumps(payload),
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_call_rate_limit_blocks_after_threshold_and_audits(db_engine):
+    """The Nth+1 call to the same tool within the window is rejected (429)
+    and audited, once a client has already made N calls."""
+    session_maker = get_session_maker(db_engine)
+    app = create_app(registry=_test_registry(), session_maker=session_maker, rate_limit_per_min=3)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        for i in range(3):
+            response = await _call_tool(
+                client, token=VALID_TOKEN, payload=_refund_call_payload(f"txn-{i}")
+            )
+            # No live SSE session behind this session_id, so an allowed call
+            # 404s from the inner app -- what matters here is that it's NOT
+            # rejected by the middleware itself (429).
+            assert response.status_code != 429
+
+        limited_response = await _call_tool(
+            client, token=VALID_TOKEN, payload=_refund_call_payload("txn-over-limit")
+        )
+
+    assert limited_response.status_code == 429
+
+    async with session_maker() as session:
+        result = await session.execute(
+            select(McpAuditLog).where(McpAuditLog.decision == "DENIED_RATE_LIMITED")
+        )
+        rows = result.scalars().all()
+
+    assert len(rows) == 1
+    assert rows[0].client_id == "test-worker"
+    assert rows[0].tool == "execute_refund"
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_is_scoped_per_tool_at_http_layer(db_engine):
+    """Maxing out the limit on one tool doesn't block a different tool for
+    the same client."""
+    session_maker = get_session_maker(db_engine)
+    app = create_app(registry=_test_registry(), session_maker=session_maker, rate_limit_per_min=3)
+    transport = ASGITransport(app=app)
+
+    fraud_payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "validate_fraud_score", "arguments": {"user_id": "user-1"}},
+    }
+
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        for i in range(3):
+            await _call_tool(client, token=VALID_TOKEN, payload=_refund_call_payload(f"txn-{i}"))
+
+        other_tool_response = await _call_tool(client, token=VALID_TOKEN, payload=fraud_payload)
+
+    assert other_tool_response.status_code != 429
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_is_scoped_per_client_at_http_layer(db_engine):
+    """Maxing out the limit for one client doesn't block another client
+    calling the same tool."""
+    other_token = "second-worker-token"
+    registry = ClientRegistry.from_records(
+        [
+            {
+                "client_id": "test-worker",
+                "token_hash": VALID_TOKEN_HASH,
+                "allowed_tools": ["execute_refund", "validate_fraud_score"],
+            },
+            {
+                "client_id": "second-worker",
+                "token_hash": hashlib.sha256(other_token.encode("utf-8")).hexdigest(),
+                "allowed_tools": ["execute_refund"],
+            },
+        ]
+    )
+    session_maker = get_session_maker(db_engine)
+    app = create_app(registry=registry, session_maker=session_maker, rate_limit_per_min=3)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://127.0.0.1:8080") as client:
+        for i in range(3):
+            await _call_tool(client, token=VALID_TOKEN, payload=_refund_call_payload(f"txn-{i}"))
+
+        other_client_response = await _call_tool(
+            client, token=other_token, payload=_refund_call_payload("txn-other-client")
+        )
+
+    assert other_client_response.status_code != 429
