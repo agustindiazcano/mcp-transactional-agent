@@ -154,6 +154,11 @@ The detector is pluggable via `DRIFT_DETECTOR`, over the time series of judge/Tr
 - Use `structlog` for structured JSON logging. Never use `print()`.
 - Follow PEP 8. Line length limit is 100 characters.
 - Do not mix concerns: one responsibility per file, one responsibility per function.
+- Do not use blocking I/O inside an `async` function (`time.sleep`, `requests.get`). Use `asyncio.sleep`, `httpx.AsyncClient`, or the async driver already in use (`aio-pika`, `asyncpg`).
+- Do not use `from module import *`. Always use explicit imports.
+- Do not catch `Exception` as a bare catch-all without re-raising or logging the specific error.
+- Do not leave `TODO` comments in code. Either implement the feature or explicitly ask the user to decide.
+- Do not put an HTTP client call (`httpx`, `requests`) inside `src/core/repositories/` — repositories are for database access only; external calls belong in `src/core/services/` or `src/agents/`.
 
 ## 6b. Test-Driven Development Workflow (Mandatory)
 
@@ -225,6 +230,10 @@ Before writing or modifying any file that touches the following areas, pause and
 - Any change to `mcp_server.py` that removes or renames an existing tool, as this is a breaking change for live agents.
 - Any change to a rule in `confidence/rules/` that lowers a belief-degree threshold for `execute_refund` or `validate_fraud_score` (this weakens a financial safety gate).
 - Any change to `.env` files or secrets.
+- Before running an Alembic upgrade/downgrade command, confirm the current revision (`alembic current`) and the target revision with the user.
+- Before deleting or moving a file that defines database models, router registrations, or MCP tool registrations, list what will be affected and ask for confirmation.
+
+When refusing an action under this section, always state the correct alternative in the same reply — don't just decline.
 
 ## 9. Environment Variables Reference
 
