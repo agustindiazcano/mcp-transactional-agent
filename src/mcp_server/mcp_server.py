@@ -55,21 +55,30 @@ def create_app(
     *,
     registry: ClientRegistry | None = None,
     session_maker: async_sessionmaker[AsyncSession] | None = None,
+    rate_limit_per_min: int | None = None,
 ) -> ASGIApp:
     """Build the MCP ASGI app behind the Phase 1.B security boundary.
 
-    Defaults read from `settings` (the process-wide registry file and a real
-    DB engine), but tests pass an explicit `registry`/`session_maker` -- e.g.
-    a registry built in-memory with a known token, or a session maker pointed
-    at a test database -- without touching global state. See
+    Defaults read from `settings` (the process-wide registry file, a real DB
+    engine, and `MCP_RATE_LIMIT_PER_MIN`), but tests pass explicit overrides
+    -- e.g. a registry built in-memory with a known token, a session maker
+    pointed at a test database, or a low `rate_limit_per_min` for a fast
+    test -- without touching global state. See
     tests/integration/test_mcp_server.py.
     """
     if registry is None:
         registry = ClientRegistry.from_file(settings.MCP_CLIENTS_FILE)
     if session_maker is None:
         session_maker = get_session_maker(get_engine(settings.DATABASE_URL))
+    if rate_limit_per_min is None:
+        rate_limit_per_min = settings.MCP_RATE_LIMIT_PER_MIN
     inner_app = mcp.sse_app(message_path=MESSAGE_PATH, transport_security=TRANSPORT_SECURITY)
-    return MCPSecurityMiddleware(inner_app, registry=registry, session_maker=session_maker)
+    return MCPSecurityMiddleware(
+        inner_app,
+        registry=registry,
+        session_maker=session_maker,
+        rate_limit_per_min=rate_limit_per_min,
+    )
 
 
 app = create_app()

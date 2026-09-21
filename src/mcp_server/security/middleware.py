@@ -1,5 +1,5 @@
-"""ASGI-level authn/authz/validation/audit boundary for the MCP server
-(Phase 1.B). See CLAUDE.md Section 4 and 5a-i.
+"""ASGI-level authn/authz/rate-limit/validation/audit boundary for the MCP
+server (Phase 1.B). See CLAUDE.md Section 4 and 5a-i.
 
 Wraps the whole `mcp.sse_app()` ASGI app, so every HTTP request -- the `/sse`
 handshake and every `/messages/` JSON-RPC POST -- passes through here first:
@@ -8,17 +8,27 @@ handshake and every `/messages/` JSON-RPC POST -- passes through here first:
    by hashing the presented token and comparing against the registry in
    constant time (never trust a caller-supplied identity header). Missing or
    invalid -> 401, before anything else runs.
-2. For a `tools/call` JSON-RPC request specifically: check the tool against
-   the authenticated client's allowlist (403 if not permitted), then validate
-   the raw arguments against that tool's strict schema in
-   `src.mcp_server.tools.schemas` (422 on a business-limit violation or an
-   unknown field).
+2. For a `tools/call` JSON-RPC request specifically, in order:
+   a. Check the tool against the authenticated client's allowlist (403 if
+      not permitted) -- a free, in-memory check, so it runs before anything
+      that costs a DB round-trip or real validation work.
+   b. Check the sliding-window rate limit for this (client_id, tool) pair
+      via `src.mcp_server.security.rate_limiter.is_rate_limited` (429 if the
+      client has already made `MCP_RATE_LIMIT_PER_MIN` or more calls to this
+      tool in the trailing minute). Runs before argument validation so an
+      over-quota client stops costing validation work too, not just tool
+      execution.
+   c. Validate the raw arguments against that tool's strict schema in
+      `src.mcp_server.tools.schemas` (422 on a business-limit violation or an
+      unknown field).
 3. Write an audit row. On the allow path this happens *before* the call is
    forwarded to the real MCP app, and a failed write denies the call (503)
    instead of letting it through -- the fail-closed rule in CLAUDE.md Section
-   4. On a deny path the audit write is best-effort: the call is already
-   denied regardless of whether the write succeeds, so a DB outage there
-   only costs an audit entry, never a wrongly-allowed call.
+   4. The same fail-closed treatment applies to the rate-limit check itself:
+   a failed COUNT query denies (503) rather than failing open. On a deny
+   path the audit write is best-effort: the call is already denied
+   regardless of whether the write succeeds, so a DB outage there only costs
+   an audit entry, never a wrongly-allowed call.
 
 Limitation: the SSE transport delivers a `tools/call` response asynchronously
 over the separate `/sse` stream, not as this POST's HTTP response body, so
@@ -46,6 +56,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from src.mcp_server.security.audit import AuditDecision, write_audit_log
 from src.mcp_server.security.client_registry import ClientRegistry
+from src.mcp_server.security.rate_limiter import is_rate_limited
 from src.mcp_server.tools.schemas import TOOL_ARG_SCHEMAS
 
 logger = logging.getLogger(__name__)
@@ -90,10 +101,12 @@ class MCPSecurityMiddleware:
         *,
         registry: ClientRegistry,
         session_maker: async_sessionmaker[AsyncSession],
+        rate_limit_per_min: int,
     ) -> None:
         self._app = app
         self._registry = registry
         self._session_maker = session_maker
+        self._rate_limit_per_min = rate_limit_per_min
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -147,6 +160,33 @@ class MCPSecurityMiddleware:
                 arguments=arguments,
                 decision="DENIED_UNAUTHORIZED",
                 message="tool_not_permitted",
+            )
+            return
+
+        try:
+            async with self._session_maker() as session:
+                limited = await is_rate_limited(
+                    session,
+                    client_id=client.client_id,
+                    tool=tool_name,
+                    limit_per_min=self._rate_limit_per_min,
+                )
+        except Exception:
+            logger.exception("mcp_rate_limit_check_failed; denying call (fail-closed)")
+            await JSONResponse({"error": "rate_limit_unavailable"}, status_code=503)(scope, receive, send)
+            return
+
+        if limited:
+            await self._deny(
+                scope,
+                receive,
+                send,
+                status_code=429,
+                client_id=client.client_id,
+                tool=tool_name,
+                arguments=arguments,
+                decision="DENIED_RATE_LIMITED",
+                message="rate_limit_exceeded",
             )
             return
 

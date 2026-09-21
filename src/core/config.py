@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     MCP_CLIENTS_FILE: str = "mcp_clients.json"
     MCP_CLIENT_TOKEN: str = "local-dev-worker-token-change-me"
     REFUND_MAX_AMOUNT: float = 10000.0
+    MCP_RATE_LIMIT_PER_MIN: int = 30
 
     # Worker Settings
     MAX_LLM_RETRIES: int = 3
