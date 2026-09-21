@@ -103,10 +103,13 @@ async def test_worker_judge_reject(db_session: AsyncSession):
          patch("src.worker.worker.evaluate_decision", return_value={"verdict": "REJECT", "reason": "Amount too high"}) as MockJudge:
              
         await process_message(mock_message, db_session)
-        
+
         mock_message.ack.assert_called_once()
-        MockJudge.assert_called_once()
-        
+        # The self-correction loop retries up to MAX_LLM_RETRIES times on a
+        # REJECT verdict before giving up, so a judge that always rejects is
+        # called that many times, not once.
+        assert MockJudge.call_count == settings.MAX_LLM_RETRIES
+
         result = await db_session.execute(select(Transaction).where(Transaction.request_id == request_id))
         txn = result.scalar_one_or_none()
         assert txn is not None
