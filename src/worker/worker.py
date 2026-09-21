@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agents.judge import evaluate_decision
 from src.agents.llm_factory import get_llm
+from src.agents.prompt_guard import check_for_injection
 from src.core.config import settings
 from src.core.models import Transaction
 
@@ -44,6 +45,16 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
             
         logger.info(f"Processing transaction {request_id}")
         
+        # 1. Pre-Execution Shield (Prompt Guard)
+        claim_text = body.get("claim_text", "")
+        if claim_text:
+            is_injection = await check_for_injection(claim_text)
+            if is_injection:
+                txn.status = "BLOCKED_MALICIOUS_PROMPT"
+                await db_session.commit()
+                await message.ack()
+                return
+        
         # Instantiate LLM
         _ = get_llm()
         
@@ -53,27 +64,51 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                    ClientSession(streams[0], streams[1]) as mcp_session:
                 await mcp_session.initialize()
                 
-                # Here the LLM agent would interact with the MCP tools
-                # For step 5, we mock the final primary decision and pass it to the judge.
-                # In the real system, this invokes the LangChain agent loop.
-                mock_primary_action = "execute_refund"
-                mock_primary_args = body
-        
-        # Evaluate with the Guardrail Judge
-        judge_result = await evaluate_decision(
-            action_name=mock_primary_action,
-            action_args=mock_primary_args,
-            context={"request_id": request_id}
-        )
-        
-        if judge_result.get("verdict") == "APPROVE":
-            txn.status = "COMPLETED"
-        else:
-            txn.status = "PENDING_HUMAN_REVIEW"
-            logger.warning(f"Transaction {request_id} rejected by judge: {judge_result.get('reason')}")
+                # 2. Self-Correction Loop
+                retries = 0
+                max_retries = settings.MAX_LLM_RETRIES
+                
+                judge_result = {}
+                
+                while retries < max_retries:
+                    # Here the LLM agent would interact with the MCP tools
+                    # For step 5, we mock the final primary decision and pass it to the judge.
+                    # In the real system, this invokes the LangChain agent loop.
+                    mock_primary_action = "execute_refund"
+                    mock_primary_args = body
             
+                    # Evaluate with the Guardrail Judge
+                    judge_result = await evaluate_decision(
+                        action_name=mock_primary_action,
+                        action_args=mock_primary_args,
+                        context={"request_id": request_id}
+                    )
+                    
+                    if judge_result.get("verdict") == "APPROVE":
+                        txn.status = "COMPLETED"
+                        logger.info(
+                            f"✅ Transaction {request_id} APPROVED. "
+                            f"Reason: {judge_result.get('reason')}"
+                        )
+                        break
+                    else:
+                        retries += 1
+                        logger.warning(
+                            f"⚠️  Judge rejected (attempt {retries}/{max_retries}). "
+                            f"Reason: {judge_result.get('reason')}"
+                        )
+                        # In real system, feed judge_result['reason'] back into the agent loop here
+                
+                if judge_result.get("verdict") != "APPROVE":
+                    txn.status = "PENDING_HUMAN_REVIEW"
+                    logger.warning(
+                        f"❌ Transaction {request_id} → PENDING_HUMAN_REVIEW "
+                        f"after {max_retries} attempts. Final reason: {judge_result.get('reason')}"
+                    )
+
         await db_session.commit()
-        
+        logger.info(f"Transaction {request_id} committed to DB with status: {txn.status}")
+
         # Ack the message
         await message.ack()
         

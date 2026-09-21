@@ -1,14 +1,29 @@
 # Agentic MCP Engine and RAG Gateway
 
-![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) ![Build](https://img.shields.io/badge/build-passing-brightgreen.svg) ![Coverage](https://img.shields.io/badge/coverage-85%25-green.svg) ![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg) ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) ![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg) ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 
-## Executive Summary
+## Summary
 
-Asynchronous Agentic Workflow Engine designed to safely orchestrate Large Language Models (LLMs) in high-concurrency transactional environments.
+An asynchronous workflow engine for running LLM agents against transactional business logic (refunds, fraud checks) without giving the model direct access to the database or internal APIs.
 
-This architecture solves the core bottlenecks of deploying Generative AI in production: non-deterministic volatility, data leakage, and synchronous blocking. By combining Event-Driven Architecture (EDA), the Model Context Protocol (MCP), and Advanced RAG, this engine provides a fault-tolerant sandbox for AI agents to interact with business logic.
+It addresses three problems that appear when LLMs are placed in a write path: non-deterministic output, uncontrolled access to side-effecting operations, and synchronous blocking on slow inference calls. The engine combines an event-driven pipeline (FastAPI → RabbitMQ → worker), a Model Context Protocol (MCP) server as the only route to side-effecting tools, and retrieval over business rules stored in PostgreSQL/pgvector.
 
-Beyond the core transactional engine, this project explores a second question: **how much of an AI system's decision-making can be made deterministic and auditable, instead of purely probabilistic?** Phases 2 and 3 extend the engine with a confidence layer (fuzzy logic + rule-based expert system) and a production observability layer (Kalman filtering over quality metrics), moving the system progressively from "trust the LLM's judgment" toward "trust an explicit, inspectable mechanism, and use the LLM only where symbolic reasoning cannot substitute for it."
+The project also examines a second question: **how much of an AI system's decision-making can be made deterministic and auditable instead of probabilistic?** Later phases add a rule-based confidence layer (fuzzy scoring and a belief rule base) and a drift-detection layer over quality metrics. The direction is consistent throughout: use an explicit, inspectable mechanism wherever one can do the job, and use the LLM only where symbolic reasoning cannot replace it.
+
+---
+
+## Project Status
+
+**What this is**
+
+- A feature-complete core engine that runs locally under Docker Compose, with unit tests, integration tests against real PostgreSQL and RabbitMQ, and failure-injection tests.
+- A reference architecture with documented design decisions (see [Architecture Decision Records](#architecture-decision-records)).
+
+**What this is not (yet)**
+
+- Not deployed. There is no production deploy target, no CI/CD pipeline, no SLOs, and no incident runbook.
+- Not load tested. The Locust suite is a concurrency smoke test against `localhost`; it does not measure capacity under real network, cold-start, or resource-contention conditions.
+- Not hardened. The MCP server currently accepts unauthenticated calls; closing this is Phase 1.B.
 
 ---
 
@@ -17,258 +32,368 @@ Beyond the core transactional engine, this project explores a second question: *
 | Category | Technologies |
 |---|---|
 | **Core Framework** | Python 3.10+, FastAPI, Pydantic, Uvicorn |
-| **Messaging & Event-Driven** | RabbitMQ, aio-pika |
-| **State & Persistence** | PostgreSQL, pgvector, SQLAlchemy (Async), Alembic |
+| **Messaging** | RabbitMQ, aio-pika |
+| **State & Persistence** | PostgreSQL, pgvector, SQLAlchemy (async), Alembic |
 | **AI & Orchestration** | LangChain, Model Context Protocol (MCP) |
-| **Enterprise LLM Arsenal** | OpenAI (GPT-4o), Google Vertex AI, Gemini AI Studio, AWS Bedrock, Groq |
-| **LLMOps & Telemetry** | TruLens (Tracing), promptfoo (Regression) |
-| **Testing & QA** | Pytest, pytest-cov, Locust (Load Testing) |
+| **LLM Providers** | OpenAI (GPT-4o), Google Vertex AI, Gemini AI Studio, AWS Bedrock, Groq |
+| **LLM Evaluation & Tracing** | TruLens, Langfuse (optional), promptfoo |
+| **Testing** | Pytest, pytest-cov, Locust |
 | **Infrastructure** | Docker, Docker Compose |
 
 ---
 
-## Roadmap Overview
+## Roadmap
 
 | Phase | Focus | Status |
 |---|---|---|
-| **Phase 1** | Core transactional engine (EDA, MCP, RAG, LLMOps) | Production-Ready |
-| **Phase 2** | Confidence layer (fuzzy scoring + expert system) | In Progress |
-| **Phase 3** | Observability layer (Kalman-based drift detection) | Experimental / Roadmap |
-| **Phase 4** | Ops Dashboard (Read-only React UI) | Experimental / Roadmap |
-| **Phase 5** | ML Comparison Track: TensorFlow/Keras MLP | Experimental / Roadmap |
+| **Phase 1** | Core engine: event-driven pipeline, MCP, RAG, LLM evaluation | Feature-complete, running locally |
+| **Phase 1.B** | MCP security boundary: authn, per-tool authz, validation, rate limiting, audit log | In progress |
+| **Phase 2** | Confidence layer: fuzzy scoring + belief rule base | In progress |
+| **Phase 3** | Quality drift detection (pluggable detector) | Designed, not yet implemented |
+| **Phase 4** | Read-only operations dashboard | Designed, not yet implemented |
+| **Phase 5** | Offline comparison: Keras MLP vs. rule base | Designed, not yet implemented |
 
 ---
 
 ## Documentation Index
 
-The project's architectural, reliability, and testing documentation is divided into the following dedicated manuals:
-
-### Architecture & Roadmaps
-- **[Phase 1: Core Engine Architecture](docs/phases/phase_1_core_engine.md):** In-depth technical breakdown of the asynchronous engine, EDA pattern, and MCP Sandbox.
-- **[Advanced AI Roadmap](docs/architecture/advanced_ai_roadmap.md):** SOTA algorithms planned for future phases (FSM decoding, Conformal Prediction, Rule-Based Reward Models).
-- **[Research & Differentiation Roadmap](docs/deterministic_guardrails_roadmap.md):** Tracks deterministic, auditable, and formally-grounded mechanisms beyond LLM-as-Judge, including classical ML benchmarks.
+### Architecture
+- **[Phase 1: Core Engine Architecture](docs/phases/phase_1_core_engine.md):** The asynchronous pipeline, event-driven design, and MCP server.
+- **[Advanced AI Roadmap](docs/architecture/advanced_ai_roadmap.md):** Research directions for later iterations (constrained decoding, conformal prediction, rule-based reward models).
+- **[Deterministic Guardrails Roadmap](docs/deterministic_guardrails_roadmap.md):** Deterministic and auditable mechanisms beyond LLM-as-a-Judge, including classical ML baselines.
 
 ### Testing & Reliability
-- **[TDD & Test Coverage Report](docs/testing/tdd_coverage.md):** Breakdown of Unit and Integration (E2E) testing coverage.
-- **[Chaos Engineering & Resilience Testing](docs/testing/chaos_engineering_armageddon.md):** The "Armageddon" protocol: 10 critical test cases evaluated under the AIVR protocol to guarantee fault tolerance.
-- **[System Telemetry & Performance Testing](docs/testing/telemetry_performance.md):** Methodologies for load testing (Locust), code coverage, and LLM observability (Langfuse).
+- **[Test Coverage Report](docs/testing/tdd_coverage.md):** Unit and integration test coverage.
+- **[Failure Injection Tests](docs/testing/chaos_engineering_armageddon.md):** Ten failure scenarios, their severity, and the invariants each one verifies.
+- **[Telemetry & Performance Testing](docs/testing/telemetry_performance.md):** Concurrency testing, coverage, and LLM tracing.
 
 ---
 
-## Phase 1 — Core Engine (Production-Ready)
+## Phase 1 — Core Engine (Feature-complete, running locally)
 
-### Execution Milestones (Phase 1)
-- Step 1: Core Infrastructure: Async PostgreSQL domain models and Alembic migrations.
-- Step 2: Ingestion Gateway: FastAPI endpoints validating payloads and offloading to RabbitMQ (aio-pika) with immediate HTTP 202 responses.
-- Step 3: Secure MCP Sandbox: HTTP/SSE server running independently to isolate LLM tool execution from internal business logic.
-- Step 4: Asynchronous Worker: Resilient RabbitMQ consumer with strict PostgreSQL idempotency checks to prevent duplicate transactions.
-- Step 5: LLM-as-a-Judge Guardrail: Deterministic interceptor evaluating primary LLM outputs (scope, format, rules) before DB commits, routing to PENDING_HUMAN_REVIEW on failures.
-- Step 6: Enterprise Multi-Cloud Routing: Abstract Factory implementation for seamless, vendor-agnostic LLM swapping.
-### 1. Provider-Agnostic LLM Routing (SOLID Principles)
+### Build Sequence
+1. **Persistence:** Async PostgreSQL domain models and Alembic migrations.
+2. **Ingestion gateway:** FastAPI endpoints validate payloads, publish to RabbitMQ, and return `202 Accepted` immediately.
+3. **MCP server:** A separate HTTP/SSE service that is the only component able to execute side-effecting tools.
+4. **Worker:** RabbitMQ consumer with idempotency checks in PostgreSQL before any LLM call.
+5. **Pre-Execution Shield (Prompt Guard):** A specialized 22M parameter model (`llama-prompt-guard-2-22m`) intercepts malicious prompts and jailbreak attempts before they reach the primary agent, failing fast.
+6. **Asymmetric Double LLM-as-a-Judge:** A dual-model jury (Gemini and Groq GPT-OSS) evaluates the primary agent's output concurrently.
+7. **Self-Correction Loop:** If the base judges reject a formatting or logic error, the feedback is routed back to the primary agent for self-correction up to `MAX_LLM_RETRIES`.
+8. **Cascade Architecture (Supreme Court):** If the base judges disagree or repeatedly reject, the transaction escalates to a Supreme Court Judge (Gemini 3.5 Flash) for a final tie-breaking decision before falling back to `PENDING_HUMAN_REVIEW`.
+9. **Provider routing:** Abstract Factory for swapping LLM providers per component, with explicit temperature control.
 
-Built with an abstract Factory Pattern, the system is fully decoupled from the underlying AI provider. By modifying a single environment variable, the engine dynamically routes inference requests without altering any business logic:
+### 1. Provider-Agnostic LLM Routing
 
-- **OpenAI (GPT-4o)**: The industry standard for complex Tool Calling and reasoning.
-- **Google Vertex AI**: Enterprise-grade deployment inside GCP VPCs with strict data privacy SLAs.
-- **Gemini AI Studio**: High-throughput, massive context window integration for rapid prototyping.
-- **Amazon Bedrock (Claude 3.5 Sonnet / Llama 3)**: AWS-native inference ensuring zero data egress outside the enterprise perimeter.
-- **Groq**: Ultra-low latency LPU inference, strategically routed for millisecond-response LLM-as-a-Judge guardrails.
-- **Mock (Safe Mode)**: Offline `FakeListChatModel` for local development, returning deterministic valid JSON to prevent token drain without breaking the Judge.
+`src/agents/llm_factory.py` implements an Abstract Factory, so business logic never depends on a specific provider. The provider is selected by environment variable, and different components can use different providers at the same time (for example, GPT-4o for the primary agent and Groq for the judge).
 
-Thanks to the Abstract Factory pattern implemented in `src/agents/llm_factory.py`, the system allows instantiating different providers for different concurrent components (e.g., GPT-4o for the Primary Agent, Groq for the Judge) without modifying a single line of business logic.
+| Provider | Role in this project |
+|---|---|
+| **OpenAI (GPT-4o)** | Primary agent: tool calling and multi-step reasoning. |
+| **Google Vertex AI** | Deployment inside a GCP VPC when data must stay in-perimeter. |
+| **Gemini AI Studio** | Primary agent (using `gemini-3.5-flash-lite`) and Judge 1. |
+| **AWS Bedrock (Claude 3.5 Sonnet / Llama 3)** | AWS-native inference without data leaving the account. |
+| **Groq (Llama 3)** | Judge 2: ultra-low latency and deterministic auditing at temperature 0.0. |
+| **Mock** | Offline `FakeListChatModel` returning fixed valid JSON, for local development without token spend. |
 
-### 2. Transactional Idempotency and Message Queues
+### 2. Idempotency and Message Handling
 
-- **Asynchronous Ingestion**: FastAPI gateway offloads high-volume RESTful requests to RabbitMQ, returning immediate `202 Accepted` responses.
-- **State Management**: Workers enforce strict idempotency via PostgreSQL. Every `request_id` is validated before LLM execution, guaranteeing that financial or business transactions are never duplicated, even during network retries.
-- **Resilience**: Implements exponential backoff and Dead Letter Queues (DLQ) for handling LLM API rate limits and timeouts.
+The ingestion gateway publishes each request to RabbitMQ and returns `202 Accepted`. Workers process messages with manual acknowledgment, retry transient LLM failures with exponential backoff, and route exhausted messages to a dead-letter queue.
 
-### 3. Model Context Protocol (MCP) Sandbox
+**Operational contract**
 
-LLMs are completely isolated from the database and internal APIs. The agent reasons about the user's intent and requests tool execution via a secure MCP Server. This limits the blast radius of hallucinations and enforces strict access control over system tools such as `execute_refund` and `validate_fraud_score`.
+| Property | Guarantee |
+|---|---|
+| Delivery | At-least-once (RabbitMQ manual ACK). |
+| Effect | Exactly-once per `request_id` within the idempotency window: the `request_id` is checked in PostgreSQL before LLM execution, and duplicates are acknowledged without re-execution. |
+| Idempotency window | `IDEMPOTENCY_TTL_SECONDS` (default 24 h). A `request_id` replayed after expiry is treated as a new request. |
+| Retries | Up to `MAX_LLM_RETRIES` (default 3) with exponential backoff on rate limits and timeouts. |
+| Exhausted retries | Message moves to the dead-letter queue; no partial effect is committed. |
+| Double Judge rejection | If either Gemini or Llama 3 rejects, the transaction is persisted as `PENDING_HUMAN_REVIEW`; no tool is executed. |
 
-### 4. High-Precision RAG (Retrieval-Augmented Generation)
+### 3. MCP Server
 
-Before executing transactional tools, the agent retrieves domain-specific business rules.
+The LLM never touches the database or internal APIs. It reasons about the request and asks the MCP server to run a tool (`execute_refund`, `validate_fraud_score`). The server is a separate process, so a malformed or hallucinated tool call can only reach what the server exposes. Securing that boundary is Phase 1.B.
 
-- **Vector Store**: PostgreSQL with the `pgvector` extension for embedding storage, eliminating the need for a separate vector database.
-- **Semantic Chunking**: Advanced document chunking strategies (recursive character splitting with semantic overlap) to preserve context continuity.
+### 4. Retrieval over Business Rules
 
-### 5. LLMOps, Observability, and Testing
+Before calling a transactional tool, the agent retrieves the relevant business rules.
 
-Treating prompts as code and LLMs as volatile microservices.
+- **Vector store:** PostgreSQL with `pgvector`. Embeddings live next to transaction data, so semantic search and business-state queries can run in the same transaction.
+- **Chunking:** Recursive character splitting with overlap, to keep rule clauses intact across chunk boundaries.
 
-- **Shift-Left Testing**: Automated regression matrices using Promptfoo integrated into the CI/CD pipeline to validate tool-calling accuracy.
-- **Runtime Guardrails (LLM-as-a-Judge)**: A secondary, deterministic-configuration model intercepts the primary agent's output, evaluating it against security policies before committing the transaction to the database.
-- **Evaluation**: TruLens integration to measure the RAG Triad (Context Relevance, Groundedness, and Answer Relevance).
+### 5. Evaluation and Regression
+
+- **Regression:** promptfoo test matrices (100+ edge cases) run against the primary agent and judge prompts, so a prompt change that breaks earlier behavior is caught before merge.
+- **Runtime judge:** described in the build sequence above.
+- **RAG evaluation:** TruLens measures context relevance, groundedness, and answer relevance, and records per-node latency and token usage.
 
 ---
 
-## Phase 2 — Confidence Layer (In Progress)
+## Phase 1.B — MCP Security Boundary (In progress)
 
-Phase 1's LLM-as-a-Judge guardrail is a strong safety net, but it is still a probabilistic model evaluating the output of another probabilistic model — useful, but not fully auditable on its own. Phase 2 adds a second, deterministic guardrail that sits alongside it, built on classical knowledge-based systems methodology rather than statistical inference.
+### Problem
+
+The project's central claim is that the MCP server is the only path from the LLM to side-effecting operations. In the current code that path is open: the server accepts unauthenticated HTTP on port 8080, exposes every tool to every caller, relies only on type hints for argument validation, applies no rate limits, and keeps no audit record. Anyone with network access to the server can call `execute_refund` directly, bypassing the agent, the judge, and the rule base.
+
+### Current state
+
+| Control | State |
+|---|---|
+| Client authentication | Not implemented |
+| Per-tool authorization | Not implemented |
+| Server-side argument validation | Partial: type hints only, no business limits |
+| Rate limiting | Not implemented |
+| Audit log | Not implemented (console logs and final transaction state only) |
+
+### Design
+
+1. **Authentication.** Each client (worker type) has its own token. The server stores only SHA-256 hashes of tokens, compares them in constant time, and derives `client_id` from the token, never from a caller-supplied header. Requests without a valid token are rejected before reaching any tool.
+2. **Per-tool authorization.** A server-side allowlist maps each `client_id` to the tools it may call. Tool listing is filtered by identity, so a client does not see tools it cannot use, and calls to non-allowed tools are rejected and audited as denied.
+3. **Argument validation.** Every tool takes a Pydantic model with explicit constraints: positive amounts bounded by a configurable maximum, currency restricted to an enum, and unknown fields rejected. Validation happens on the server regardless of what the LLM serialized.
+4. **Rate limiting.** Limits are per `client_id` and per tool, computed from the audit table over a sliding window. Because the count lives in PostgreSQL, the limit holds across multiple MCP replicas without adding Redis.
+5. **Audit log.** Every invocation, including denied and rate-limited ones, writes a row with timestamp, `client_id`, tool, arguments (PII masked), decision, and result status. The MCP server's database role has `INSERT` and `SELECT` on this table but not `UPDATE` or `DELETE`. If the audit write fails, the tool does not execute (fail closed).
+
+### Prompt-injection invariant
+
+Documents retrieved by RAG are untrusted input. The design guarantees one structural property instead of relying on content filtering:
+
+> The set of tools available to a request is determined by the caller's authenticated identity on the server. Nothing in the prompt or in retrieved documents can extend it.
+
+An injected instruction can still influence which of the *allowed* tools the agent chooses and with what arguments; that residual risk is what the argument limits, the judge, and the Phase 2 rule base constrain. A failure-injection test verifies the invariant: a poisoned document instructing a restricted identity to call `execute_refund` must produce a denied, audited call.
+
+### Threat model
+
+| In scope | Out of scope |
+|---|---|
+| Direct calls to the MCP server from inside the network | Compromise of the host or of the database superuser |
+| A worker identity calling tools outside its role | Traffic interception (no TLS between services yet) |
+| Runaway agent loops issuing repeated tool calls | Credential rotation and secret management |
+| Prompt injection through retrieved documents | Model-provider-side attacks |
+
+---
+
+## Phase 2 — Confidence Layer (In progress)
+
+Phase 1's LLM-as-a-Judge is useful, but it is still a probabilistic model evaluating another probabilistic model: its verdict cannot be traced to a specific cause and inherits sampling variance. Phase 2 adds a deterministic check next to it, built on classical knowledge-based systems methods rather than statistical inference.
 
 ### 1. Fuzzy Scoring over Retrieval
 
-Raw `pgvector` similarity scores are fuzzified instead of cut at a hard threshold:
+Raw `pgvector` similarity scores are fuzzified instead of cut at a fixed threshold.
 
-- Inputs: retrieval similarity score, document freshness, source authority/trust tier.
-- Output: a graded membership (e.g. low / medium / high relevance) per candidate document, instead of a binary "included / excluded" decision.
-- Rationale: business-rule documents near the similarity cutoff are exactly the cases where a hard threshold silently drops relevant context or lets in noise. Grading membership surfaces that ambiguity instead of hiding it.
+- **Inputs:** similarity score, document freshness, source trust tier.
+- **Output:** graded membership (low / medium / high relevance) per candidate document.
+- **Rationale:** documents near the similarity cutoff are the cases where a hard threshold silently drops relevant rules or admits noise. Graded membership exposes that ambiguity instead of hiding it.
 
-### 2. Rule-Based Expert System (Belief Rule Base)
+### 2. Belief Rule Base
 
-A rule base, built with classical METHONTOLOGY-style knowledge acquisition (domain rules elicited explicitly, not learned), sits between the fuzzy layer and the transactional MCP tools:
+A rule base built with METHONTOLOGY-style knowledge acquisition (rules elicited from the domain, not learned) sits between the fuzzy layer and the transactional tools.
 
-- Rules are expressed with **belief degrees** rather than strict IF-THEN booleans, so overlapping or partially-matching conditions produce a graded confidence instead of an arbitrary tie-break.
-- Applied specifically to the highest-risk tools: `execute_refund` and `validate_fraud_score`. A transaction only proceeds automatically when both the LLM-judge and the expert system agree above their respective confidence thresholds; disagreement routes to human review.
-- Every rule firing is logged with its inputs and belief degree — fully inspectable after the fact, which the LLM-judge's raw score is not.
+- Rules carry **belief degrees** instead of strict boolean IF-THEN, so partially matching conditions produce a graded confidence rather than an arbitrary tie-break.
+- Applied to the two highest-risk tools, `execute_refund` and `validate_fraud_score`. A transaction proceeds automatically only when the judge and the rule base both clear their thresholds; disagreement routes to human review.
+- Every rule firing is logged with its inputs and belief degree, so each approval can be reconstructed afterward.
 
-### 3. Why This Complements, Not Replaces, the LLM-Judge
+### 3. Relation to the LLM-Judge
 
-The LLM-judge remains useful for open-ended quality assessment (tone, completeness, groundedness). The expert system is not a better LLM-judge — it is a different kind of check: deterministic, rule-traceable, and independent of model sampling variance. For transactional tools where an incorrect action has direct financial consequences, having one non-probabilistic gate in the approval path is a meaningful risk reduction, not a redundant one.
+The judge stays useful for open-ended checks (tone, completeness, groundedness). The rule base is not a better judge; it is a different kind of check: deterministic, traceable, and independent of sampling variance. For actions with direct financial consequences, having one non-probabilistic gate in the approval path is a real risk reduction.
 
----
-
-## Phase 3 — Observability Layer (Experimental / Roadmap)
-
-Phase 1's TruLens/Promptfoo evaluation is point-in-time: it scores a given run, but says nothing about whether quality is trending down over days or weeks versus fluctuating with normal noise. Phase 3 proposes closing that gap.
-
-### Kalman-Filtered Quality Monitoring
-
-- The per-request scores already produced by the LLM-judge and the RAG Triad (Phase 1) are treated as a noisy time series.
-- A Kalman filter estimates the underlying "true" quality state and its uncertainty band, smoothing request-level noise instead of reacting to individual outliers.
-- **Alerting** fires only when the estimated state exits its confidence band — i.e., when there is a real, sustained shift, not a single bad batch.
-- This runs asynchronously, off the transactional critical path, consuming the same logs Phase 1 already produces — no additional instrumentation of the core engine is required.
-
-### Status
-
-This phase is a design proposal, not yet implemented. It is included here to document the intended evolution of the system's observability strategy and to scope future work.
+It also has a cost effect: the rule base runs with zero inference cost, and cases it resolves with high confidence can skip judge escalation paths (see [Cost per Transaction](#cost-per-transaction)).
 
 ---
 
-## Phase 4 — Ops Dashboard (Experimental / Roadmap)
+## Phase 3 — Quality Drift Detection (Designed, not yet implemented)
 
-Phases 2 and 3 are only valuable as an "auditable" system if that auditability is actually visible somewhere — today, it lives in logs. Phase 4 is a deliberately small, read-only React + TypeScript dashboard that surfaces what the backend already computes, without introducing a second product surface to maintain.
+Phase 1's evaluation scores individual runs; it cannot tell a sustained decline from normal request-level noise. Phase 3 treats the per-request judge and RAG scores as a time series and raises an alert only on a sustained shift. It runs asynchronously on the logs Phase 1 already produces, off the transactional path.
 
-### Scope (Read-Only, 3 Screens)
-- **Transaction Monitor**: Table of recent transactions: request_id, status, timestamp, LLM-judge verdict, expert-system verdict. Filterable by status, with PENDING_HUMAN_REVIEW surfaced prominently.
-- **Confidence Inspector (Phase 2)**: Per transaction: which rule fired, its belief degree, and the inputs that triggered it. This is the "auditable decision" argument from Phase 2 made visible, not just claimed in documentation.
-- **Quality Trend (Phase 3)**: Chart of the raw judge score time series vs. the Kalman-smoothed estimate and its confidence band. Visual marker where the estimate exits the band and an alert fired.
+The detector is pluggable (`DRIFT_DETECTOR`), with EWMA as the default:
 
-### Suggested Stack
-- **React + TypeScript + Vite**
-- **TanStack Query** to consume the backend API directly — no duplicated business logic on the frontend
-- **Recharts** (or an equivalent lightweight charting library) for the Kalman band visualization
-- **No heavy global state** (Redux/Zustand) — unnecessary for a read-only dashboard
+| Detector | Detects best | Assumptions | Parameters |
+|---|---|---|---|
+| **EWMA** (default) | Gradual drift | Approximately stationary in-control mean and variance | Smoothing λ, control-limit width L |
+| **CUSUM** | Abrupt step changes (prompt deploy, model or provider switch) | Known or estimated in-control mean; target shift size | Reference k, threshold h |
+| **Page-Hinkley** | Step changes, online, without a fixed in-control mean | Mean shift in one direction per detector | Tolerance δ, threshold λ |
+| **Kalman filter** | Tracking a latent quality state with an explicit uncertainty band | Linear-Gaussian state and measurement model | Process noise Q, measurement noise R |
 
-### Architectural Constraint
-The dashboard is treated like any other external API consumer: it talks only to new, explicit read-only (GET) endpoints under `src/api/routers/`, and never touches the database, the MCP tools, or the confidence/observability modules directly. This keeps the isolation boundaries already enforced elsewhere in the system (Section 4) intact — the UI does not get a special-case exception.
-
-### Status
-This phase is a design proposal, not yet implemented. No read-only endpoints or frontend code exist yet; this section scopes intended future work.
+See the ADR on drift detection for why EWMA is the default.
 
 ---
 
-## Phase 5 — ML Comparison Track: TensorFlow/Keras MLP (Experimental / Roadmap)
+## Phase 4 — Operations Dashboard (Designed, not yet implemented)
 
-Phase 5 is an offline, out-of-band experiment: a Multilayer Perceptron (MLP), trained with TensorFlow/Keras on the same inputs used by the Phase 2 rule base (`validate_fraud_score`), built to empirically compare a black-box statistical model against the deterministic, auditable expert system — not to replace it.
+The auditability from Phases 1.B and 2 currently lives in logs and tables. Phase 4 is a small read-only UI that makes it visible.
 
-### Purpose
-The project's core argument (Section 4, Phase 2 ADRs) is that an explicit, rule-traceable mechanism is preferable to an opaque probabilistic one wherever it can achieve comparable results. Phase 5 tests that argument directly instead of asserting it: does an MLP outperform the belief-rule-base on this task, and if so, by how much, and at what cost to auditability? This is also a deliberate, hands-on space to practice TensorFlow/Keras fundamentals (MLP architecture, training loops, evaluation) on a dataset tied to the rest of the project, rather than an unrelated toy problem.
+- **Screens:** transaction monitor (status, judge verdict, rule-base verdict, with `PENDING_HUMAN_REVIEW` highlighted); decision inspector (rules fired, belief degrees, inputs, audit entries); quality trend (raw scores vs. detector output and alerts).
+- **Stack:** React, TypeScript, Vite, TanStack Query, Recharts.
+- **In scope:** read-only `GET` endpoints under `src/api/routers/`; the UI is an ordinary API consumer.
+- **Out of scope:** write actions, its own auth system, global state libraries, direct access to the database, MCP tools, or the confidence and observability modules.
 
-### Scope
-- **Training**: an offline script/notebook, not a production service. A simple Keras Sequential MLP (2-3 dense layers) trained on the same feature set the Phase 2 rule base consumes.
-- **Evaluation**: standard classification metrics (precision, recall, F1) computed against the same labeled cases used to validate the expert system's rules, so the two approaches are compared on identical ground truth.
-- **Comparison surface**: MLP prediction and expert-system verdict are logged side by side for the same transactions, and surfaced in the Phase 4 dashboard as a comparison panel — no new screen required.
-### Model Versioning and Tracking
-Each training run is tracked with MLflow: hyperparameters, evaluation metrics, and the resulting model artifact are logged per run, so a specific MLP prediction can always be traced back to the exact model version and training configuration that produced it. This is what makes the comparison in the Phase 4 dashboard meaningful over time — as the rule base evolves (Phase 2) and the MLP is retrained, both sides of the comparison remain attributable to a specific, reproducible version rather than "whatever was last trained."
+---
 
-### Architectural Constraint
-The MLP is strictly out-of-band: it never participates in the real approval path for `execute_refund` or `validate_fraud_score`, and it never gates a transaction. Its output is logged for comparison only. This preserves the guarantee from Phase 2 — every transaction that auto-approves still does so through the LLM-judge and the auditable rule base, never through the black-box model.
+## Phase 5 — Offline Comparison: MLP vs. Rule Base (Designed, not yet implemented)
 
-### Status
-This phase is a design proposal, not yet implemented. It exists to scope a future hands-on ML/MLOps track (model training, versioning, and comparison tracking) without touching the transactional decision path.
+An offline experiment that tests the project's core argument instead of asserting it: does a black-box model beat the belief rule base on `validate_fraud_score`, by how much, and at what cost to auditability?
+
+- **Model:** Keras Sequential MLP (2–3 dense layers) trained on the same features the rule base consumes.
+- **Evaluation:** precision, recall, and F1 on the same labeled cases used to validate the rules.
+- **Tracking:** MLflow records hyperparameters, metrics, and the model artifact per run, so each prediction is attributable to a specific model version.
+- **Constraint:** the MLP never participates in the approval path. Its predictions are logged next to the rule-base verdict for comparison only, and surfaced as a panel in the Phase 4 dashboard.
+
+---
+
+## Cost per Transaction
+
+In a transactional system, cost per request is a first-class metric alongside latency.
+
+**Status: pending measurement.**
+
+| Stage | Model | Tokens in | Tokens out | Cost / request (USD) |
+|---|---|---|---|---|
+| Retrieval (embedding) | XX | XX | — | X.XXXX |
+| Primary agent | XX | XX | XX | X.XXXX |
+| LLM-as-a-Judge | XX | XX | XX | X.XXXX |
+| Rule base (Phase 2) | — | 0 | 0 | 0.0000 |
+| **Total** | | **XX** | **XX** | **X.XXXX** |
+
+Method: token counts taken from each provider's usage fields, logged per request, averaged over the promptfoo regression suite; prices from provider list pricing at the date of measurement.
+
+---
+
+## System Performance & Telemetry
+
+**Status: pending measurement.** The table is intentionally kept as a placeholder until real numbers are available.
+
+| Metric | Value |
+|---|---|
+| Test coverage (unit + integration) | XX.X% |
+| API ingestion latency, P95 (FastAPI → RabbitMQ) | XX ms |
+| Ingestion throughput (local, concurrency smoke test) | XX req/s |
+| End-to-end processing time (LLM-dependent) | ~X.X s |
+
+---
+
+## Testing
+
+### Unit and Integration
+Code is developed test-first (Red-Green-Refactor).
+
+- **Unit:** provider factory, judge parsing and routing, confidence layer.
+- **Integration:** API gateway, PostgreSQL persistence, MCP server, and worker idempotency, against real infrastructure.
+
+See the [Test Coverage Report](docs/testing/tdd_coverage.md).
+
+### Failure Injection
+Ten failure scenarios, ranked by severity from throughput degradation (SEV-3) to risk of data loss or duplicated effects (SEV-1). They include RabbitMQ crashes, idempotency failures in PostgreSQL, provider rate limits, and adversarial prompts.
+
+Each test follows the same cycle: inject the failure, isolate the affected component, verify that invariants hold (no duplicate effect, no lost message, no unauthorized tool call), and verify recovery without state loss.
+
+See [Failure Injection Tests](docs/testing/chaos_engineering_armageddon.md).
+
+### Running Tests
+
+```bash
+# Full suite
+pytest tests/ -v --tb=short
+
+# Unit tests only (no infrastructure required)
+pytest tests/unit/ -v
+
+# Integration tests (requires Docker infrastructure)
+pytest tests/integration/ -v
+
+# Phase 2 confidence layer
+pytest tests/unit/confidence/ -v
+
+# Coverage
+pytest --cov=src tests/ --cov-report=term-missing
+
+# Concurrency smoke test (local only; not a capacity measurement)
+locust -f tests/performance/locustfile.py --headless -u 100 -r 10 --run-time 1m --host http://localhost:8000
+```
+
+### Linting and Type Checking
+
+```bash
+ruff check src/
+mypy src/ --strict
+```
 
 ---
 
 ## Project Structure
 
-This project follows the `src/` layout: all application code lives inside `src/`, giving every internal import an absolute, unambiguous path (`from src.core import database`) and avoiding `PYTHONPATH`/`ModuleNotFoundError` issues across local runs, tests, and Docker.
+The project uses the `src/` layout so every internal import is absolute (`from src.core import database`) and resolves the same way in local runs, tests, and Docker.
 
 ```
 agentic-mcp-engine/
     src/
-        api/                 FastAPI entrypoints
-            routers/         API route definitions
-            main.py          FastAPI application entry point
-        core/                Shared domain logic
-            config.py        pydantic-settings configuration
-            database.py      Async database connection and session
-            models.py        SQLAlchemy domain models
-            services/        Business logic layer
-            repositories/    Database access layer (SQLAlchemy)
-        agents/              LLM orchestration and factory
-        mcp_server/          MCP server entry point and tool registry (HTTP/SSE)
+        api/                  FastAPI entry points
+            routers/          Route definitions
+            main.py           Application entry point
+        core/                 Shared domain logic
+            config.py         pydantic-settings configuration
+            database.py       Async connection and session
+            models.py         SQLAlchemy models
+            services/         Business logic
+            repositories/     Database access
+        agents/               LLM orchestration and provider factory
+        mcp_server/           MCP server (HTTP/SSE)
             mcp_server.py
-            tools/           Individual MCP tool implementations
-        worker/              RabbitMQ consumer and LLM orchestrator, MCP client
+            tools/            Tool implementations
+            security/         [Phase 1.B] authn, authz, rate limiting, audit
+        worker/               RabbitMQ consumer, orchestration, MCP client
             worker.py
-        confidence/          [Phase 2] Fuzzy scoring + expert system rule base
-            fuzzy_layer.py   Membership functions over retrieval signals
-            rule_base.py     Belief Rule Base (BRB) engine and rule definitions
-            rules/           Declarative rule files (per domain: refunds, fraud)
-        observability/       [Phase 3, experimental] Kalman-based drift detection
-            kalman_monitor.py    State estimator over judge/TruLens score series
-            alerting.py          Drift alert dispatch
+        confidence/           [Phase 2] Fuzzy scoring + belief rule base
+            fuzzy_layer.py
+            rule_base.py
+            rules/            Declarative rule files (refunds, fraud)
+        observability/        [Phase 3] Drift detection
+            detectors/        EWMA, CUSUM, Page-Hinkley, Kalman
+            alerting.py
     tests/
         unit/
-            confidence/      Phase 2 unit tests
-            observability/   Phase 3 unit tests
-        integration/         End-to-end tests (real infrastructure)
-    alembic/                 Database migration files
+            confidence/
+            observability/
+            security/
+        integration/
+        performance/
+    alembic/
     alembic.ini
-    .agents/                 AI agent configuration (skills, hooks, rules)
-    .env.example             Environment variable reference
-    requirements.txt         Python dependencies
-    docker-compose.yml       Local infrastructure (PostgreSQL, RabbitMQ)
-    Dockerfile               Application container definition
+    .agents/                  AI coding-agent configuration
+    .env.example
+    requirements.txt
+    docker-compose.yml
+    Dockerfile
 ```
 
 ---
 
-## AI-Assisted Development Environment
+## AI-Assisted Development
 
-This project is configured to be developed alongside AI coding agents (Gemini Antigravity and Claude Code). The `.agents/` directory contains custom configurations that turn the AI into a project expert.
+The project is developed alongside AI coding agents (Gemini Antigravity and Claude Code). The `.agents/` directory holds the configuration that keeps them within the project's conventions.
 
-### 1. Skills (Runbooks for the AI)
-Skills are step-by-step guides that teach the AI how to perform complex, project-specific tasks. Instead of guessing how to do something, the AI reads the skill and follows our exact procedure.
-- **`new-feature`**: Teaches the AI the exact 10-step sequence to build a feature, ensuring it respects our layer isolation (routers -> services -> repositories).
-- **`add-mcp-tool`**: A checklist for safely adding a new tool to the MCP server without breaking live agents.
-- **`db-migration`**: Enforces safe Alembic migration practices, especially for `pgvector` columns.
-- **`debug-worker`**: A troubleshooting guide the AI can use to diagnose RabbitMQ queue issues or idempotency failures.
-- **`trash`**: A shortcut skill (`/trash`) that allows you to quickly tell the AI to run `git restore` and `git clean` if a feature attempt goes wrong.
-- **`tests`**: A runbook to execute local validation (`ruff`, `mypy`, `pytest`) before making a commit.
-- **`commit`**: Reviews changes, generates a Conventional Commits message, and commits safely.
-- **`ship`**: The complete workflow (`/ship`): runs tests, lints, commits, and pushes the code if everything is green.
-- **`push-dev`**: Bypasses all validation checks (`/push-dev`) to commit and push immediately to GitHub.
+### Skills (procedures the agent follows)
+- **`new-feature`:** Ten-step sequence for adding a feature while respecting layer isolation (routers → services → repositories).
+- **`add-mcp-tool`:** Checklist for adding an MCP tool without breaking running agents.
+- **`db-migration`:** Safe Alembic practices, including `pgvector` columns.
+- **`debug-worker`:** Diagnosis of RabbitMQ queue and idempotency issues.
+- **`tests`:** Local validation (`ruff`, `mypy`, `pytest`) before committing.
+- **`commit`:** Reviews changes and writes a Conventional Commits message.
+- **`ship`:** Tests, lint, commit, and push if everything passes.
+- **`push-dev`:** Commit and push without validation, for work-in-progress branches only.
+- **`trash`:** Discards a failed attempt (`git restore` and `git clean`).
 
-### 2. Hooks (Automatic Safety Nets)
-Hooks are scripts that run automatically at specific moments during the AI's execution to enforce safety and quality.
-- **`safety_guard` (Pre-Tool)**: Before the AI executes a shell command or modifies a critical file, this hook intercepts it. If the AI tries to run a destructive command (like a SQL `DROP` or `rm -rf`), the hook pauses the AI and asks you for manual confirmation.
-- **`lint_check` (Post-Tool)**: Every time the AI writes Python code, this hook automatically runs `ruff` and `mypy` in the background and reports any errors back to the AI so it can fix them immediately.
-- **`context_injector` (Pre-Invocation)**: Periodically reminds the AI of the core architectural rules (like "never put business logic in a router") so it doesn't forget them during long coding sessions.
+### Hooks
+- **`safety_guard` (pre-tool):** Pauses for manual confirmation before destructive commands (SQL `DROP`, `rm -rf`) or edits to critical files.
+- **`lint_check` (post-tool):** Runs `ruff` and `mypy` after every Python edit and feeds errors back to the agent.
+- **`context_injector` (pre-invocation):** Periodically restates the architectural rules (for example, no business logic in routers).
 
-### 3. Rules
-The `workspace.md` file contains persistent guidelines the AI must always follow, such as requiring type annotations and forbidding the use of blocking I/O functions.
+### Rules
+`workspace.md` holds persistent guidelines, such as mandatory type annotations and no blocking I/O.
 
 ---
 
-## Quick Start (Dockerized Environment)
+## Quick Start (Docker)
 
-The infrastructure is fully containerized for a deterministic local setup.
-
-### 1. Clone and Configure
+### 1. Clone and configure
 
 ```bash
 git clone https://github.com/agustindiazcano/agentic-mcp-engine.git
@@ -276,45 +401,45 @@ cd agentic-mcp-engine
 cp .env.example .env
 ```
 
-### 2. Install Dependencies
+Fill in `.env` (see [Environment Variables](#environment-variables)).
+
+### 2. Install dependencies
 
 ```bash
 pip install -e .[dev]
 ```
 
-Edit `.env` and fill in the required values. See the Environment Variables section below.
-
-### 3. Start the Infrastructure
+### 3. Start infrastructure
 
 ```bash
 docker compose up -d postgres rabbitmq
 ```
 
-### 4. Apply Database Migrations
+### 4. Apply migrations
 
 ```bash
 alembic upgrade head
 ```
 
-### 5. Start the MCP Server
+### 5. Start the MCP server
 
 ```bash
 python -m src.mcp_server.mcp_server
 ```
 
-### 6. Start the Worker
+### 6. Start the worker
 
 ```bash
 python -m src.worker.worker
 ```
 
-### 7. Start the API Gateway
+### 7. Start the API gateway
 
 ```bash
 uvicorn src.api.main:app --reload --port 8000
 ```
 
-The API will be available at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
+API at `http://localhost:8000`, interactive docs at `http://localhost:8000/docs`.
 
 ---
 
@@ -324,84 +449,26 @@ The API will be available at `http://localhost:8000`. Interactive docs at `http:
 |---|---|---|
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 | `RABBITMQ_URL` | Yes | RabbitMQ AMQP connection string |
-| `LLM_PROVIDER` | Yes | Active provider: `gemini`, `groq`, `bedrock`, or `openai` |
+| `LLM_PROVIDER` | Yes | `gemini`, `groq`, `bedrock`, or `openai` |
 | `OPENAI_API_KEY` | Conditional | Required when `LLM_PROVIDER=openai` |
-| `GEMINI_API_KEY` | Conditional | Required when using Gemini AI Studio |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Conditional | Required when using Google Vertex AI |
+| `GEMINI_API_KEY` | Conditional | Required for Gemini AI Studio |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Conditional | Required for Vertex AI |
 | `GROQ_API_KEY` | Conditional | Required when `LLM_PROVIDER=groq` |
 | `AWS_ACCESS_KEY_ID` | Conditional | Required when `LLM_PROVIDER=bedrock` |
 | `AWS_SECRET_ACCESS_KEY` | Conditional | Required when `LLM_PROVIDER=bedrock` |
-| `LANGFUSE_SECRET_KEY` | No | Langfuse telemetry secret key |
-| `LANGFUSE_PUBLIC_KEY` | No | Langfuse telemetry public key |
-| `MCP_SERVER_URL` | Yes | URL of the running MCP server |
-| `MAX_LLM_RETRIES` | No | Maximum LLM retry count (default: 3) |
-| `IDEMPOTENCY_TTL_SECONDS` | No | Idempotency record TTL in seconds (default: 86400) |
-| `EXPERT_SYSTEM_CONFIDENCE_THRESHOLD` | No | [Phase 2] Minimum belief degree required for auto-approval (default: 0.85) |
-| `KALMAN_ALERT_SIGMA` | No | [Phase 3] Standard deviations from estimated state that trigger a drift alert (default: 2.0) |
-
----
-
-## System Performance & Telemetry (WIP)
-
-- **Test Coverage:** XX.X% (Unit & Integration)
-- **API Ingestion Latency (P95):** XX ms
-- **System Throughput:** XX req/sec (FastAPI -> RabbitMQ)
-- **E2E Agentic Processing Time:** ~X.X sec (Dependiente de LLM API)
-
----
-
-## LLMOps, Quality Assurance & Chaos Testing
-
-This project guarantees fault tolerance through strict testing methodologies, LLM telemetry, and controlled failure injection.
-
-### LLMOps & System Telemetry
-We treat prompts as code and models as volatile microservices. 
-- **Tracing and Real-Time Observability with TruLens**: We wrap the LangChain/Worker execution to register the Directed Acyclic Graph (DAG), per-node latency, token consumption, and statistical evaluation of the RAG Triad metrics (Groundedness, Context Relevance, Answer Relevance).
-- **Regression Testing and CI/CD with promptfoo**: We use batch test matrices to evaluate the Primary Agent and Judge prompts against 100+ edge cases before each deployment. This guarantees that modifying a system prompt will not break previous behaviors.
-
-For full details, see the [LLMOps & Observability Framework](docs/testing/llmops_observability.md).
-
-### TDD & Test Coverage
-All production code is written following a strict Red-Green-Refactor cycle. We maintain comprehensive coverage spanning:
-- **Unit Tests:** Isolated testing of the Multi-Cloud Factory and the deterministic LLM-Judge guardrails.
-- **Integration Tests (E2E):** End-to-end validation of the API Gateway, PostgreSQL persistence, MCP Server, and the Asynchronous Worker's Idempotency checks.
-For full details, see the [TDD & Test Coverage Report](docs/testing/tdd_coverage.md).
-
-### Chaos Engineering & Resilience (Armageddon Protocol)
-Trust is earned only by what has failed under controlled conditions and recovered without state loss. The system is validated against 10 critical "Armageddon" scenarios using the strict **AIVR Protocol** (Attack, Isolation, Verification, Recovery). 
-Tests range from SEV-3 (Throughput degradation) to SEV-1 (Catastrophic data loss risk), ensuring the engine degrades gracefully during 10 critical failure vectors such as RabbitMQ crashes, idempotency failures in Postgres, API rate limits, and malicious jailbreak prompts.
-For the complete severity matrix and test definitions, see [Chaos Engineering & Armageddon Scenarios](docs/testing/chaos_engineering_armageddon.md).
-
-### Running Tests
-
-```bash
-# Full test suite
-pytest tests/ -v --tb=short
-
-# Unit tests only (no infrastructure required)
-pytest tests/unit/ -v
-
-# Integration tests (requires Docker infrastructure)
-pytest tests/integration/ -v
-
-# Phase 2 confidence layer tests
-pytest tests/unit/confidence/ -v
-
-# Test Coverage
-pytest --cov=src tests/ --cov-report=term-missing
-
-# Stress test (Locust)
-locust -f tests/performance/locustfile.py --headless -u 100 -r 10 --run-time 1m --host http://localhost:8000
-```
-
----
-
-## Linting and Type Checking
-
-```bash
-ruff check src/
-mypy src/ --strict
-```
+| `LANGFUSE_SECRET_KEY` | No | Langfuse tracing secret key |
+| `LANGFUSE_PUBLIC_KEY` | No | Langfuse tracing public key |
+| `MCP_SERVER_URL` | Yes | URL of the MCP server |
+| `MAX_LLM_RETRIES` | No | Maximum LLM retries (default: 3) |
+| `IDEMPOTENCY_TTL_SECONDS` | No | Idempotency window in seconds (default: 86400) |
+| `MCP_CLIENTS_FILE` | Yes (1.B) | Server side: path to the client registry (`client_id`, token hash, allowed tools) |
+| `MCP_CLIENT_TOKEN` | Yes (1.B) | Worker side: this worker's bearer token for the MCP server |
+| `MCP_RATE_LIMIT_PER_MIN` | No (1.B) | Default calls per minute per client and tool (default: 30) |
+| `REFUND_MAX_AMOUNT` | No (1.B) | Upper bound enforced by `execute_refund` validation (default: 10000) |
+| `EXPERT_SYSTEM_CONFIDENCE_THRESHOLD` | No (2) | Minimum belief degree for auto-approval (default: 0.85) |
+| `DRIFT_DETECTOR` | No (3) | `ewma`, `cusum`, `page_hinkley`, or `kalman` (default: `ewma`) |
+| `EWMA_LAMBDA` | No (3) | EWMA smoothing factor (default: 0.2) |
+| `DRIFT_ALERT_SIGMA` | No (3) | Control-limit width in standard deviations (default: 3.0) |
 
 ---
 
@@ -409,43 +476,72 @@ mypy src/ --strict
 
 ### Why RabbitMQ over Kafka?
 
-This engine targets transactional workloads (claims, refunds) where per-message acknowledgment, dead-letter routing, and low-latency delivery matter more than high-throughput log streaming. RabbitMQ's AMQP protocol gives fine-grained ACK/NACK control that maps directly to the idempotency and retry contract.
+The workload is transactional (claims, refunds): per-message acknowledgment, dead-letter routing, and low delivery latency matter more than high-throughput log streaming. AMQP's per-message ACK/NACK maps directly onto the idempotency and retry contract.
 
-### Why the `src/` Layout?
+### Why the `src/` layout?
 
-With application code split across `app/`, `mcp_server/`, `worker/`, `confidence/`, and `observability/` directly at the repo root, Python import resolution depends on the current working directory — `worker.py` importing `confidence.fuzzy_layer` works when launched one way and fails with `ModuleNotFoundError` when launched another, and behaves differently again inside Docker. Nesting everything under `src/` makes every internal import absolute and resolves identically in local runs, tests, and containers, at the cost of one extra path segment.
+With `app/`, `mcp_server/`, `worker/`, `confidence/`, and `observability/` at the repository root, import resolution depended on the working directory: an import that worked in one launch mode raised `ModuleNotFoundError` in another, and behaved differently again inside Docker. Nesting everything under `src/` makes imports absolute and consistent everywhere, at the cost of one path segment.
 
-### Why HTTP/SSE for MCP Transport, Not `stdio`?
+### Why HTTP/SSE for MCP transport, not `stdio`?
 
-The MCP Python SDK supports both. `stdio` is lighter-weight but requires the client to spawn the server as a child process, collapsing the worker and the MCP server into a single process. This project deliberately keeps them as independent services connected over HTTP/SSE (`MCP_SERVER_URL`) instead: it preserves independent deploys, independent scaling, and the ability for more than one worker to share a single MCP server — the distributed-systems boundary this project exists to demonstrate. `stdio` remains a reasonable choice for a single-process CLI tool; it is not the right fit here.
+`stdio` is lighter but requires the client to spawn the server as a child process, which collapses the worker and the MCP server into one process. Keeping them as separate services over HTTP/SSE preserves independent deploys, independent scaling, and several workers sharing one MCP server. `stdio` is the right choice for a single-process CLI tool, not for this system.
 
-### Why MCP over Direct Function Calling?
+### Why MCP over direct function calling?
 
-The MCP server acts as a hard boundary between the LLM's reasoning space and the system's write paths. Even if the LLM hallucinates a tool invocation, the MCP server validates inputs, enforces authorization, and logs every call. This is not achievable with raw function calling.
+With direct function calling, tool execution runs inside the process that holds the model's output, so validation and access control depend on that process behaving correctly. MCP puts tool execution behind a separate service that validates inputs, enforces authorization, and logs every call on its own, regardless of what the model produced. This only holds once the server itself is secured, which is why Phase 1.B exists.
 
-### Why pgvector over a Dedicated Vector DB?
+### Why enforce authorization on the MCP server, not in the prompt?
 
-Embedding vectors live in the same PostgreSQL instance as transaction data. This allows atomic queries that join semantic search results with live business state in a single transaction, which no separate vector database can provide without a distributed join.
+Any restriction expressed in the prompt can be overridden by content that reaches the model, including retrieved documents. Authorization tied to the caller's authenticated identity, enforced by a separate process, cannot be changed by anything the model reads. This is what makes the prompt-injection invariant structural rather than heuristic.
 
-### Why a Rule-Based Expert System Alongside the LLM-Judge? (Phase 2)
+### Why rate limiting and audit in PostgreSQL, not Redis or log files?
 
-The LLM-judge is a strong general-purpose guardrail, but it is itself a probabilistic model — its verdict is not fully traceable to a specific cause, and it inherits the sampling variance of its underlying model. For the two highest-risk tools (`execute_refund`, `validate_fraud_score`), the system adds a second, deterministic gate: a rule base with explicit, human-authored conditions and belief degrees. This does not claim to make the whole system "explainable" — the LLM generation step remains a black box — but it does make the specific approval decision for financial actions independently auditable, which the LLM-judge alone cannot guarantee.
+The audit table has to exist anyway, and counting recent rows in it gives a rate limit that holds across MCP replicas without another piece of infrastructure. A log file is neither queryable nor protected from edits by the process that writes it; an insert-only database role is. Trade-off: one extra query per tool call, and concurrent calls near the limit can overshoot it slightly. Both are acceptable at this system's call volume.
 
-### Why Kalman Filtering for Observability, Not a Drift-Detection Classifier? (Phase 3)
+### Why pgvector over a dedicated vector database?
 
-A dedicated ML drift-detection model would need its own training data, its own maintenance, and would itself be another opaque component to monitor. A Kalman filter, in contrast, is a small, well-understood state estimator with two parameters (process and measurement noise) applied directly to the quality metrics the system already produces. It favors the smaller, more transparent mechanism that solves the specific problem (distinguishing sustained drift from request-level noise) over a heavier model that would solve a broader, unneeded problem.
+Embeddings live in the same PostgreSQL instance as transaction data, so a single transaction can join semantic search results with live business state. A separate vector database would require a distributed join.
+
+### Why a cheap, fast model for the judge?
+
+The judge runs on every transaction, and its output is short and structured (a verdict and reasons). Its task is classification against explicit policy, not open-ended reasoning, so a smaller model on low-latency hardware (Groq) fits it well. Latency is one reason; cost is the other and matters as much, because the judge's cost is multiplied by total volume, while the primary agent's reasoning is what actually benefits from a larger model.
+
+### Why a rule-based expert system alongside the LLM-judge? (Phase 2)
+
+The judge is a probabilistic model: its verdict cannot be traced to a specific cause and inherits sampling variance. For the two highest-risk tools, the system adds a deterministic gate with explicit, human-authored conditions and belief degrees. This does not make the whole system explainable (the generation step remains opaque), but it makes the approval decision for financial actions independently auditable.
+
+### Why EWMA as the default drift detector, with Kalman as an option? (Phase 3)
+
+The problem is separating sustained quality shifts from request-level noise, which is standard statistical process control. The choice follows parsimony: use the simplest detector that solves the problem, and move to a heavier one only when evidence shows the simpler one fails.
+
+- **EWMA** needs one smoothing parameter and no state-space model, and detects gradual drift. It is the default.
+- **CUSUM** and **Page-Hinkley** are better suited to abrupt step changes, which are the most likely failure mode here: a prompt deploy, a model version change, or a provider switch. Choose one of them when changes are expected to be discrete.
+- **Kalman** is optional. It gives an explicit uncertainty band on a latent quality state, which EWMA does not, but it assumes a linear-Gaussian state and measurement model. Quality scores are bounded in [0, 1] and often skewed, so that assumption has to be checked on real data before relying on it.
+
+A trained drift classifier was rejected: it would need its own training data and maintenance, and would be another opaque component to monitor.
 
 ---
 
-##  Future Roadmap: Algorithmic Rigor & SOTA
+## Research Directions
 
-- **FSM-Constrained Decoding:** Deterministic logits masking via state machines.
-- **Programmatic Optimization:** Metric-driven prompt tuning as hyperparameter search (e.g., DSPy).
-- **MCTS & Tree of Thoughts:** State-space search with heuristic value functions for complex reasoning.
-- **Conformal Prediction:** Strict mathematical error bounds ($\alpha$) for prediction sets and human delegation.
-- **Rule-Based Reward Models:** Deterministic DPO/RLHF alignment using code evaluators and physical simulators.
+Beyond the phases above, the following are candidate directions, not planned work. Details in the [Advanced AI Roadmap](docs/architecture/advanced_ai_roadmap.md).
 
-For a detailed breakdown of the mathematical and algorithmic techniques planned for future iterations, see the [Advanced AI Roadmap](docs/architecture/advanced_ai_roadmap.md).
+- **Constrained decoding:** mask logits with a finite-state machine so tool-call output is valid by construction.
+- **Programmatic prompt optimization:** treat prompts as parameters tuned against the regression suite (for example, DSPy).
+- **Conformal prediction:** calibrated error bounds (α) to decide when to delegate to a human.
+- **Search-based reasoning:** tree search with explicit value functions for multi-step decisions.
+- **Rule-based reward models:** alignment signals from code evaluators instead of learned preference models.
+
+---
+
+## Known Limitations
+
+- Single-node Docker Compose deployment; no orchestration, autoscaling, or high availability.
+- No TLS between internal services; no credential rotation or secret manager (tokens are read from environment and files).
+- No multi-tenancy; one set of business rules per deployment.
+- A database superuser can still modify the audit table; the log is protected against the MCP service, not against a compromised host.
+- Evaluation uses a project-specific regression suite of 100+ cases; results do not transfer to other domains without new test data.
+- Performance and cost figures are not yet measured (see tables above).
 
 ---
 
@@ -457,4 +553,4 @@ Agustin Diaz-Cano, MS Candidate
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT. See [LICENSE](LICENSE).

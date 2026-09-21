@@ -32,11 +32,14 @@ except ImportError:
     ChatGroq: Any = None  # type: ignore
 
 
-def get_llm(provider: str | None = None) -> BaseChatModel:
+def get_llm(provider: str | None = None, temperature: float = 0.7, model_name: str | None = None) -> BaseChatModel:
     """
-    Factory function to instantiate the active LLM provider.
-    Switches provider based on the LLM_PROVIDER environment variable/setting.
-    Provides an offline 'mock' environment to prevent token drain during local dev.
+    Factory function to instantiate the active LLM based on environment configuration.
+    
+    Args:
+        provider: Override the default provider from settings (e.g., 'gemini', 'groq')
+        temperature: Set the determinism of the model (default 0.7 for agents, 0.0 for judges)
+        model_name: Optional override for the specific model to use.
     """
     if provider is None:
         provider = settings.LLM_PROVIDER
@@ -53,7 +56,8 @@ def get_llm(provider: str | None = None) -> BaseChatModel:
             raise ImportError("langchain-openai is not installed")
         return cast(BaseChatModel, ChatOpenAI(
             model="gpt-4o",
-            api_key=settings.OPENAI_API_KEY
+            api_key=settings.OPENAI_API_KEY,
+            temperature=temperature
         ))
         
     elif provider == "vertex":
@@ -62,14 +66,16 @@ def get_llm(provider: str | None = None) -> BaseChatModel:
         # Ensure credentials are provided in the environment or ADC
         return cast(BaseChatModel, ChatVertexAI(
             model_name="gemini-1.5-pro",
+            temperature=temperature
         ))
         
     elif provider == "gemini":
         if ChatGoogleGenerativeAI is None:
             raise ImportError("langchain-google-genai is not installed")
         return cast(BaseChatModel, ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
-            google_api_key=settings.GEMINI_API_KEY
+            model="gemini-3.5-flash-lite",
+            google_api_key=settings.GEMINI_API_KEY,
+            temperature=temperature
         ))
         
     elif provider == "bedrock":
@@ -77,15 +83,20 @@ def get_llm(provider: str | None = None) -> BaseChatModel:
             raise ImportError("langchain-aws is not installed")
         return cast(BaseChatModel, ChatBedrock(
             model_id="anthropic.claude-3-5-sonnet-20240620-v1:0",
-            region_name="us-east-1"
+            region_name="us-east-1",
+            model_kwargs={"temperature": temperature}
         ))
         
     elif provider == "groq":
         if ChatGroq is None:
             raise ImportError("langchain-groq is not installed")
+        
+        target_model = model_name if model_name else "openai/gpt-oss-20b"
+        
         return cast(BaseChatModel, ChatGroq(
-            model="llama3-70b-8192",
-            api_key=settings.GROQ_API_KEY
+            model=target_model,
+            api_key=settings.GROQ_API_KEY,
+            temperature=temperature
         ))
         
     else:

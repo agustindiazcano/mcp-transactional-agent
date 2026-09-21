@@ -21,7 +21,7 @@ The project is organized in five phases. Phase 1 (core transactional engine) is 
 - Database and Idempotency: PostgreSQL (with pgvector extension), SQLAlchemy (ORM), Alembic.
 - AI Core: LangChain, Google GenAI (Gemini), Groq API, OpenAI, AWS Bedrock.
 - Agent Sandbox: Model Context Protocol (MCP) Python SDK.
-- LLMOps (Testing and Guardrails): Promptfoo (shift-left testing), Langfuse (telemetry), LLM-as-a-Judge pattern for runtime output evaluation.
+- LLMOps (Testing and Guardrails): Promptfoo (shift-left testing), Langfuse (telemetry), Asymmetric Double LLM-as-a-Judge pattern for runtime output evaluation (Gemini + Llama 3).
 - Confidence Layer (Phase 2): scikit-fuzzy or a hand-rolled membership-function module for fuzzy scoring; a lightweight declarative rule engine for the Belief Rule Base (BRB).
 - Observability (Phase 3, experimental): a minimal Kalman filter implementation (numpy-based, no heavy ML dependency) over judge/TruLens score time series.
 - Frontend (Phase 4, experimental): React, TypeScript, Vite, TanStack Query.
@@ -72,7 +72,7 @@ When asked to build Phase 1 features, follow this logical sequence:
 2. Ingestion Layer: Build FastAPI endpoints in `main.py` to validate requests via Pydantic and push them to RabbitMQ, returning HTTP 202 Accepted.
 3. MCP Server: Implement `mcp_server.py` exposing isolated tools such as `get_user_history` and `execute_refund`.
 4. Worker Layer: Implement `worker.py` to consume RabbitMQ messages, verify idempotency, orchestrate the LLM call through the MCP server, and commit the final transaction.
-5. Guardrails: Intercept the LLM decision with a secondary deterministic LLM evaluation (LLM-as-a-Judge) before persisting the final status to PostgreSQL.
+5. Guardrails: Intercept the LLM decision with a concurrent dual-judge evaluation (Asymmetric Double LLM-as-a-Judge using Gemini and Llama 3) before persisting the final status to PostgreSQL.
 
 ## 5b. Development Phases — Phase 2 (Confidence Layer)
 
@@ -197,16 +197,16 @@ Before writing or modifying any file that touches the following areas, pause and
 | `EXPERT_SYSTEM_CONFIDENCE_THRESHOLD` | Phase 2: minimum belief degree required for rule-base auto-approval (default: 0.85) |
 | `KALMAN_ALERT_SIGMA` | Phase 3: standard deviations from estimated state that trigger a drift alert (default: 2.0) |
 
-## 10. LLM-as-a-Judge Guardrail Contract
+## 10. Asymmetric Double LLM-as-a-Judge Guardrail Contract
 
-Every LLM decision must pass through the judge before being committed. The judge evaluates:
+Every LLM decision must pass through the concurrent Double Judge (Gemini + Llama 3 via Groq) before being committed. Both judges evaluate:
 - Was the action within the agent's authorized scope?
 - Is the output well-formed and parseable?
 - Does the decision contradict any business rule (e.g., refund exceeds the original transaction amount)?
 
-If the judge returns a REJECT verdict, the transaction must be flagged with status `PENDING_HUMAN_REVIEW` and a human-readable reason must be logged.
+If EITHER judge returns a REJECT verdict, the transaction must be flagged with status `PENDING_HUMAN_REVIEW` and a human-readable reason must be logged.
 
-For `execute_refund` and `validate_fraud_score` specifically (Phase 2 active), the judge verdict and the expert-system verdict are both required before auto-approval. Either one alone routes to `PENDING_HUMAN_REVIEW`.
+For `execute_refund` and `validate_fraud_score` specifically (Phase 2 active), the Double Judge verdict (requiring APPROVE from both) and the expert-system verdict are both required before auto-approval. Either one alone routes to `PENDING_HUMAN_REVIEW`.
 
 ## 11. Git and Branching Conventions
 
