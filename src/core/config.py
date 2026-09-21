@@ -23,7 +23,11 @@ class Settings(BaseSettings):
     # Worker Settings
     MAX_LLM_RETRIES: int = 3
     IDEMPOTENCY_TTL_SECONDS: int = 86400
-    
+
+    # Recovery Sweeper Settings
+    SWEEPER_INTERVAL_SECONDS: int = 300        # How often the sweeper polls (default 5 min)
+    SWEEPER_STALE_THRESHOLD_SECONDS: int = 300 # Rows older than this are zombies (default 5 min)
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 settings = Settings()
