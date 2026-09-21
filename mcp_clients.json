@@ -1,0 +1,10 @@
+{
+  "_comment": "Phase 1.B MCP client registry (CLAUDE.md Section 5a-i). Only a SHA-256 hash of each client's bearer token is stored here -- the plaintext token lives in that client's MCP_CLIENT_TOKEN env var. The token below is a local-dev placeholder matching config.py's default; rotate both for any shared or production deployment.",
+  "clients": [
+    {
+      "client_id": "worker-default",
+      "token_hash": "29bd3e040c4f5241393db789248f995cd227de5d2c042ad7e84ebbf5a3c545c1",
+      "allowed_tools": ["execute_refund", "validate_fraud_score"]
+    }
+  ]
+}
