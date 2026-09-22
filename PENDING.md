@@ -33,19 +33,30 @@ Why it's critical: this is what proves the Full-Stack E-commerce profile — wit
 - [ ] RAG detail view (which policy chunk was injected, from Phase 1.D's retrieval) — not covered by this pass; the current expander shows the judge trail and payload only.
 - [x] Judges' verdicts (Double Judge + Supreme Court cascade outcome) — required adding persistence that didn't exist: migration `622b710f2855` (`transactions.created_at`, `transactions.judge_trail`) plus a `judge.py`/`worker.py` change to write a real per-judge trail, since only the aggregate status was ever queryable before.
 
-### Step 5 — Deterministic Confidence Layer (Phase 2)
+### Step 5 — Front-Desk / Back-Office Asymmetric Agentic Workflow (Phase 1.E)
+Why it's here, and why it's numbered 1.E not 4.B: this replaces `worker.py`'s currently-hardcoded `mock_primary_action = "execute_refund"` with a real primary-agent LLM call — completing Phase 1's originally-scoped "Worker Layer" step, not adding a dashboard feature. It extends Phase 1.B's "never trust LLM output, validate server-side" doctrine to a new surface: the primary agent's own proposed intent, not just MCP tool arguments.
+- [ ] Front-Desk: a conversational LLM, minimal privilege (no DB/RAG table/MCP access), that translates free text into a structured JSON payload proposing intent — or asks a clarifying question if it can't.
+- [ ] Back-Office: re-validate that payload server-side against a strict Pydantic schema before it reaches the Double Judge (mirroring `src/mcp_server/tools/schemas.py`'s `extra="forbid"` pattern) — never trust the Front-Desk's JSON at face value.
+- [ ] Feedback loop: define the objective verdict contract (`REJECTED: <objective reason>`, never raw judge rationale) the Back-Office exposes back for the Front-Desk to phrase into a human-readable reply, without re-interpreting or overriding it.
+
+### Step 6 — Dynamic LLM Provider Selection (Phase 1.F)
+Why it's here: `src/agents/llm_factory.py`'s `get_llm(provider=...)` already implements the Factory pattern — the abstraction is real — but every call site hardcodes its provider (`judge.py`: Judge 1/Supreme Court always `"gemini"`, Judge 2 always `"groq"`). The only lever today is the global `LLM_PROVIDER` env var, which needs a `.env` edit and a container restart to change, and can't mix providers per judge or per request.
+- [ ] Per-request override: optional `judge_1_provider`/`judge_2_provider` fields on `ClaimRequest`, validated against `get_llm()`'s existing provider allowlist; two `st.selectbox` dropdowns in the dashboard's ingestion panel; `evaluate_decision()` accepts explicit providers, falling back to today's hardcoded pairing when unset.
+- [ ] Global hot-swappable default: an admin surface (e.g. `PUT /config/providers`) backed by `pydantic-settings` and/or a config table — a "vendor is down, reroute now" lever with no restart. Later increment, not required alongside the per-request override.
+
+### Step 7 — Deterministic Confidence Layer (Phase 2)
 - [ ] Integrate the fuzzy-scoring layer and the Belief Rule Base alongside the AI Judge, so critical transactions (`execute_refund`, `validate_fraud_score`) require double approval — probabilistic (LLM judge) *and* symbolic (rule base) — before auto-approving.
 
-### Step 6 — Quality Drift Detection (Phase 3)
+### Step 8 — Quality Drift Detection (Phase 3)
 - [ ] Implement the async monitor with a statistical filter (EWMA default, CUSUM/Page-Hinkley/Kalman as options) to detect whether model responses are degrading over time. Runs off the critical path — never blocks transaction processing.
 
-### Step 7 — Cloud Deployment / AWS Bedrock (Phase 6)
+### Step 9 — Cloud Deployment / AWS Bedrock (Phase 6)
 - [ ] Configure IAM credentials and AWS Bedrock access (least privilege, VPC PrivateLink).
 - [ ] Swap the embeddings module to use Amazon Titan instead of Gemini (Phase 1.D's embeddings pipeline was deliberately built provider-agnostic for exactly this swap).
 - [ ] Migrate the topology to a $0-cost serverless architecture: AWS API Gateway + AWS SQS + AWS Lambda + serverless PostgreSQL (Neon with pgvector).
 
-### Step 8 — Google Vertex AI (experimental, lower priority)
-Google Cloud offers new accounts a $300 USD trial credit for 90 days. The abstract factory (`get_llm` in `src/agents/llm_factory.py`) already supports Vertex AI via `GOOGLE_APPLICATION_CREDENTIALS` — but the agreed Enterprise deployment target is **AWS Bedrock**, the corporate standard for private banking VPCs and effectively $0 on serverless (Step 7). So Vertex stays a lower-priority, opportunistic item to exercise with the free trial credit while it's available, not the actual deployment target.
+### Step 10 — Google Vertex AI (experimental, lower priority)
+Google Cloud offers new accounts a $300 USD trial credit for 90 days. The abstract factory (`get_llm` in `src/agents/llm_factory.py`) already supports Vertex AI via `GOOGLE_APPLICATION_CREDENTIALS` — but the agreed Enterprise deployment target is **AWS Bedrock**, the corporate standard for private banking VPCs and effectively $0 on serverless (Step 9). So Vertex stays a lower-priority, opportunistic item to exercise with the free trial credit while it's available, not the actual deployment target.
 - [ ] Exercise/validate the existing Vertex AI provider branch against real credentials while the trial credit is available.
 
 **Small, unscheduled findings:**
