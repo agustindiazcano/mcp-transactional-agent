@@ -112,25 +112,38 @@ async def evaluate_decision(action_name: str, action_args: dict[str, Any], conte
         
     v1 = res1.get("verdict")
     v2 = res2.get("verdict")
-    
+
+    trail: dict[str, Any] = {
+        "judge1": {"verdict": v1, "reason": res1.get("reason")},
+        "judge2": {"verdict": v2, "reason": res2.get("reason")},
+        "supreme_court": None,
+    }
+
     if v1 == "APPROVE" and v2 == "APPROVE":
-        return {"verdict": "APPROVE", "reason": "Approved by both Gemini and Groq (GPT-OSS)."}
+        return {
+            "verdict": "APPROVE",
+            "reason": "Approved by both Gemini and Groq (GPT-OSS).",
+            "trail": trail,
+        }
     else:
         logger.warning(f"Double Judge REJECT or disagreement detected (Gemini={v1}, Groq={v2}). Escalating to Supreme Court Judge...")
         try:
             # Supreme Court tie-breaker
             supreme_res = await _run_single_judge("gemini", 0.0, messages, stage="supreme_court")
             sv = supreme_res.get("verdict")
-            
+            trail["supreme_court"] = {"verdict": sv, "reason": supreme_res.get("reason")}
+
             if sv == "APPROVE":
                 return {
-                    "verdict": "APPROVE", 
-                    "reason": f"Supreme Court Override: {supreme_res.get('reason')} (Base judges initially rejected/disagreed)"
+                    "verdict": "APPROVE",
+                    "reason": f"Supreme Court Override: {supreme_res.get('reason')} (Base judges initially rejected/disagreed)",
+                    "trail": trail,
                 }
             else:
                 return {
                     "verdict": "REJECT",
-                    "reason": f"Supreme Court Final Rejection: {supreme_res.get('reason')} (Base judges: {v1}/{v2})"
+                    "reason": f"Supreme Court Final Rejection: {supreme_res.get('reason')} (Base judges: {v1}/{v2})",
+                    "trail": trail,
                 }
         except Exception as e:
             logger.error(f"Supreme Court failed or API key missing, falling back to base judges: {e}")
@@ -139,8 +152,9 @@ async def evaluate_decision(action_name: str, action_args: dict[str, Any], conte
                 reasons.append(f"Gemini: {res1.get('reason')}")
             if v2 == "REJECT":
                 reasons.append(f"Groq: {res2.get('reason')}")
-                
+
             return {
                 "verdict": "REJECT",
-                "reason": " | ".join(reasons)
+                "reason": " | ".join(reasons),
+                "trail": trail,
             }

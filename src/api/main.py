@@ -5,8 +5,10 @@ from typing import Any
 import aio_pika
 from fastapi import FastAPI, Request, status
 
+from src.api.routers import system, transactions
 from src.api.schemas import ClaimRequest
 from src.core.config import settings
+from src.core.database import get_engine, get_session_maker
 
 
 @asynccontextmanager
@@ -19,11 +21,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await channel.declare_queue("agent_tasks_queue", durable=True)
     app.state.rabbitmq_connection = connection
     app.state.rabbitmq_channel = channel
+
+    # One engine/session-maker for the app's lifetime, mirroring the AMQP
+    # connection above -- backs the Phase 4 dashboard's read-only endpoints.
+    db_engine = get_engine(settings.DATABASE_URL)
+    app.state.db_engine = db_engine
+    app.state.db_session_maker = get_session_maker(db_engine)
+
     yield
+
     await connection.close()
+    await db_engine.dispose()
 
 
 app = FastAPI(title="Agentic MCP Engine API", lifespan=lifespan)
+app.include_router(transactions.router)
+app.include_router(system.router)
 
 
 @app.post("/api/v1/claims", status_code=status.HTTP_202_ACCEPTED)

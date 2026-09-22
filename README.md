@@ -53,7 +53,7 @@ The project also examines a second question: **how much of an AI system's decisi
 | **Phase 1.D** | RAG over business rules: pgvector + provider-agnostic embeddings (Bedrock Titan swap deferred to Phase 6) | Done — validated end-to-end locally |
 | **Phase 2** | Confidence layer: fuzzy scoring + belief rule base | In progress |
 | **Phase 3** | Quality drift detection (pluggable detector) | Designed, not yet implemented |
-| **Phase 4** | Read-only operations dashboard | Designed, not yet implemented |
+| **Phase 4** | Read-only operations dashboard | Done |
 | **Phase 5** | Offline comparison: Keras MLP vs. rule base | Designed, not yet implemented |
 | **Phase 6** | Cloud migration: AWS Serverless (API Gateway, SQS, Lambda) | Designed, not yet implemented |
 
@@ -281,16 +281,18 @@ See the ADR on drift detection for why EWMA is the default.
 
 ---
 
-## Phase 4 — Operations Dashboard (Designed, not yet implemented)
+## Phase 4 — Operations Dashboard (Done)
 
-The auditability from Phases 1.B and 2 currently lives in logs and tables. Phase 4 is a small read-only UI that makes it visible.
+The auditability from Phases 1.B and 1.D currently lives in logs and tables. Phase 4 is a small read-only Streamlit UI that makes it visible.
 
-- **Screens:** transaction monitor (status, judge verdict, rule-base verdict, with `PENDING_HUMAN_REVIEW` highlighted); decision inspector (rules fired, belief degrees, inputs, audit entries); quality trend (raw scores vs. detector output and alerts).
-- **Stack:** React, TypeScript, Vite, TanStack Query, Recharts, Tailwind CSS.
-- **Real-time updates:** the transaction table reflects new/changed rows via WebSocket, SSE, or polling against the read-only endpoints — mechanism to be decided during implementation.
-- **Visual metrics:** throughput, P95 latency, and approved-vs-rejected refund rate, sourced from the same tables the [Cost per Transaction](#cost-per-transaction) and [System Performance & Telemetry](#system-performance--telemetry) sections report manually today.
-- **In scope:** read-only `GET` endpoints under `src/api/routers/`; the UI is an ordinary API consumer.
-- **Out of scope:** write actions, its own auth system, global state libraries, direct access to the database, MCP tools, or the confidence and observability modules.
+- **Stack:** Streamlit + pandas, not the originally designed React/TS/Vite/TanStack/Recharts/Tailwind stack — a single-page, read-only internal tool doesn't need a full SPA toolchain, and this gets the same observability with far less surface area to maintain.
+- **Screens:** a health strip (Gateway/PostgreSQL/MCP Server, each checked server-side); an ingestion panel (submit a claim, see the `202 Accepted` + `request_id` immediately); a transaction monitor (`st.fragment`, 2s refresh) with live throughput/P95-latency stats computed from the table itself; each row expands into a decision inspector showing the real Judge 1 (Gemini) / Judge 2 (Groq) / Supreme Court reasoning trail.
+- **Real lifecycle values used for status coloring:** `PROCESSING`, `COMPLETED`, `PENDING_HUMAN_REVIEW`, `BLOCKED_MALICIOUS_PROMPT` — there is no separate `PENDING` or `REJECTED` status; a judge reject routes to `PENDING_HUMAN_REVIEW`.
+- **Quality Trend screen: deferred.** It depended on Phase 3's drift detector output, which doesn't exist yet (Phase 3 is still experimental/roadmap) — no data source to show, so it isn't built.
+- **Belief Rule Base panel: placeholder.** Phase 2's `confidence/rule_base.py` is still unimplemented, so each row's expander shows a static "Phase 2 not yet implemented" note instead of a fabricated belief degree.
+- **In scope:** read-only `GET` endpoints under `src/api/routers/` (`/api/v1/transactions`, `/api/v1/system-health`) — the dashboard is an ordinary API consumer, same as designed.
+- **Out of scope, enforced:** the dashboard (`src/ui/`) never imports a SQLAlchemy model/session and never calls the MCP server directly — even the MCP health check is done server-side by the gateway (a bare 401 from the Phase 1.B security boundary counts as "alive").
+- **Prerequisite persisted:** Judge 1/Judge 2/Supreme Court verdicts were previously only logged, never queryable. Migration `622b710f2855` adds `transactions.created_at` (for latency/throughput) and `transactions.judge_trail` (JSONB); `worker.py` now writes the trail after each decision.
 
 ---
 
@@ -411,15 +413,16 @@ The project uses the `src/` layout so every internal import is absolute (`from s
 agentic-mcp-engine/
     src/
         api/                  FastAPI entry points
-            routers/          Route definitions
+            routers/          transactions.py, system.py — Phase 4's read-only endpoints
             main.py           Application entry point
             schemas.py        Request/response Pydantic models
+            dependencies.py   Shared FastAPI DI (e.g. get_db_session)
         core/                 Shared domain logic
             config.py         pydantic-settings configuration
             database.py       Async connection and session
             models.py         SQLAlchemy models
-            services/         chunking.py, retrieval_service.py
-            repositories/     knowledge_base_repository.py
+            services/         chunking.py, retrieval_service.py, system_health_service.py
+            repositories/     knowledge_base_repository.py, transaction_repository.py
         agents/               LLM orchestration and provider factory
             llm_factory.py, judge.py, prompt_guard.py, token_usage.py
         mcp_server/           MCP server (HTTP/SSE)
@@ -429,6 +432,12 @@ agentic-mcp-engine/
                                rate_limiter.py, audit.py
         worker/               RabbitMQ consumer, orchestration, MCP client
             worker.py, recovery_sweeper.py
+        ui/                   [Phase 4, done] Streamlit Ops Dashboard
+            app.py            Layout: health strip, ingestion panel, transaction monitor
+            api_client.py     The dashboard's ONLY data source — the gateway's HTTP API
+            stats.py          Pure throughput/P95-latency functions
+            theme.py          Single injected CSS block ("corporate deep-space terminal")
+            config.py         pydantic-settings (GATEWAY_URL)
         confidence/           [Phase 2, in progress] Fuzzy scoring + belief rule base
             fuzzy_layer.py
             rule_base.py
@@ -442,7 +451,8 @@ agentic-mcp-engine/
             security/
         integration/
         performance/
-    docker/                   gateway.Dockerfile, worker.Dockerfile, mcp_server.Dockerfile
+    docker/                   gateway.Dockerfile, worker.Dockerfile, mcp_server.Dockerfile,
+                               dashboard.Dockerfile
     scripts/                  ingest_knowledge_base.py
     docs/                     policies/, architecture/, postmortems/, testing/
     alembic/

@@ -137,6 +137,7 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
             .with_for_update()
         )
         locked_txn = res.scalar_one()
+        locked_txn.judge_trail = judge_result.get("trail")
 
         if judge_result.get("verdict") == "APPROVE":
             locked_txn.status = "COMPLETED"

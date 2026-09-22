@@ -31,7 +31,10 @@ dependencies = [
     "structlog",
     "python-dotenv",
     "sse-starlette",
-    "langsmith"
+    "langsmith",
+    "httpx",
+    "streamlit",
+    "pandas"
 ]
 
 [project.urls]
@@ -46,7 +49,8 @@ dev = [
     "pytest-cov",
     "locust",
     "ruff",
-    "mypy"
+    "mypy",
+    "pandas-stubs"
 ]
 
 [tool.hatch.build.targets.wheel]

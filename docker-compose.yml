@@ -133,12 +133,40 @@ services:
     env_file: .env
     environment:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      # Phase 4: the gateway now also owns a DB engine, backing the
+      # dashboard's read-only /api/v1/transactions and /api/v1/system-health
+      # endpoints.
+      DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/agentic_engine
+      MCP_SERVER_URL: http://mcp_server:8080/sse
     restart: on-failure:5
     ports:
       - "8000:8000"
     depends_on:
+      postgres:
+        condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      mcp_server:
+        condition: service_started
+    networks:
+      - agentic_net
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/dashboard.Dockerfile
+    container_name: agentic_dashboard
+    env_file: .env
+    environment:
+      GATEWAY_URL: http://gateway:8000
+    restart: on-failure:5
+    ports:
+      - "8501:8501"
+    depends_on:
+      gateway:
+        condition: service_started
     networks:
       - agentic_net
 

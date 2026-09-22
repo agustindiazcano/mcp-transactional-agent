@@ -131,6 +131,74 @@ async def test_run_single_judge_logs_token_usage_when_present():
 
 
 @pytest.mark.asyncio
+async def test_evaluate_decision_trail_on_agreement():
+    """Phase 4 dashboard needs a per-judge reasoning trail, not just the
+    aggregate verdict/reason. When both base judges agree, the trail must
+    record judge1/judge2 and no supreme_court entry."""
+    mock_llm = AsyncMock()
+    mock_llm.ainvoke.return_value = AIMessage(
+        content=json.dumps({"verdict": "APPROVE", "reason": "Action is within scope."})
+    )
+
+    with patch("src.agents.judge.get_llm", return_value=mock_llm):
+        result = await evaluate_decision(
+            action_name="execute_refund",
+            action_args={"transaction_id": "123", "amount": 50.0},
+            context={"user_id": "user1"},
+        )
+
+    trail = result["trail"]
+    assert trail["judge1"] == {"verdict": "APPROVE", "reason": "Action is within scope."}
+    assert trail["judge2"] == {"verdict": "APPROVE", "reason": "Action is within scope."}
+    assert trail["supreme_court"] is None
+
+
+@pytest.mark.asyncio
+async def test_evaluate_decision_trail_on_disagreement_escalates():
+    """When the base judges disagree/reject, the trail must record both base
+    verdicts plus the Supreme Court tie-break result."""
+
+    def fake_get_llm(*, provider: str, temperature: float = 0.0, **_: object) -> AsyncMock:
+        mock_llm = AsyncMock()
+        if provider == "groq":
+            mock_llm.ainvoke.return_value = AIMessage(
+                content=json.dumps({"verdict": "REJECT", "reason": "Amount too high."})
+            )
+        else:
+            mock_llm.ainvoke.return_value = AIMessage(
+                content=json.dumps({"verdict": "APPROVE", "reason": "Looks fine."})
+            )
+        return mock_llm
+
+    call_count = {"n": 0}
+    original_fake = fake_get_llm
+
+    def sequenced_get_llm(*, provider: str, temperature: float = 0.0, **_: object) -> AsyncMock:
+        call_count["n"] += 1
+        if call_count["n"] == 3:
+            # Supreme Court cascade call (always routed through "gemini" stage).
+            mock_llm = AsyncMock()
+            mock_llm.ainvoke.return_value = AIMessage(
+                content=json.dumps({"verdict": "APPROVE", "reason": "Tie-break approved."})
+            )
+            return mock_llm
+        return original_fake(provider=provider, temperature=temperature)
+
+    with patch("src.agents.judge.get_llm", side_effect=sequenced_get_llm):
+        result = await evaluate_decision(
+            action_name="execute_refund",
+            action_args={"transaction_id": "123", "amount": 50000.0},
+            context={"user_id": "user1"},
+        )
+
+    trail = result["trail"]
+    assert trail["judge1"] == {"verdict": "APPROVE", "reason": "Looks fine."}
+    assert trail["judge2"] == {"verdict": "REJECT", "reason": "Amount too high."}
+    assert trail["supreme_court"] == {"verdict": "APPROVE", "reason": "Tie-break approved."}
+    assert result["verdict"] == "APPROVE"
+
+
+@pytest.mark.asyncio
 async def test_run_single_judge_does_not_log_usage_when_absent():
     """Every existing mocked judge response (a bare AIMessage(content=...))
     carries no usage_metadata -- must stay silent, not crash or log junk."""
