@@ -26,12 +26,12 @@ Why it's here: `README.md`'s "Evaluation and Regression" section and `docs/testi
 - [ ] **Langfuse (LLM observability & cost tracing).** `LANGFUSE_SECRET_KEY`/`LANGFUSE_PUBLIC_KEY` are already optional env vars, but no callback is wired into `src/agents/` or `src/worker/worker.py` despite `docs/testing/telemetry_performance.md` describing one as already injected into every LLM call — that doc line needs correcting alongside the real implementation. Add the `langfuse` package and its callback handler to Prompt Guard, Judge 1/2, and Supreme Court, so a failed transaction's full trace (embedding time, prompt-guard token usage, judge input/output, MCP validation failure) is inspectable end-to-end.
 - [ ] **LangSmith / LangChain native tracing.** `LANGCHAIN_TRACING_V2`/`LANGCHAIN_ENDPOINT`/`LANGCHAIN_API_KEY`/`LANGCHAIN_PROJECT` are now in `.env.example`, but this hasn't been verified against this project's actual LangChain calls (judge, agent). Before wiring both LangSmith and Langfuse, decide whether they're complementary (LangSmith for LangChain-internal chain/step tracing, Langfuse for cross-service cost/latency rollups) or redundant for this project's scale — wiring both without that call risks two overlapping, half-maintained tracing setups.
 
-### Step 4 — Frontend: Admin Ops Dashboard (Phase 4)
-Why it's critical: this is what proves the Full-Stack E-commerce profile — without a UI, it's backend-only.
-- [ ] React + Vite + TypeScript + Tailwind CSS client consuming the FastAPI endpoints.
-- [ ] Real-time transaction grid (PENDING, PROCESSING, APPROVED, REJECTED).
-- [ ] RAG detail view (which policy chunk was injected, from Phase 1.D's retrieval).
-- [ ] Judges' verdicts (Double Judge + Supreme Court cascade outcome).
+### Step 4 — Frontend: Admin Ops Dashboard (Phase 4) — done
+Why it's critical: this is what proves the Full-Stack E-commerce profile — without a UI, it's backend-only. Delivered as a Streamlit dashboard (`src/ui/app.py`) instead of the originally planned React/Vite/TypeScript/Tailwind client — a single-page, read-only internal tool doesn't need a full SPA toolchain, and this keeps the UI a strict API consumer (new `GET /api/v1/transactions` / `GET /api/v1/system-health` endpoints under `src/api/routers/`; the dashboard never touches Postgres or the MCP server directly).
+- [x] Streamlit client consuming only the FastAPI gateway's new read-only endpoints (`src/ui/api_client.py`).
+- [x] Real-time transaction grid (`st.fragment`, 2s refresh) using the real lifecycle values `PROCESSING`, `COMPLETED`, `PENDING_HUMAN_REVIEW`, `BLOCKED_MALICIOUS_PROMPT` — not the `PENDING`/`REJECTED` names originally assumed here, which don't exist in `worker.py`.
+- [ ] RAG detail view (which policy chunk was injected, from Phase 1.D's retrieval) — not covered by this pass; the current expander shows the judge trail and payload only.
+- [x] Judges' verdicts (Double Judge + Supreme Court cascade outcome) — required adding persistence that didn't exist: migration `622b710f2855` (`transactions.created_at`, `transactions.judge_trail`) plus a `judge.py`/`worker.py` change to write a real per-judge trail, since only the aggregate status was ever queryable before.
 
 ### Step 5 — Deterministic Confidence Layer (Phase 2)
 - [ ] Integrate the fuzzy-scoring layer and the Belief Rule Base alongside the AI Judge, so critical transactions (`execute_refund`, `validate_fraud_score`) require double approval — probabilistic (LLM judge) *and* symbolic (rule base) — before auto-approving.

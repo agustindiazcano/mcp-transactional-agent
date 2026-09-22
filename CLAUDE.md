@@ -12,7 +12,7 @@ Description: An asynchronous, fault-tolerant Agentic Workflow engine designed to
 
 Core Pattern: Event-Driven Architecture combined with the Model Context Protocol (MCP). The LLM is completely isolated from the database and business logic. It communicates exclusively through the MCP server to execute tools.
 
-The project is organized around Phase 1 (core transactional engine, production-ready) and three infrastructure sub-phases that harden and operationalize it — Phase 1.B (MCP security boundary: authn, per-tool authz, rate limiting, audit log — see Section 5a-i; done), Phase 1.C (containerized local deployment: per-service Dockerfiles + full `docker-compose` orchestration — see Section 5a-ii; done, deployment and load validated against the real containerized stack), Phase 1.D (RAG over business rules via `pgvector` + provider-agnostic embeddings, deliberately decoupled from AWS Bedrock — see Section 5a-iii; done, validated end-to-end locally) — followed by Phase 2 (confidence layer: fuzzy scoring + rule-based expert system, in progress), Phase 3 (pluggable quality drift detection — EWMA default, with CUSUM, Page-Hinkley, and Kalman as selectable detectors — experimental/roadmap), Phase 4 (Ops Dashboard, experimental/roadmap), Phase 5 (ML Comparison Track, experimental/roadmap), and Phase 6 (AWS Serverless cloud migration, experimental/roadmap). See Sections 5a-5f for phase-specific directives.
+The project is organized around Phase 1 (core transactional engine, production-ready) and three infrastructure sub-phases that harden and operationalize it — Phase 1.B (MCP security boundary: authn, per-tool authz, rate limiting, audit log — see Section 5a-i; done), Phase 1.C (containerized local deployment: per-service Dockerfiles + full `docker-compose` orchestration — see Section 5a-ii; done, deployment and load validated against the real containerized stack), Phase 1.D (RAG over business rules via `pgvector` + provider-agnostic embeddings, deliberately decoupled from AWS Bedrock — see Section 5a-iii; done, validated end-to-end locally) — followed by Phase 2 (confidence layer: fuzzy scoring + rule-based expert system, in progress), Phase 3 (pluggable quality drift detection — EWMA default, with CUSUM, Page-Hinkley, and Kalman as selectable detectors — experimental/roadmap), Phase 4 (Ops Dashboard, done — Streamlit, see Section 5d), Phase 5 (ML Comparison Track, experimental/roadmap), and Phase 6 (AWS Serverless cloud migration, experimental/roadmap). See Sections 5a-5f for phase-specific directives.
 
 ## 3. Tech Stack
 
@@ -27,7 +27,7 @@ The project is organized around Phase 1 (core transactional engine, production-r
 - RAG Ingestion (Phase 1.D): provider-agnostic embeddings API (Gemini `gemini-embedding-001`, truncated to 768 dims, by default), `pgvector`. Amazon Titan Embeddings via boto3 is a Phase 6 swap, not a Phase 1.D dependency.
 - Confidence Layer (Phase 2): scikit-fuzzy or a hand-rolled membership-function module for fuzzy scoring; a lightweight declarative rule engine for the Belief Rule Base (BRB).
 - Observability (Phase 3, experimental): a pluggable quality-drift detector over judge/TruLens score time series — EWMA (default), CUSUM, Page-Hinkley, or a minimal Kalman filter (numpy-based, no heavy ML dependency), selected via `DRIFT_DETECTOR`.
-- Frontend (Phase 4, experimental): React, TypeScript, Vite, TanStack Query, Recharts, Tailwind CSS.
+- Frontend (Phase 4, done): Streamlit + pandas, served as its own containerized service (`docker/dashboard.Dockerfile`) — swapped in for the originally designed React/TypeScript/Vite/TanStack Query/Recharts/Tailwind stack, which was never built; a single-page, read-only internal tool doesn't need a full SPA toolchain.
 - ML Comparison (Phase 5, experimental): TensorFlow, Keras, MLflow.
 - Cloud Migration (Phase 6, experimental): AWS API Gateway, SQS, Lambda, IAM/VPC PrivateLink, serverless PostgreSQL (Neon or Supabase).
 
@@ -132,10 +132,11 @@ The detector is pluggable via `DRIFT_DETECTOR`, over the time series of judge/Tr
 4. `observability/alerting.py`: fires only when the active detector's estimate exits its control band (`DRIFT_ALERT_SIGMA` standard deviations), not on individual outlier scores.
 5. This phase is design/prototype status. Do not wire it into the transactional critical path under any circumstance — see the constraint in Section 4. Do not add a trained drift classifier — it would need its own training data and become another opaque component to monitor.
 
-## 5d. Development Phases — Phase 4 (Ops Dashboard, Experimental)
+## 5d. Development Phases — Phase 4 (Ops Dashboard, Done)
 
-1. Scope: A read-only React/TypeScript frontend (Transaction Monitor, Confidence Inspector, Quality Trend).
-2. Architecture Constraint: The UI must act as an external consumer. It fetches data exclusively from new read-only (GET) endpoints under `api/routers/`. It must never connect directly to the database, the MCP server, or the confidence/observability modules.
+1. Scope: A read-only Streamlit dashboard (`src/ui/app.py`) — health strip, ingestion panel, transaction monitor with a per-row decision-inspector expander (Judge 1/Judge 2/Supreme Court trail; a Phase 2 belief-rule-base panel that is a static placeholder until Phase 2 ships). Quality Trend is deferred — it needs Phase 3's drift-detector output, which doesn't exist yet.
+2. Architecture Constraint: The UI must act as an external consumer. It fetches data exclusively from new read-only (GET) endpoints under `api/routers/` (`transactions.py`, `system.py`) via `src/ui/api_client.py`. It must never connect directly to the database, the MCP server, or the confidence/observability modules — even the MCP health check is done server-side by `system_health_service.py`, treating a bare 401 from the Phase 1.B security boundary as proof of life.
+3. Prerequisite persisted for this phase: Judge 1/Judge 2/Supreme Court verdicts were previously only logged, never queryable. Migration `622b710f2855` added `transactions.created_at` and `transactions.judge_trail` (JSONB); `src/agents/judge.py`'s `evaluate_decision()` now returns a `"trail"` key that `worker.py` persists after each decision.
 
 ## 5e. Development Phases — Phase 5 (ML Comparison Track, Experimental)
 
@@ -206,6 +207,12 @@ agentic-mcp-engine/
         worker/              # RabbitMQ consumer, MCP client
             worker.py
             recovery_sweeper.py
+        ui/                  # Phase 4: Streamlit Ops Dashboard (done)
+            app.py
+            api_client.py    # the dashboard's ONLY data source (gateway HTTP API)
+            stats.py
+            theme.py
+            config.py
         confidence/          # Phase 2: fuzzy layer & expert system
             fuzzy_layer.py
             rule_base.py
@@ -260,6 +267,7 @@ When refusing an action under this section, always state the correct alternative
 | `LANGFUSE_SECRET_KEY` | Langfuse telemetry secret |
 | `LANGFUSE_PUBLIC_KEY` | Langfuse telemetry public key |
 | `MCP_SERVER_URL` | URL of the running MCP server |
+| `GATEWAY_URL` | Phase 4, dashboard side: base URL of the gateway API the Streamlit dashboard consumes (default: `http://localhost:8000`) |
 | `MAX_LLM_RETRIES` | Maximum retry count for LLM calls (default: 3) |
 | `IDEMPOTENCY_TTL_SECONDS` | TTL for idempotency record cache (default: 86400) |
 | `MCP_CLIENTS_FILE` | Phase 1.B, server side: path to the client registry (`client_id`, token hash, allowed tools) |
