@@ -413,26 +413,28 @@ agentic-mcp-engine/
         api/                  FastAPI entry points
             routers/          Route definitions
             main.py           Application entry point
+            schemas.py        Request/response Pydantic models
         core/                 Shared domain logic
             config.py         pydantic-settings configuration
             database.py       Async connection and session
             models.py         SQLAlchemy models
-            services/         Business logic
-            repositories/     Database access
+            services/         chunking.py, retrieval_service.py
+            repositories/     knowledge_base_repository.py
         agents/               LLM orchestration and provider factory
+            llm_factory.py, judge.py, prompt_guard.py, token_usage.py
         mcp_server/           MCP server (HTTP/SSE)
             mcp_server.py
-            tools/            Tool implementations
-            security/         [Phase 1.B] authn, authz, rate limiting, audit
+            tools/            schemas.py — per-tool argument validation
+            security/         [Phase 1.B, done] client_registry.py, middleware.py,
+                               rate_limiter.py, audit.py
         worker/               RabbitMQ consumer, orchestration, MCP client
-            worker.py
-        confidence/           [Phase 2] Fuzzy scoring + belief rule base
+            worker.py, recovery_sweeper.py
+        confidence/           [Phase 2, in progress] Fuzzy scoring + belief rule base
             fuzzy_layer.py
             rule_base.py
-            rules/            Declarative rule files (refunds, fraud)
-        observability/        [Phase 3] Drift detection
-            detectors/        EWMA, CUSUM, Page-Hinkley, Kalman
-            alerting.py
+            rules/            Declarative rule files (refunds, fraud) — scaffolded, empty
+        observability/        [Phase 3, experimental] Drift detection
+            kalman_monitor.py, alerting.py — EWMA/CUSUM/Page-Hinkley not yet built
     tests/
         unit/
             confidence/
@@ -440,13 +442,19 @@ agentic-mcp-engine/
             security/
         integration/
         performance/
+    docker/                   gateway.Dockerfile, worker.Dockerfile, mcp_server.Dockerfile
+    scripts/                  ingest_knowledge_base.py
+    docs/                     policies/, architecture/, postmortems/, testing/
     alembic/
     alembic.ini
-    .agents/                  AI coding-agent configuration
+    .claude/                  Claude Code skills, hooks, agent config
+    .agents/                  Gemini Antigravity agent config
     .env.example
-    requirements.txt
+    mcp_clients.json          Phase 1.B client registry (token hashes only)
+    pyproject.toml
     docker-compose.yml
-    Dockerfile
+    CLAUDE.md
+    PENDING.md
 ```
 
 ---
