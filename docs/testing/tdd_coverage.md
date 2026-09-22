@@ -4,6 +4,19 @@ In this project, we strictly adhere to the **Test-Driven Development (TDD)** met
 
 This document explains in human-readable terms what we are testing and the current coverage of Phase 1 (Core Engine), divided into Unit Tests and Integration (End-to-End) Tests.
 
+## Current Status (full run, 2026-09-22)
+
+| Tier | Tests | Infrastructure |
+|---|---|---|
+| Unit (`tests/unit/`) | 81 | None for most; `test_transaction_repository.py` needs a live PostgreSQL |
+| Integration (`tests/integration/`) | 30 | Real PostgreSQL (pgvector) + RabbitMQ via `docker compose up -d postgres rabbitmq` |
+| **Total** | **111 passed, 0 failed** | **80% line coverage over `src/`** (`pytest --cov=src`) |
+| Load (`tests/performance/locustfile.py`) | Locust, 100 users | Full `docker compose` stack — 2,630 requests, 0 failures, P95 87 ms |
+
+Beyond the Phase 1 core described below, the suite also covers: Prompt Guard, token-usage extraction, chunking and retrieval (Phase 1.D), the recovery sweeper and worker concurrency, the MCP security boundary (`tests/unit/security/`, `test_rate_limiter.py`, and HTTP-level 401/403/422/429 + audit-row assertions in `test_mcp_server.py` — Phase 1.B), and the Phase 4 dashboard (API client, stats, theme, and the read-only `transactions`/`system-health` routers).
+
+Main uncovered areas: `src/ui/app.py` (Streamlit layout, exercised manually), `src/mcp_server/mcp_server.py`'s bootstrap, and the empty Phase 2/3 scaffolding (`confidence/`, `observability/`).
+
 ---
 
 ## 1. Unit Tests

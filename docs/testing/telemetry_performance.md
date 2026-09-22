@@ -6,6 +6,7 @@ To ensure the Agentic MCP Engine is truly enterprise-grade, we rely on empirical
 A high test coverage percentage (targeting 80%+) ensures that the core transactional logic is actively executed and validated by our test suites, preventing regressions during refactors.
 
 - **Tooling:** `pytest-cov`
+- **Current result (2026-09-22):** 111 tests passing (81 unit + 30 integration), **80%** line coverage over `src/`.
 - **Execution:** We generate a detailed missing-line report to explicitly identify which edge cases or error-handling blocks remain untested.
 - **Command:**
   ```bash
@@ -25,11 +26,13 @@ To validate the system's resilience under heavy concurrency, we must measure its
   locust -f tests/performance/locustfile.py --headless -u 100 -r 10 --run-time 1m --host http://localhost:8000
   ```
 
-## 3. LLM Observability & Cost Tracking
-Because the LLM inferences represent the primary operational cost and volatility factor, they are strictly monitored at runtime.
+**Latest result (2026-09-21, full `docker compose` stack, 100 users, spawn rate 10, 1 minute):** 2,630 requests, 0 failures, P50 55 ms, P95 87 ms, P99 120 ms, ~45.5 req/s average. Local load testing is complete; distributed cloud load testing is pending the Google Cloud (Cloud Run) deployment — see the README's Phase 6.
 
-- **Tooling:** `Langfuse`
-- **Mechanism:** The `langfuse` callback handler is injected into all LLM calls (both the Primary Agent and the deterministic LLM-Judge guardrail).
+## 3. LLM Observability & Cost Tracking
+Because the LLM inferences represent the primary operational cost and volatility factor, they are monitored at runtime.
+
+- **Implemented today:** `src/agents/token_usage.py` logs a structured `llm_token_usage` line (stage, provider, input/output tokens) at every real LLM call site (Prompt Guard, Judge 1, Judge 2, Supreme Court). This is what the README's Cost per Transaction table was built from.
+- **Planned, not yet implemented — Langfuse:** no `langfuse` dependency is declared and no callback handler is wired into `src/agents/` or `src/worker/` yet (see `PENDING.md` Step 3). Once added, the metrics below become a per-transaction trace instead of log lines.
 - **Key Metrics Tracked:**
   - Token consumption (Prompt vs. Completion tokens).
   - Estimated cost per transaction.
