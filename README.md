@@ -8,6 +8,8 @@ An asynchronous workflow engine for running LLM agents against transactional bus
 
 It addresses three problems that appear when LLMs are placed in a write path: non-deterministic output, uncontrolled access to side-effecting operations, and synchronous blocking on slow inference calls. The engine combines an event-driven pipeline (FastAPI → RabbitMQ → worker), a Model Context Protocol (MCP) server as the only route to side-effecting tools, and retrieval over business rules stored in PostgreSQL/pgvector (Phase 1.D).
 
+**Guardrails, up front:** a structural boundary against prompt injection — nothing in the prompt or in retrieved documents can extend a caller's tool access, because tool authorization comes only from the caller's authenticated identity, enforced server-side and covered by an integration test (a restricted identity calling `execute_refund` gets a denied, audited call) — plus a Prompt Guard model that screens jailbreak attempts before any agent runs. It also favors deterministic, auditable decisions over unchecked LLM judgment: tool calls are rate-limited and audit-logged, and when the two judges disagree the case goes to a Supreme Court tie-break and then, if still unresolved, to human review (`PENDING_HUMAN_REVIEW`). See the [Deterministic Guardrails Roadmap](docs/deterministic_guardrails_roadmap.md).
+
 The project also examines a second question: **how much of an AI system's decision-making can be made deterministic and auditable instead of probabilistic?** Later phases add a rule-based confidence layer (fuzzy scoring and a belief rule base) and a drift-detection layer over quality metrics. The direction is consistent throughout: use an explicit, inspectable mechanism wherever one can do the job, and use the LLM only where symbolic reasoning cannot replace it.
 
 ---
@@ -22,7 +24,7 @@ The project also examines a second question: **how much of an AI system's decisi
 | **UI to try it** | Streamlit Ops Dashboard at `http://localhost:8501` — submit a claim, watch it move through the pipeline, and inspect the Judge 1 / Judge 2 / Supreme Court reasoning trail per transaction ([Phase 4](#phase-4--operations-dashboard-done)). |
 | **Tests** | **111 passing** — 81 unit + 30 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks) — **80% line coverage** over `src/` (`pytest --cov=src`). |
 | **Load test** | Locust, 100 concurrent users against the full containerized stack: **2,630 requests, 0 failures, P95 87 ms** ([numbers](#system-performance--telemetry)). |
-| **Security** | MCP boundary with token authn, per-tool authz, server-side argument validation, rate limiting, and a fail-closed audit log ([Phase 1.B](#phase-1b--mcp-security-boundary-done)). |
+| **Security** | MCP boundary with token authn, per-tool authz, server-side argument validation, rate limiting, and a fail-closed audit log. Prompt injection is handled structurally: tool access comes only from the authenticated identity, so injected text can't extend it (integration-tested), and a Prompt Guard model screens jailbreak attempts first ([Phase 1.B](#phase-1b--mcp-security-boundary-done)). |
 | **Cloud** | **Google Cloud is the primary deployment target — in progress** (Cloud Run, Cloud SQL for PostgreSQL + pgvector, Artifact Registry, with **Vertex AI** as the inference provider being exercised). AWS is kept as a secondary target ([Phase 6](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary)). |
 
 **What this is**
@@ -191,7 +193,7 @@ Documents retrieved by RAG are untrusted input. The design guarantees one struct
 
 > The set of tools available to a request is determined by the caller's authenticated identity on the server. Nothing in the prompt or in retrieved documents can extend it.
 
-An injected instruction can still influence which of the *allowed* tools the agent chooses and with what arguments; that residual risk is what the argument limits, the judge, and the Phase 2 rule base constrain. A failure-injection test verifies the invariant: a poisoned document instructing a restricted identity to call `execute_refund` must produce a denied, audited call.
+An injected instruction can still influence which of the *allowed* tools the agent chooses and with what arguments; that residual risk is what the argument limits, the judge, and the Phase 2 rule base constrain. An integration test verifies the invariant at the boundary: `tests/integration/test_mcp_server.py::test_tool_call_without_allowlisted_tool_is_denied_and_audited` has an identity with a valid token but a restricted allowlist call `execute_refund`, and asserts HTTP 403 plus a `DENIED_UNAUTHORIZED` audit row. The request's content has no effect on the decision. A full end-to-end variant (a poisoned `knowledge_base` document driving a real agent toward the restricted tool) needs a real primary agent first, which is [Phase 1.E](#phase-1e--front-desk--back-office-asymmetric-agentic-workflow-designed-not-yet-implemented).
 
 ### Threat model
 
