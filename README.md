@@ -51,6 +51,8 @@ The project also examines a second question: **how much of an AI system's decisi
 | **Phase 1.B** | MCP security boundary: authn, per-tool authz, validation, rate limiting, audit log | Done |
 | **Phase 1.C** | Containerized local deployment: per-service Dockerfiles, full `docker-compose` orchestration | Done — deployment and load validated against the real containerized stack (see [postmortem](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md)) |
 | **Phase 1.D** | RAG over business rules: pgvector + provider-agnostic embeddings (Bedrock Titan swap deferred to Phase 6) | Done — validated end-to-end locally |
+| **Phase 1.E** | Front-Desk / Back-Office asymmetric agentic workflow: a real, server-side-revalidated primary agent, replacing `worker.py`'s mocked one | Designed, not yet implemented |
+| **Phase 1.F** | Dynamic LLM provider selection: per-request/per-judge override plus a hot-swappable global default | Designed, not yet implemented |
 | **Phase 2** | Confidence layer: fuzzy scoring + belief rule base | In progress |
 | **Phase 3** | Quality drift detection (pluggable detector) | Designed, not yet implemented |
 | **Phase 4** | Read-only operations dashboard | Done |
@@ -236,6 +238,52 @@ One correction made while building this: the original design mislabeled `<->` as
 
 ---
 
+## Phase 1.E — Front-Desk / Back-Office Asymmetric Agentic Workflow (Designed, not yet implemented)
+
+### Problem (as it stood before this phase)
+
+Phase 1 step 4 ("Worker Layer") was always scoped to orchestrate a real primary-agent LLM call, but `worker.py` has only ever hardcoded it: `mock_primary_action = "execute_refund"`, `mock_primary_args = body`. Every claim's proposed action is the same one regardless of what the user actually wrote — there is no LLM turning free text into intent yet. The Double Judge, RAG retrieval, and MCP tools all run for real; only the step that decides *what to propose* is fake.
+
+### Design: an asymmetric trust boundary, not a single agent
+
+Rather than one LLM that both interprets the user and decides the outcome, this phase splits those responsibilities across a trust boundary — the same principle Phase 1.B already applies to MCP tool calls (never trust the caller, validate server-side), extended here to the primary agent's own output:
+
+- **The Front-Desk (probabilistic UX):** a conversational LLM that acts purely as an interface — it contains the user and translates unstructured text into a standardized JSON payload. It holds minimal privilege: no access to the database, the RAG table, or the MCP server. It never decides an outcome, only proposes a structured intent. If it cannot map the user's message to a valid payload, it asks a clarifying question rather than guessing a field.
+- **The Back-Office (deterministic execution):** the existing isolated async orchestrator (FastAPI + RabbitMQ + `worker.py`). It never trusts the Front-Desk's JSON at face value — every field is re-validated server-side against a strict Pydantic schema, the same "argument validation enforced server-side regardless of what the LLM produced" rule Phase 1.B already enforces for MCP tool calls. Once validated, it applies cross-checked evaluation (Double Judge), retrieves corporate policy context (pgvector, Phase 1.D), and resolves the request through hard deterministic rules (Belief Rule Base, Phase 2) and the MCP server.
+- **The Feedback Loop:** the Back-Office exposes an auditable, objective verdict (e.g. `REJECTED: <objective reason>`, never a raw judge rationale that could leak internal reasoning or business logic) and the Front-Desk only reads that state to phrase a human-readable response — it never re-interprets or overrides the verdict.
+
+### Scope
+
+1. Replace `worker.py`'s `mock_primary_action`/`mock_primary_args` with a real Front-Desk LLM call that proposes a structured payload from `claim_text`.
+2. Add server-side Pydantic re-validation of that payload before it reaches the Double Judge — mirroring `src/mcp_server/tools/schemas.py`'s `extra="forbid"` pattern from Phase 1.B.
+3. Define the objective-verdict contract the Back-Office exposes back to the Front-Desk (status + reason code, not the judges' raw text) — this is what the Front-Desk phrases into a human-readable reply.
+4. Does not require Phase 2 to be complete first — the mocked path already flows through the Double Judge today regardless of what proposes the action — but pairs naturally with Phase 2 once both are real, since a rule base evaluating real, varied Front-Desk intents is more meaningful than one hardcoded action.
+
+---
+
+## Phase 1.F — Dynamic LLM Provider Selection (Designed, not yet implemented)
+
+### Problem (as it stood before this phase)
+
+`src/agents/llm_factory.py`'s `get_llm(provider=...)` already implements the Factory pattern the [Tech Stack](#tech-stack)'s "Interface Segregation and Factory Pattern" directive promises — the abstraction itself is real. What isn't: every call site hardcodes its provider. `judge.py` always calls Judge 1 and the Supreme Court tie-break with `"gemini"` and Judge 2 with `"groq"`. The only lever an operator has is the global `LLM_PROVIDER` env var, and changing it means editing `.env` and restarting containers — there's no way to mix providers per judge role, per request, or swap a default without a redeploy.
+
+### Design: two complementary levers, not a single choice
+
+1. **Per-request override (demo-friendly):** the claim payload (`ClaimRequest`) gains optional `judge_1_provider`/`judge_2_provider` fields, validated against the same provider allowlist `get_llm()` already supports (`gemini`, `groq`, `openai`, `vertex`, `bedrock`, `mock`) — an invalid value is rejected at the Pydantic layer, the same server-side-revalidation doctrine [Phase 1.B](#phase-1b--mcp-security-boundary-done) already applies to MCP tool arguments and [Phase 1.E](#phase-1e--front-desk--back-office-asymmetric-agentic-workflow-designed-not-yet-implemented) applies to the Front-Desk's proposed intent. The [Streamlit dashboard](#phase-4--operations-dashboard-done)'s ingestion panel gets two `st.selectbox` dropdowns so a demo can visibly prove the backend is provider-agnostic per call, not just per deployment.
+2. **Global hot-swappable default (operational):** an admin surface (e.g. `PUT /config/providers`) backed by `pydantic-settings` and/or a config table, updating the active default provider(s) in memory or the database — a "vendor is down, reroute now" lever with no container restart or `.env` edit required.
+
+These aren't mutually exclusive, and which one gets built first is an implementation-time decision, not committed here.
+
+### Scope
+
+1. Extend `ClaimRequest`/the claims ingestion path with the optional per-judge provider fields.
+2. Thread the chosen provider through `worker.py` → `evaluate_decision()` → `_run_single_judge()`, replacing the hardcoded `"gemini"`/`"groq"` literals — falling back to today's hardcoded pairing when a caller doesn't specify one, so existing behavior doesn't change unless a caller opts in.
+3. Add the two provider dropdowns to the dashboard's ingestion panel.
+4. The global admin-config lever is a separate, later increment — not required to ship items 1-3.
+5. Does not touch the MCP tool-call provider boundary (Phase 1.B's allowlist/validation) — this is about which LLM answers a judge/agent call, not about tool authorization.
+
+---
+
 ## Phase 2 — Confidence Layer (In progress)
 
 Phase 1's LLM-as-a-Judge is useful, but it is still a probabilistic model evaluating another probabilistic model: its verdict cannot be traced to a specific cause and inherits sampling variance. Phase 2 adds a deterministic check next to it, built on classical knowledge-based systems methods rather than statistical inference.
@@ -293,6 +341,17 @@ The auditability from Phases 1.B and 1.D currently lives in logs and tables. Pha
 - **In scope:** read-only `GET` endpoints under `src/api/routers/` (`/api/v1/transactions`, `/api/v1/system-health`) — the dashboard is an ordinary API consumer, same as designed.
 - **Out of scope, enforced:** the dashboard (`src/ui/`) never imports a SQLAlchemy model/session and never calls the MCP server directly — even the MCP health check is done server-side by the gateway (a bare 401 from the Phase 1.B security boundary counts as "alive").
 - **Prerequisite persisted:** Judge 1/Judge 2/Supreme Court verdicts were previously only logged, never queryable. Migration `622b710f2855` adds `transactions.created_at` (for latency/throughput) and `transactions.judge_trail` (JSONB); `worker.py` now writes the trail after each decision.
+
+### Screenshots
+
+![Transaction Monitor with an expanded decision inspector](assets/dashboard-judges-debate-2.png)
+*Transaction Monitor: a claim asking a Python question (not a refund) is unanimously rejected by Judge 1, Judge 2, and the Supreme Court as out of scope — the full reasoning trail is visible per row, not just a status pill.*
+
+![Ingestion panel showing a claim accepted](assets/dashboard-chat-input.png)
+*Ingestion panel: a claim is accepted (`202 Accepted` + `request_id`) immediately — proof the caller isn't blocked waiting on the LLM pipeline.*
+
+![Closer look at the Judge 1 / Judge 2 / Supreme Court reasoning trail](assets/dashboard-judges-debate-1.png)
+*Closer look at the decision inspector: independent Judge 1 (Gemini), Judge 2 (Groq), and Supreme Court verdicts, plus the Phase 2 belief-rule-base placeholder.*
 
 ---
 
@@ -518,9 +577,12 @@ pip install -e .[dev]
 docker compose up --build
 ```
 
-This builds and starts all seven services — `postgres`, `rabbitmq`, a one-shot `migrate` step (`alembic upgrade head`), `mcp_server`, `worker`, `sweeper`, and `gateway` — on a private network (Phase 1.C).
+This builds and starts all eight services — `postgres`, `rabbitmq`, a one-shot `migrate` step (`alembic upgrade head`), `mcp_server`, `worker`, `sweeper`, `gateway`, and `dashboard` — on a private network (Phase 1.C).
 
-API at `http://localhost:8000`, interactive docs at `http://localhost:8000/docs`. RabbitMQ management UI at `http://localhost:15672`.
+API at `http://localhost:8000`, interactive docs at `http://localhost:8000/docs`. RabbitMQ management UI at `http://localhost:15672`. Ops Dashboard at `http://localhost:8501` (Phase 4).
+
+![All eight containers running after `docker compose up --build`](assets/docker-containers-up.png)
+*All eight services up: `postgres`, `rabbitmq`, `worker`, `dashboard`, `sweeper`, `migrate` (one-shot, exited 0), `mcp_server`, and `gateway`.*
 
 ### Local development (without rebuilding containers)
 
