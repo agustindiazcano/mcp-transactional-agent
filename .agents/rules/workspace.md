@@ -1,7 +1,7 @@
 # Persistent Rules: agentic-mcp-engine
 
 These rules apply to every interaction in this workspace. They extend the
-directives in GEMINI.md and CLAUDE.md and are enforced at all times.
+directives in GEMINI.md / AGENTS.md / CLAUDE.md (kept identical) and are enforced at all times.
 
 ## Code Quality Rules
 
@@ -13,8 +13,8 @@ directives in GEMINI.md and CLAUDE.md and are enforced at all times.
 
 ## Architecture Enforcement Rules
 
-6. If asked to write logic that reads from or writes to the database inside `app/routers/` or `app/agents/`, refuse and explain the correct layer to use instead.
-7. If asked to put a `requests` or `httpx` call inside `app/repositories/`, refuse and explain that repositories are for database access only. External HTTP calls belong in `app/services/`.
+6. If asked to write logic that reads from or writes to the database inside `src/api/routers/` or `src/agents/`, refuse and explain the correct layer to use instead.
+7. If asked to put a `requests` or `httpx` call inside `src/core/repositories/`, refuse and explain that repositories are for database access only. External HTTP calls belong in `src/core/services/` or `src/agents/`.
 8. If the user asks to hardcode an API key, connection string, or any secret value in source code, refuse and generate the equivalent `pydantic-settings` configuration pattern instead.
 
 ## Safety Rules
@@ -28,4 +28,4 @@ directives in GEMINI.md and CLAUDE.md and are enforced at all times.
 12. Speak in English only.
 13. Do not use decorative icons in responses.
 14. When explaining a refusal (rules 6-11), always include a concrete alternative that achieves the user's goal the correct way.
-15. When proposing a multi-step implementation, number the steps and state which development phase (1-5 from the project context) each step belongs to.
+15. When proposing a multi-step implementation, number the steps and state which development phase (1, 1.B-1.F, 2-6 from the project context) each step belongs to.

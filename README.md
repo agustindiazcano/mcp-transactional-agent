@@ -1,6 +1,6 @@
 # Agentic MCP Engine and RAG Gateway
 
-![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg) ![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg) ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg) ![Tests: 111 passing](https://img.shields.io/badge/tests-111%20passing-brightgreen.svg) ![Coverage: 80%](https://img.shields.io/badge/coverage-80%25-green.svg) ![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg) ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 
 ## Summary
 
@@ -14,16 +14,29 @@ The project also examines a second question: **how much of an AI system's decisi
 
 ## Project Status
 
+**At a glance** (as of 2026-09-22)
+
+| | |
+|---|---|
+| **Runs locally** | `docker compose up --build` brings up **8 containers**: `postgres` (pgvector), `rabbitmq`, `migrate` (one-shot Alembic), `mcp_server`, `worker`, `sweeper`, `gateway`, `dashboard`. |
+| **UI to try it** | Streamlit Ops Dashboard at `http://localhost:8501` — submit a claim, watch it move through the pipeline, and inspect the Judge 1 / Judge 2 / Supreme Court reasoning trail per transaction ([Phase 4](#phase-4--operations-dashboard-done)). |
+| **Tests** | **111 passing** — 81 unit + 30 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks) — **80% line coverage** over `src/` (`pytest --cov=src`). |
+| **Load test** | Locust, 100 concurrent users against the full containerized stack: **2,630 requests, 0 failures, P95 87 ms** ([numbers](#system-performance--telemetry)). |
+| **Security** | MCP boundary with token authn, per-tool authz, server-side argument validation, rate limiting, and a fail-closed audit log ([Phase 1.B](#phase-1b--mcp-security-boundary-done)). |
+| **Cloud** | **Google Cloud is the primary deployment target — in progress** (Cloud Run, Cloud SQL for PostgreSQL + pgvector, Artifact Registry, with **Vertex AI** as the inference provider being exercised). AWS is kept as a secondary target ([Phase 6](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary)). |
+
 **What this is**
 
 - A feature-complete core engine that runs locally under `docker compose` (Phase 1.C), with unit tests, integration tests against real PostgreSQL and RabbitMQ, and failure-injection tests.
+- A working operator UI (Phase 4) for submitting claims and auditing every judge decision.
 - A reference architecture with documented design decisions (see [Architecture Decision Records](#architecture-decision-records)).
 
 **What this is not (yet)**
 
-- Not deployed. There is no production deploy target, no CI/CD pipeline, no SLOs, and no incident runbook.
-- Not load tested. The Locust suite is a concurrency smoke test against `localhost`; it does not measure capacity under real network, cold-start, or resource-contention conditions.
-- Not TLS-terminated between internal services, and no credential rotation or secret manager (tokens are read from environment and files) — Phase 1.B closed the authentication/authorization/rate-limiting/audit gap; these two remain open.
+- Not deployed to the cloud yet. The Google Cloud deployment is in progress; there is no CI/CD pipeline, no SLOs, and no production incident runbook yet.
+- Local load testing complete: the Locust suite validated high-concurrency event ingestion against the containerized stack. Distributed cloud load testing is pending the GCP deployment (cold starts, real network latency, and managed-service limits are not measured yet).
+- The primary agent is still mocked (`worker.py` hardcodes the proposed action) — Prompt Guard, RAG retrieval, the Double Judge, the Supreme Court cascade, and the MCP tools all run for real. Replacing the mock is [Phase 1.E](#phase-1e--front-desk--back-office-asymmetric-agentic-workflow-designed-not-yet-implemented).
+- Not TLS-terminated between internal services, and no credential rotation or secret manager (tokens are read from environment and files) — Phase 1.B closed the authentication/authorization/rate-limiting/audit gap; these two remain open, and are expected to be addressed by the GCP deployment (Secret Manager, managed TLS).
 
 ---
 
@@ -31,15 +44,16 @@ The project also examines a second question: **how much of an AI system's decisi
 
 | Category | Technologies |
 |---|---|
-| **Core Framework** | Python 3.10+, FastAPI, Pydantic, Uvicorn |
+| **Core Framework** | Python 3.11+, FastAPI, Pydantic, Uvicorn |
 | **Messaging** | RabbitMQ, aio-pika |
 | **State & Persistence** | PostgreSQL, pgvector, SQLAlchemy (async), Alembic |
-| **AI & Orchestration** | LangChain, Model Context Protocol (MCP) |
-| **RAG Ingestion (Phase 1.D)** | Provider-agnostic embeddings (Gemini `gemini-embedding-001`, truncated to 768 dims, by default), `pgvector` — Amazon Titan Embeddings deferred to Phase 6 |
-| **LLM Providers** | OpenAI (GPT-4o), Google Vertex AI, Gemini AI Studio, AWS Bedrock, Groq |
-| **LLM Evaluation & Tracing** | TruLens, Langfuse (optional), promptfoo |
-| **Testing** | Pytest, pytest-cov, Locust |
-| **Infrastructure** | Docker, Docker Compose |
+| **AI & Orchestration** | Custom async orchestration (FastAPI → RabbitMQ → worker; Prompt Guard, Double Judge, self-correction loop, and Supreme Court cascade are built in-house, not a framework agent loop), Model Context Protocol (MCP). LangChain is used only as a thin provider-adapter layer (`langchain-core` chat/embeddings interfaces) behind `src/agents/llm_factory.py` — no LangChain chains or agents. |
+| **RAG Ingestion (Phase 1.D)** | Provider-agnostic embeddings (Gemini `gemini-embedding-001`, truncated to 768 dims, by default), `pgvector` |
+| **LLM Providers** | Gemini AI Studio, Google Vertex AI (being exercised for the GCP deployment), Groq, OpenAI (GPT-4o), AWS Bedrock (secondary) |
+| **Frontend** | Streamlit + pandas (Ops Dashboard, Phase 4) |
+| **LLM Evaluation & Tracing** | Runtime Double LLM-as-a-Judge (implemented); promptfoo, TruLens/Ragas, Langfuse (planned — see [Evaluation and Regression](#5-evaluation-and-regression-design-not-yet-implemented--see-pendingmd-step-3)) |
+| **Testing** | Pytest, pytest-asyncio, pytest-cov, Locust |
+| **Infrastructure** | Docker, Docker Compose (local); Google Cloud — Cloud Run, Cloud SQL for PostgreSQL, Artifact Registry (in progress); AWS (secondary) |
 
 ---
 
@@ -50,14 +64,14 @@ The project also examines a second question: **how much of an AI system's decisi
 | **Phase 1** | Core engine: event-driven pipeline, MCP, guardrails, concurrency control | Feature-complete, running locally |
 | **Phase 1.B** | MCP security boundary: authn, per-tool authz, validation, rate limiting, audit log | Done |
 | **Phase 1.C** | Containerized local deployment: per-service Dockerfiles, full `docker-compose` orchestration | Done — deployment and load validated against the real containerized stack (see [postmortem](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md)) |
-| **Phase 1.D** | RAG over business rules: pgvector + provider-agnostic embeddings (Bedrock Titan swap deferred to Phase 6) | Done — validated end-to-end locally |
+| **Phase 1.D** | RAG over business rules: pgvector + provider-agnostic embeddings (cloud-native embeddings swap deferred to Phase 6) | Done — validated end-to-end locally |
 | **Phase 1.E** | Front-Desk / Back-Office asymmetric agentic workflow: a real, server-side-revalidated primary agent, replacing `worker.py`'s mocked one | Designed, not yet implemented |
 | **Phase 1.F** | Dynamic LLM provider selection: per-request/per-judge override plus a hot-swappable global default | Designed, not yet implemented |
 | **Phase 2** | Confidence layer: fuzzy scoring + belief rule base | In progress |
 | **Phase 3** | Quality drift detection (pluggable detector) | Designed, not yet implemented |
 | **Phase 4** | Read-only operations dashboard | Done |
 | **Phase 5** | Offline comparison: Keras MLP vs. rule base | Designed, not yet implemented |
-| **Phase 6** | Cloud migration: AWS Serverless (API Gateway, SQS, Lambda) | Designed, not yet implemented |
+| **Phase 6** | Cloud deployment: Google Cloud Platform (Cloud Run, Cloud SQL for PostgreSQL, Artifact Registry, Vertex AI) as primary; AWS as secondary | In progress (GCP); AWS track designed, not yet implemented |
 
 ---
 
@@ -102,9 +116,9 @@ The project also examines a second question: **how much of an AI system's decisi
 | Provider | Role in this project |
 |---|---|
 | **OpenAI (GPT-4o)** | Primary agent: tool calling and multi-step reasoning. |
-| **Google Vertex AI** | Deployment inside a GCP VPC when data must stay in-perimeter. |
+| **Google Vertex AI** | Inference provider for the GCP deployment (Phase 6, in progress): same Gemini model family, authenticated via service account / ADC instead of an API key, and billed/governed inside the GCP project. The factory branch exists (`provider="vertex"`); validating it against real credentials is in progress. |
 | **Gemini AI Studio** | Primary agent (using `gemini-3.5-flash-lite`) and Judge 1. |
-| **AWS Bedrock (Claude 3.5 Sonnet / Llama 3)** | AWS-native inference without data leaving the account. |
+| **AWS Bedrock (Claude 3.5 Sonnet / Llama 3)** | Secondary cloud target: AWS-native inference without data leaving the account. |
 | **Groq (Llama 3)** | Judge 2: ultra-low latency and deterministic auditing at temperature 0.0. |
 | **Mock** | Offline `FakeListChatModel` returning fixed valid JSON, for local development without token spend. |
 
@@ -134,7 +148,7 @@ Before calling a transactional tool, the agent retrieves the relevant business r
 
 ### 5. Evaluation and Regression (design; not yet implemented — see `PENDING.md` Step 3)
 
-**Implemented today:** the runtime judge (Double LLM-as-a-Judge, described in the build sequence above) and LangChain (`langchain-core`, `langchain-google-genai`, `langchain-groq`) as the orchestration/provider layer behind `src/agents/llm_factory.py`.
+**Implemented today:** the runtime judge (Double LLM-as-a-Judge, described in the build sequence above) and LangChain (`langchain-core`, `langchain-google-genai`, `langchain-groq`) as a thin provider-adapter layer behind `src/agents/llm_factory.py` — the orchestration itself (pipeline, retries, judge cascade) is custom code, not LangChain chains or agents.
 
 **Not yet implemented**, despite being described elsewhere in this repo as if they were running (`docs/testing/telemetry_performance.md`'s Langfuse paragraph, and an earlier version of this section) — no `promptfoo` or `langfuse` dependency is declared in `pyproject.toml`, and nothing in `src/` imports either:
 
@@ -203,7 +217,7 @@ Phase 1 ran as four processes started by hand in separate terminals (Postgres, R
 3. **Deployment validation (done):** `docker compose up --build` from a clean checkout brings all seven containers to a running state, with the Gateway and MCP server reachable through the network from the host (`/docs` on the gateway, `/sse` on the MCP server). One boot-order bug was found and fixed here: RabbitMQ's healthcheck (`rabbitmq-diagnostics -q ping`) reported healthy before the AMQP listener on 5672 was actually accepting connections, so on the very first boot the `worker` and `sweeper` containers hit `Connect call failed`. Fixed by switching the healthcheck to `check_port_connectivity` and adding a bounded `restart: on-failure:5` to the app services. Attempting the Locust load test surfaced a deeper gap this reachability check didn't catch: a real Worker→MCP-server session failed on nearly every transaction, even after fixing two other real MCP transport bugs (Host-header allowlist, message-path redirect — see git log `4691f17`). Root cause: not a transport issue at all — `evaluate_decision()`'s unguarded `get_llm(provider="groq", ...)` call `ImportError`s (the `langchain-groq` package is undeclared), and that exception, raised inside the MCP session's `async with` block, gets reported by anyio's `TaskGroup` as a generic transport failure. Full diagnosis in the [postmortem](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md); **fixed and verified** (`fix/judge-groq-import-crash`, merged): `langchain-groq` is now a declared dependency, and `_run_single_judge()` (`src/agents/judge.py`) constructs its LLM inside its own `try`/`except`, so a judge-construction failure now fails that judge closed to `REJECT` — the same fail-safe path invocation failures already used — instead of raising out of `evaluate_decision()` into the MCP session. After rebuilding the `worker`/`gateway` images, a real transaction through the full stack completed cleanly end-to-end: Prompt Guard and Judge 2 both ran real Groq calls with no crash, the base judges disagreed (Gemini APPROVE / Groq REJECT), correctly escalated to the Supreme Court cascade, and the transaction committed as `COMPLETED` — no `TaskGroup`/`RemoteProtocolError` anywhere in the logs.
 4. **Load validation (done):** re-ran the Locust concurrency suite (100 simulated concurrent claimants, spawn rate 10, 1 minute, `LLM_PROVIDER=mock` override on the worker for the primary agent) against the containerized stack instead of bare `localhost`. Results in [System Performance & Telemetry](#system-performance--telemetry) below — zero failures, and P95 latency stayed flat (87ms) instead of climbing over the run the way the pre-fix Gateway did. Drained a sample of the resulting backlog through the real worker, not the full ~2600 — Judge 2, the Supreme Court cascade, and Prompt Guard all hardcode their provider (Groq/Gemini) independently of `LLM_PROVIDER`, so even a mock override still makes real API calls per message, and draining thousands sequentially would burn real quota for no additional signal. Confirmed clean, correct routing under real processing on the sample drained: retries, Supreme Court escalation, and final `COMPLETED`/`PENDING_HUMAN_REVIEW` outcomes, with no deadlocks and no stuck `PROCESSING` rows.
 
-This phase seals the local environment that Phase 1.B secures and Phase 1.D (below) and the AWS migration in [Phase 6](#phase-6--cloud-migration-aws-serverless-designed-not-yet-implemented) build on.
+This phase seals the local environment that Phase 1.B secures and Phase 1.D (below) and the cloud deployment in [Phase 6](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary) build on.
 
 ---
 
@@ -217,7 +231,7 @@ Phase 1's ["Retrieval over Business Rules"](#4-retrieval-over-business-rules) de
 
 Earlier drafts of this phase tied the embedding pipeline to AWS Bedrock (Titan Embeddings). That conflates two independent things: **Retrieval-Augmented Generation** is an architecture pattern (embed → store → similarity search → inject into the prompt), and **AWS Bedrock** is one possible LLM/embeddings provider. Building both at once means getting stuck configuring IAM permissions in the AWS console instead of writing and validating the actual retrieval code.
 
-So Phase 1.D builds **Vector Search and RAG against infrastructure already running locally** — the same PostgreSQL instance the transactional engine already uses, and the Gemini/OpenAI credentials already present in `.env` — with no dependency on an AWS account. Once this works end-to-end on a developer machine, the project can claim RAG and Vector Search honestly. Swapping the embeddings provider to Amazon Titan is a separate, later concern that belongs to [Phase 6](#phase-6--cloud-migration-aws-serverless-designed-not-yet-implemented) (cloud migration), not a prerequisite for Phase 1.D. See the ADR below for the full rationale.
+So Phase 1.D builds **Vector Search and RAG against infrastructure already running locally** — the same PostgreSQL instance the transactional engine already uses, and the Gemini/OpenAI credentials already present in `.env` — with no dependency on an AWS account. Once this works end-to-end on a developer machine, the project can claim RAG and Vector Search honestly. Moving embeddings to a cloud-native provider (Vertex AI on the primary GCP track, Amazon Titan on the secondary AWS track) is a separate, later concern that belongs to [Phase 6](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary) (cloud migration), not a prerequisite for Phase 1.D. See the ADR below for the full rationale.
 
 **What "Vector Search" concretely means here:** not a lexical `LIKE '%refund%'` match, but converting text into coordinates in embedding space and retrieving the nearest ones by cosine distance — in this project, literally this query against the `knowledge_base` table:
 
@@ -366,17 +380,31 @@ An offline experiment that tests the project's core argument instead of assertin
 
 ---
 
-## Phase 6 — Cloud Migration (AWS Serverless) (Designed, not yet implemented)
+## Phase 6 — Cloud Deployment: Google Cloud (primary, in progress) and AWS (secondary)
 
-The end state for this project is not a container running on one machine; it is a deployment that costs approximately $5/month, or $0 within free-tier limits, and survives the machine being turned off. Phase 6 re-targets the Phase 1.C container topology at managed AWS services once the local stack, its security boundary, and its load characteristics are proven.
+The end state for this project is not a container running on one machine; it is a managed deployment that survives the machine being turned off, at a cost close to $0 within free-tier/trial limits. Phase 6 re-targets the Phase 1.C container topology at a managed cloud now that the local stack, its security boundary, and its load characteristics are proven.
+
+### Why Google Cloud first
+
+The project already runs on the Gemini model family (Judge 1, Supreme Court, and `gemini-embedding-001` for RAG), so Vertex AI is the shortest path from "runs locally" to "runs in a governed cloud project": same models, service-account authentication instead of API keys, and inference that stays inside the GCP project. The Phase 1.C containers map almost one-to-one onto Cloud Run, which keeps the migration a deployment exercise rather than a rewrite. AWS stays in the roadmap as a secondary target to prove the stack is not tied to one cloud.
+
+### Google Cloud — primary target (in progress)
+
+- **Container images:** the existing `docker/*.Dockerfile` images (gateway, worker, mcp_server, dashboard) pushed to **Artifact Registry**.
+- **Compute:** each service on **Cloud Run** — gateway, MCP server, and dashboard as HTTP services; worker and Recovery Sweeper as always-on/min-instance services (they consume from the queue instead of serving requests). The HTTP/SSE MCP transport ([ADR](#why-httpsse-for-mcp-transport-not-stdio)) is what makes the worker and MCP server deployable as separate Cloud Run services.
+- **Database:** **Cloud SQL for PostgreSQL** with the `pgvector` extension enabled; Alembic migrations run as a one-shot job, mirroring the local `migrate` service.
+- **Inference:** **Vertex AI** via the factory's existing `provider="vertex"` branch, authenticated by the Cloud Run service account (ADC) — no API key in the environment. Validating this branch against real credentials is the current in-progress step.
+- **Secrets and TLS:** MCP client tokens and provider keys move from `.env`/files to **Secret Manager**; Cloud Run terminates TLS, closing two of the [Known Limitations](#known-limitations).
+- **Messaging:** open decision — keep RabbitMQ (self-hosted on a small VM) to preserve the per-message ACK/NACK contract unchanged, or move to Pub/Sub and re-validate the idempotency/retry contract against it.
+- **Re-test of load:** repeat the Phase 1.C Locust validation against the Cloud Run deployment and compare throughput/latency against the local baseline.
+
+### AWS — secondary target (designed, not yet implemented)
 
 - **IAM and Bedrock:** least-privilege IAM policies scoped to the foundation models the project actually invokes, plus VPC PrivateLink endpoints so inference traffic does not leave the VPC.
-- **Embeddings provider swap:** migrate Phase 1.D's embeddings pipeline from Gemini/OpenAI to Amazon Titan Embeddings via Bedrock, now that the rest of the topology is on AWS. Deliberately not part of Phase 1.D itself — see that phase's ADR for why.
-- **Serverless topology:** FastAPI Gateway → API Gateway, RabbitMQ → SQS, Worker → Lambda.
-- **External database:** a serverless PostgreSQL provider (Neon or Supabase) with `pgvector` enabled, chosen to keep the always-on cost at or near $0.
-- **Re-test of load:** repeat the Phase 1.C load validation against the AWS deployment and compare throughput/latency against the local baseline.
+- **Embeddings provider swap:** Amazon Titan Embeddings via Bedrock behind the same `get_embeddings()` interface — deliberately not part of Phase 1.D itself (see that phase's ADR).
+- **Serverless topology:** FastAPI Gateway → API Gateway, RabbitMQ → SQS, Worker → Lambda, with a serverless PostgreSQL provider (Neon or Supabase) with `pgvector`.
 
-This phase depends on Phase 1.C (containerization) and Phase 1.D (pgvector + a working embeddings pipeline, provider-agnostic, already integrated locally) being complete first.
+This phase depends on Phase 1.C (containerization) and Phase 1.D (pgvector + a working, provider-agnostic embeddings pipeline) — both complete.
 
 ---
 
@@ -409,9 +437,9 @@ Measured 2026-09-21 against the full `docker compose` stack (Locust: 100 users, 
 
 | Metric | Value |
 |---|---|
-| Test coverage (unit + integration) | 82% (47/48 tests; 1 pre-existing failing test unrelated to this measurement, see `PENDING.md`) |
+| Test suite (unit + integration, measured 2026-09-22) | 111/111 passing (81 unit + 30 integration against real PostgreSQL/RabbitMQ), 80% line coverage over `src/` |
 | API ingestion latency, P95 (FastAPI → RabbitMQ) | 87 ms (P50 55 ms, P99 120 ms) |
-| Ingestion throughput (local, concurrency smoke test) | 45.5 req/s average over the run (~49 req/s steady-state), 2630 requests, 0 failures |
+| Ingestion throughput (local containerized stack) | 45.5 req/s average over the run (~49 req/s steady-state), 2630 requests, 0 failures |
 | End-to-end processing time (LLM-dependent) | Not precisely benchmarked; a single real transaction (Prompt Guard → RAG retrieval → primary agent → Double Judge → Supreme Court cascade) observed completing within a few seconds outside load |
 
 ---
@@ -419,10 +447,11 @@ Measured 2026-09-21 against the full `docker compose` stack (Locust: 100 users, 
 ## Testing
 
 ### Unit and Integration
-Code is developed test-first (Red-Green-Refactor).
+Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-22): **111 passed, 0 failed, 80% line coverage over `src/`**.
 
-- **Unit:** provider factory, judge parsing and routing, confidence layer.
-- **Integration:** API gateway, PostgreSQL persistence, MCP server, and worker idempotency, against real infrastructure.
+- **Unit (81 tests, no network required for most):** provider factory, judge parsing and cascade routing, Prompt Guard, token-usage extraction, chunking, retrieval service, system-health service, recovery sweeper, worker concurrency, MCP security (client registry, PII masking, argument schemas), and the dashboard's API client, stats, and theme. Two repository tests in `tests/unit/` need a live PostgreSQL.
+- **Integration (30 tests, real PostgreSQL + RabbitMQ):** API gateway, PostgreSQL persistence, knowledge-base vector search, MCP server over HTTP (401/403/422/429 responses plus audit rows), rate limiter, worker idempotency and judge-reject routing, and the dashboard's read-only transaction/system-health routers.
+- **Load (Locust):** 100 concurrent users against the full `docker compose` stack — see [System Performance & Telemetry](#system-performance--telemetry).
 
 See the [Test Coverage Report](docs/testing/tdd_coverage.md).
 
@@ -451,7 +480,7 @@ pytest tests/unit/confidence/ -v
 # Coverage
 pytest --cov=src tests/ --cov-report=term-missing
 
-# Concurrency smoke test (local only; not a capacity measurement)
+# Load test (local containerized stack; cloud load test pending the GCP deployment)
 locust -f tests/performance/locustfile.py --headless -u 100 -r 10 --run-time 1m --host http://localhost:8000
 ```
 
@@ -604,10 +633,10 @@ uvicorn src.api.main:app --reload --port 8000  # terminal 4
 |---|---|---|
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 | `RABBITMQ_URL` | Yes | RabbitMQ AMQP connection string |
-| `LLM_PROVIDER` | Yes | `gemini`, `groq`, `bedrock`, or `openai` |
+| `LLM_PROVIDER` | Yes | `gemini`, `vertex`, `groq`, `openai`, `bedrock`, or `mock` |
 | `OPENAI_API_KEY` | Conditional | Required when `LLM_PROVIDER=openai` |
 | `GEMINI_API_KEY` | Conditional | Required for Gemini AI Studio |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Conditional | Required for Vertex AI |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Conditional | Required for Vertex AI when running outside GCP (on Cloud Run, the attached service account / ADC is used instead) |
 | `GROQ_API_KEY` | Conditional | Required when `LLM_PROVIDER=groq` |
 | `AWS_ACCESS_KEY_ID` | Conditional | Required when `LLM_PROVIDER=bedrock` |
 | `AWS_SECRET_ACCESS_KEY` | Conditional | Required when `LLM_PROVIDER=bedrock` |
@@ -663,7 +692,7 @@ Embeddings live in the same PostgreSQL instance as transaction data, so a single
 
 ### Why is Phase 1.D's RAG decoupled from AWS Bedrock? (Phase 1.D vs. Phase 6)
 
-RAG (embed → store → similarity search → inject into the prompt) is an architecture pattern; AWS Bedrock is one possible provider of the embedding model inside that pattern. Coupling the two means Phase 1.D can't be validated without first setting up AWS IAM policies and Bedrock model access — infrastructure work that has nothing to do with proving the retrieval logic itself is correct. Phase 1.D instead targets infrastructure already running locally (PostgreSQL/`pgvector`) and an embeddings API already configured (Gemini, matching the provider used elsewhere in the project). Swapping the embeddings call to Amazon Titan is a small, isolated change behind the same interface once the rest of the stack is genuinely moving to AWS — that's Phase 6, not a Phase 1.D prerequisite.
+RAG (embed → store → similarity search → inject into the prompt) is an architecture pattern; AWS Bedrock is one possible provider of the embedding model inside that pattern. Coupling the two means Phase 1.D can't be validated without first setting up AWS IAM policies and Bedrock model access — infrastructure work that has nothing to do with proving the retrieval logic itself is correct. Phase 1.D instead targets infrastructure already running locally (PostgreSQL/`pgvector`) and an embeddings API already configured (Gemini, matching the provider used elsewhere in the project). Swapping the embeddings call to a cloud-native provider (Vertex AI on the primary GCP track, Amazon Titan on the secondary AWS track) is a small, isolated change behind the same interface once the stack is actually deployed there — that's Phase 6, not a Phase 1.D prerequisite.
 
 ### Why a cheap, fast model for the judge?
 
@@ -699,12 +728,12 @@ Beyond the phases above, the following are candidate directions, not planned wor
 
 ## Known Limitations
 
-- Single-node `docker compose` deployment; no orchestration, autoscaling, or high availability until Phase 6.
+- Single-node `docker compose` deployment; no orchestration, autoscaling, or high availability until the Phase 6 GCP deployment lands.
 - No TLS between internal services; no credential rotation or secret manager (tokens are read from environment and files).
 - No multi-tenancy; one set of business rules per deployment.
 - A database superuser can still modify the audit table; the log is protected against the MCP service, not against a compromised host.
-- Evaluation uses a project-specific regression suite of 100+ cases; results do not transfer to other domains without new test data.
-- Performance and cost figures are not yet measured (see tables above).
+- No offline prompt-regression suite yet (promptfoo is planned, not implemented — see `PENDING.md` Step 3); the only evaluation today is the runtime Double Judge.
+- Performance and cost figures are local, single-run measurements (see tables above) — not yet re-measured on cloud infrastructure or averaged across many transactions.
 
 ---
 

@@ -1,112 +1,91 @@
 ---
 name: llm-provider-switch
 description: >-
-  Use this skill when the user asks to switch the active LLM provider between
-  Gemini, Groq, and AWS Bedrock, or when the user needs to add a new LLM
-  provider to the factory. Ensures the factory pattern is preserved and no
-  business logic is modified.
+  Use this skill when the user asks to switch the active LLM provider, or
+  needs to add a new provider to the factory. Ensures the factory pattern in
+  src/agents/llm_factory.py is preserved and no business logic is touched.
 ---
 
 # LLM Provider Switch Runbook
 
-The system uses a factory pattern to abstract LLM instantiation. Switching
-providers must never touch business logic files (`services/`, `worker.py`,
-`agents/`). Only `app/agents/llm_factory.py` and environment variables change.
+The system uses a factory pattern (GEMINI.md's Interface Segregation and
+Factory Pattern directive) to abstract LLM instantiation. Switching providers
+must never touch business logic files (`src/core/services/`,
+`src/worker/worker.py`, `src/agents/judge.py`). Only
+`src/agents/llm_factory.py` and environment variables change.
 
 ## Step 1 - Switch the Active Provider
 
-Edit the `.env` file (or set the environment variable in your deployment
-configuration):
+Set `LLM_PROVIDER` in `.env` (or the deployment environment):
 
 ```
-LLM_PROVIDER=gemini   # or: groq, bedrock
+LLM_PROVIDER=gemini   # or: mock, openai, vertex, bedrock, groq
 ```
 
-That is the only change needed to switch providers in a correctly implemented
-factory. If switching requires more changes, the factory is not correctly
-implemented - fix the factory first.
+`mock` returns a fixed valid judge JSON response via `FakeListChatModel` — use
+it for local development without spending tokens. If switching requires more
+than this one variable, the factory isn't correctly implemented — fix the
+factory first, don't special-case the caller.
 
 ## Step 2 - Verify the Factory Interface
 
-The factory must implement this interface exactly:
+The actual interface, `get_llm()` in `src/agents/llm_factory.py` — not
+`create_llm(settings)`, and config fields are the uppercase
+`pydantic-settings` style (`settings.LLM_PROVIDER`, not `settings.llm_provider`):
 
 ```python
-# app/agents/llm_factory.py
-
-from langchain_core.language_models import BaseChatModel
-from app.config import Settings
-
-
-def create_llm(settings: Settings) -> BaseChatModel:
+def get_llm(
+    provider: str | None = None,
+    temperature: float = 0.7,
+    model_name: str | None = None,
+) -> BaseChatModel:
     """
     Instantiate and return the configured LLM.
 
-    The caller must not know which provider is active.
-
-    Args:
-        settings: Application settings loaded from environment variables.
-
-    Returns:
-        A LangChain BaseChatModel instance.
-
-    Raises:
-        ValueError: If LLM_PROVIDER is not a recognized value.
+    provider defaults to settings.LLM_PROVIDER when not given, so most
+    callers don't pass it explicitly — different components (primary agent
+    vs. judge) can still override provider/temperature/model_name per call.
     """
-    provider = settings.llm_provider.lower()
-
-    if provider == "gemini":
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        return ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",
-            google_api_key=settings.gemini_api_key,
-        )
-
-    if provider == "groq":
-        from langchain_groq import ChatGroq
-        return ChatGroq(
-            model="llama-3.1-70b-versatile",
-            api_key=settings.groq_api_key,
-        )
-
-    if provider == "bedrock":
-        from langchain_aws import ChatBedrock
-        return ChatBedrock(
-            model_id="amazon.nova-pro-v1:0",
-            region_name=settings.aws_region,
-        )
-
-    raise ValueError(f"Unknown LLM_PROVIDER: {provider!r}. Expected: gemini, groq, bedrock.")
 ```
+
+Each provider's import is wrapped in `try/except ImportError` so an
+uninstalled provider package doesn't break the whole module — only using
+that provider does (`raise ImportError(...)` at call time).
+
+**Vertex AI (primary cloud provider, Phase 6 — see GEMINI.md Section 5f):**
+the `vertex` branch exists but is not deployable yet — `langchain-google-vertexai`
+is not declared in `pyproject.toml` (a local `.venv` may have it installed, a
+Docker image won't), and it hardcodes `model_name="gemini-1.5-pro"`. It
+authenticates via ADC (`GOOGLE_APPLICATION_CREDENTIALS` locally, the Cloud Run
+service account in GCP), never an API key. Note also that `get_llm()`'s
+`provider` only switches callers that don't hardcode one: `judge.py` pins
+Judge 1/Supreme Court to `"gemini"` and Judge 2 to `"groq"`, and
+`prompt_guard.py` pins `"groq"` — per-judge selection is Phase 1.F, not done.
 
 ## Step 3 - Add a New Provider
 
-To add a new provider (e.g., OpenAI):
-
-1. Add the required environment variables to `app/config.py` and `.env.example`.
-2. Add the new branch to `create_llm()` in `llm_factory.py`.
-3. Install the provider package: add it to `requirements.txt`.
-4. Write a unit test in `tests/unit/test_llm_factory.py` that mocks the new
-   provider and asserts `create_llm(settings)` returns a `BaseChatModel`.
+1. Add the required environment variables to `src/core/config.py` (`Settings` class, uppercase field) and `.env.example`.
+2. Add a new `elif provider == "<name>":` branch in `get_llm()`, following the existing `try/except ImportError` pattern.
+3. Add the provider package to `pyproject.toml`'s `dependencies` (not `requirements.txt` — this project uses `pyproject.toml`/hatchling).
+4. Write a unit test in `tests/unit/` that mocks the new provider and asserts `get_llm(provider="<name>")` returns a `BaseChatModel`.
 
 ## Step 4 - Validate the Switch
 
 ```bash
-# Set the provider in your environment, then:
-pytest tests/unit/test_llm_factory.py -v
+pytest tests/unit/ -k llm_factory -v
 
-# Run a smoke test against the running system
 python -c "
-from app.config import Settings
-from app.agents.llm_factory import create_llm
-llm = create_llm(Settings())
+from src.agents.llm_factory import get_llm
+llm = get_llm()
 print(type(llm).__name__)
 "
 ```
 
-The output must be the class name of the expected provider's model (e.g.,
-`ChatGoogleGenerativeAI`, `ChatGroq`, `ChatBedrock`).
+The output should be the expected provider's model class name (e.g.
+`ChatGoogleGenerativeAI`, `ChatVertexAI`, `ChatGroq`, `ChatBedrock`, `FakeListChatModel` for mock).
 
 ## Step 5 - Update Documentation
 
-Add the new provider to the Environment Variables table in `GEMINI.md` and
-`CLAUDE.md`, and update the `LLM_PROVIDER` description with the new valid value.
+Add the new provider to the Environment Variables tables in **both**
+README.md and Section 9 of CLAUDE.md / AGENTS.md / GEMINI.md (the three are kept identical) — they must stay in sync (see the doc
+reconciliation work already done in this repo's history).
