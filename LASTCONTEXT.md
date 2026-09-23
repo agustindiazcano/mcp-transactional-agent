@@ -205,10 +205,103 @@ An **approved claim without `order_id`/`amount`** now goes to `PENDING_HUMAN_REV
   - The test refunds were deleted from the dev DB afterwards.
 
 ## Still pending
-- **Containers not rebuilt:** `agentic_mcp_server` still runs the old code. The next step is `docker compose build` plus one real transaction through the full stack, with a claim that carries `order_id` and `amount`.
+- ~~**Containers not rebuilt.**~~ Done after merging PR #39. See "Full-Stack Validation" below.
 - **4xx errors are retried:** a 422 or 403 from the boundary is retried like any other failure, although it can never succeed. The retries are bounded, but they use up rate-limit quota. It could be classified as non-retryable later.
 - **No dead-letter exchange:** a message NACKed after `EXECUTION_FAILED` is dropped. The transaction row keeps the status and the error for an operator.
 - **Next steps:**
   - `validate_fraud_score` is still a stub, and there is no `orders` table yet. That is the next item (🟠 2: real read tools and evidence for the judges).
   - `test_transaction_repository.py` still runs `create_all` against the dev DB. It is what created the stray `refunds` table, so moving it to integration is now more urgent.
   - The dashboard's ingestion panel does not send `order_id`/`amount`/`currency` yet, so claims submitted from the UI end up `PENDING_HUMAN_REVIEW` (not executable) after approval.
+
+---
+
+# Update — Full-Stack Validation After Merge (2026-09-22)
+
+PR #39 (`feat/real-refund-execution`) is merged into `main` (`39c857c`). This closes the last open item in its test plan.
+
+## What was done
+- Pulled `main`. The dev DB was already at head (`b3e1f0c9a2d4`), so the `migrate` service had nothing to apply.
+- Rebuilt every image with `docker compose build` and started the stack with `docker compose up -d`. All 7 containers are up.
+- Confirmed that `agentic_mcp_server` and `agentic_worker` run the new code.
+
+## Real transaction through the full stack
+Transaction `e2e-stack-1790128248`: order `ord-e2e-1`, 45.50 USD, submitted to the gateway at `POST /api/v1/claims`.
+- **Judges:** Judge 1 (Gemini) and Judge 2 (GPT-OSS via Groq) both APPROVED with real calls. The Supreme Court was not needed.
+- **Refund:** the worker called `execute_refund` through the MCP boundary. The trail records `execution: {"status": "executed", "refund_id": 1, ...}`, and the final status is `COMPLETED`.
+- **Database:** there is one row in `refunds` (`ord-e2e-1`, 45.50, USD) and one `ALLOWED` audit row for `worker-default`.
+- **Logs:** no errors or retries in the worker or MCP server logs.
+- The test transaction and its refund are still in the dev DB.
+
+## Found along the way (unrelated to the change)
+- **Worker was down:** the worker had been exited for about 8 hours with `AMQPConnectionError: Name or service not known`, after RabbitMQ restarted. `docker compose up` brought it back.
+- **LangSmith warnings:** the worker logs `403 Forbidden` warnings from LangSmith. Tracing is on, but the key is invalid. They don't affect processing.
+
+---
+
+# Next Steps (2026-09-22)
+
+Step 1 (🔴 real execution) is done. Next in the list:
+
+## 🟠 2. Real read tools and evidence for the judges
+- **`orders` table with sample data, plus a `get_order` tool:** lets the system check that a refund doesn't exceed the purchase amount. CLAUDE.md §10 requires this check, and nothing performs it today.
+- **`get_refund_history`:** the user's number of previous refunds.
+- **`validate_fraud_score` with a real calculation:** it always returns `0.12` today. It would be computed from the refund history.
+- **Evidence for the judges:** deterministic code fetches this data before judging and puts it in `<reference_context>`, the same way RAG works today. The judges stay one-shot, but they check against facts.
+
+## Then, in this order
+3. **Resolver (agent B):** an agent with read-only tools that proposes the action.
+4. **Front-Desk (agent A):** chat with the user and delivery of the verdict.
+
+## Smaller items that came up in step 1
+- **Misplaced test:** `test_transaction_repository.py` runs `create_all` against the dev DB. It is what created the stray `refunds` table, so it moves up in priority.
+- **Dashboard:** the claim form doesn't send `order_id`, `amount`, or `currency`, so claims submitted from the UI end up `PENDING_HUMAN_REVIEW`.
+- **4xx errors:** they shouldn't be retried. They can never succeed, and each retry uses rate-limit quota.
+- **Dropped messages:** a dead-letter queue is still missing for messages that end in `EXECUTION_FAILED`.
+- **LangSmith:** fix the `403` warnings by disabling tracing or fixing the key.
+
+## Recommendation
+Start item 2 on a `feat/read-tools-and-evidence` branch. Include the small fixes that are closely related: moving the misplaced test and adding the fields to the dashboard form. Two decisions are needed from the user first:
+
+1. **New `orders` table:** it needs a migration. Should it be created with sample data loaded by a script, like `ingest_knowledge_base.py`?
+2. **New MCP tools:** `get_order` and `get_refund_history` would be new tools, and they need to be added to `worker-default`'s allowlist in `mcp_clients.json`. Should the worker get the evidence through the MCP server, passing through the boundary and landing in the audit log, instead of reading the database directly?
+---
+
+# Update — Branch `feat/read-tools-and-evidence`: Small Fixes and Design Decisions (2026-09-22)
+
+Branch created from an up-to-date `main` (`39c857c`, pull confirmed nothing new). It carries this file's uncommitted "Next Steps" section from `chore/lastcontext-next-steps`, which had no commits of its own.
+
+## Done on this branch
+
+**Fix 4: misplaced test.** `tests/unit/test_transaction_repository.py` moved to `tests/integration/`. It was worse than noted: besides `create_all`, its teardown ran `TRUNCATE TABLE transactions ... CASCADE`, so every **unit** test run wiped the dev DB's transactions. The moved file:
+- no longer calls `Base.metadata.create_all()` (the schema belongs to Alembic);
+- deletes only its own `repo-test-%` rows, before and after, instead of truncating.
+- Checked: the `e2e-stack-1790128248` transaction survives a run, and no `repo-test-%` rows are left.
+
+**Fix 5: dashboard claim form.** The ingestion panel now has `Order ID`, `Refund Amount`, and `Currency` (from `src.core.currency.Currency`, the same enum as the gateway and the MCP schemas).
+- `post_claim()` in `src/ui/api_client.py` sends them only when filled in. A blank field is omitted, not sent as `null` or `""` (the gateway rejects an empty `order_id` with a 422).
+- A gateway 4xx (e.g. an amount above `REFUND_MAX_AMOUNT`) shows as `st.error` instead of crashing the page.
+- Tests first: 2 new tests in `tests/unit/test_ui_api_client.py` (red, then green).
+- Smoke-tested with Streamlit's `AppTest` against the live gateway: the fields render, and an over-limit amount shows the 422. A valid claim was not submitted, to avoid real LLM calls.
+
+**Validation:** 117/117 unit tests pass (117 before − 2 moved to integration + 2 new). The 2 moved tests pass as integration tests. `ruff` and `mypy --strict` show only the two known pre-existing errors (BLE001 in `judge.py`, unused `type: ignore` in `llm_factory.py`). Dashboard container not rebuilt yet.
+
+## Decisions taken for item 🟠 2 (delegated by the user: "do what you think best and note it")
+
+**Decision 1: `orders` table, schema in a migration, sample data in a script.**
+- A new Alembic migration creates `orders` (`order_id` unique, `user_id`, `amount` `Numeric(12,2)`, `currency`, `created_at`). Schema only, **no seed rows in the migration**: the same migrations will run against Cloud SQL (Phase 6), and fake orders must never land in a real database.
+- Sample data comes from an idempotent script, `scripts/seed_orders.py` (`INSERT ... ON CONFLICT (order_id) DO NOTHING`), mirroring `scripts/ingest_knowledge_base.py`. It includes a few users with different refund histories, so the fraud score has something to differentiate.
+- Per CLAUDE.md §8, `alembic current` and the target revision will be confirmed with the user before running the upgrade.
+
+**Decision 2: the worker fetches the evidence through the MCP server, not the DB.**
+- `get_order(order_id)` and `get_refund_history(user_id)` become MCP tools (read-only). `validate_fraud_score` stops being a stub and is computed from the refund history.
+- They are added to `worker-default`'s allowlist in `mcp_clients.json`.
+- Why:
+  - Every data access that feeds a decision passes the Phase 1.B boundary and is written to the audit log, so the evidence the judges saw is traceable.
+  - The same tools will be reused as-is by the Resolver (agent B), which will get its own `client_id` with a read-only allowlist. Building them in MCP now avoids a second implementation later.
+  - It keeps the agent-facing layer free of DB access (CLAUDE.md §4).
+- The cost is one extra HTTP/SSE round trip per tool. It uses the same fresh-session-per-attempt pattern as `refund_executor.py` (SDK 2.2.0 hang).
+- **Evidence fetch fails closed on the business check:** if `get_order` fails or the order does not exist, the claim does not auto-approve (it goes to `PENDING_HUMAN_REVIEW`). This is unlike RAG, which fails open, because this is the check that stops a refund from exceeding the purchase (CLAUDE.md §10).
+- The amount-vs-order check is done by **deterministic code**, not left only to the judges. The evidence is also injected into `<reference_context>` so the judges see it.
+
+## New finding: the integration suite wipes the dev DB
+Most integration fixtures `TRUNCATE` whole tables on the DB in `DATABASE_URL`, which is the dev DB: `transactions` (`test_database.py`, `test_transactions_router.py`, `test_worker.py`), `refunds` (`test_refund_repository.py`, `test_mcp_server.py`), `mcp_audit_logs` (`test_mcp_server.py`, `test_rate_limiter.py`), and **`knowledge_base`** (`test_knowledge_base_repository.py`). After a full integration run, the RAG table is empty until `ingest_knowledge_base.py` runs again. Recommended fix (separate `chore/` branch): a dedicated test database (`TEST_DATABASE_URL`, migrated with Alembic), and scoped deletes instead of truncates.

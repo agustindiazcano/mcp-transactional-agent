@@ -31,11 +31,22 @@ async def get_system_health() -> dict[str, bool]:
     return cast(dict[str, bool], response.json())
 
 
-async def post_claim(*, user_id: str, claim_text: str) -> dict[str, Any]:
+async def post_claim(
+    *,
+    user_id: str,
+    claim_text: str,
+    order_id: str | None = None,
+    amount: float | None = None,
+    currency: str | None = None,
+) -> dict[str, Any]:
+    """Submit a claim. Refund details left blank (None or "") are omitted,
+    not sent as null: without both order_id and amount an approved claim has
+    nothing to execute and routes to PENDING_HUMAN_REVIEW."""
+    body: dict[str, Any] = {"user_id": user_id, "claim_text": claim_text}
+    refund_fields = {"order_id": order_id, "amount": amount, "currency": currency}
+    body.update({key: value for key, value in refund_fields.items() if value not in (None, "")})
+
     async with httpx.AsyncClient(timeout=5.0) as client:
-        response = await client.post(
-            f"{settings.GATEWAY_URL}/api/v1/claims",
-            json={"user_id": user_id, "claim_text": claim_text},
-        )
+        response = await client.post(f"{settings.GATEWAY_URL}/api/v1/claims", json=body)
         response.raise_for_status()
     return cast(dict[str, Any], response.json())

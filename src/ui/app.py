@@ -8,9 +8,11 @@ import asyncio
 from collections.abc import Coroutine
 from typing import Any, TypeVar
 
+import httpx
 import pandas as pd
 import streamlit as st
 
+from src.core.currency import Currency
 from src.ui.api_client import get_system_health, get_transactions, post_claim
 from src.ui.stats import compute_p95_latency, compute_throughput
 from src.ui.theme import CSS, status_css_class
@@ -52,12 +54,30 @@ def render_ingestion_column() -> None:
     st.subheader("Submit Claim")
     user_id = st.text_input("User ID", value="user-1")
     claim_text = st.text_area("Claim Text", height=150)
+    # Without order_id and amount an approved claim has nothing to execute
+    # and routes to PENDING_HUMAN_REVIEW instead of COMPLETED.
+    order_id = st.text_input("Order ID", value="").strip()
+    amount = st.number_input("Refund Amount", min_value=0.01, value=None, step=1.0, format="%.2f")
+    currency = st.selectbox("Currency", [c.value for c in Currency])
     if st.button("Submit"):
         if not claim_text.strip():
             st.warning("Claim text cannot be empty.")
-        else:
-            result = run_async(post_claim(user_id=user_id, claim_text=claim_text))
-            st.success(f"{result.get('status')} -- request_id: {result.get('request_id')}")
+            return
+        try:
+            result = run_async(
+                post_claim(
+                    user_id=user_id,
+                    claim_text=claim_text,
+                    order_id=order_id,
+                    amount=amount,
+                    currency=currency,
+                )
+            )
+        except httpx.HTTPStatusError as exc:
+            # e.g. a 422 for an amount above REFUND_MAX_AMOUNT.
+            st.error(f"Gateway rejected the claim ({exc.response.status_code}): {exc.response.text}")
+            return
+        st.success(f"{result.get('status')} -- request_id: {result.get('request_id')}")
 
 
 def render_judge_trail(judge_trail: dict[str, Any] | None) -> None:
