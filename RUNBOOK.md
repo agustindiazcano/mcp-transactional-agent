@@ -124,7 +124,7 @@ The dashboard's transaction monitor shows the same data. To inspect the database
 pytest tests/unit tests/integration --cov=src --cov-report=term-missing
 ```
 
-Last full run (2026-09-22): 111 passed (81 unit + 30 integration), 80% line coverage over `src/`.
+Last full run (2026-09-22): 114 passed (84 unit + 30 integration), 80% line coverage over `src/`.
 
 ## Step 9: Load Test (Locust)
 

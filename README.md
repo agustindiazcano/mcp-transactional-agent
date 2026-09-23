@@ -1,6 +1,6 @@
 # Agentic MCP Engine and RAG Gateway
 
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg) ![Tests: 111 passing](https://img.shields.io/badge/tests-111%20passing-brightgreen.svg) ![Coverage: 80%](https://img.shields.io/badge/coverage-80%25-green.svg) ![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg) ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg) ![Tests: 114 passing](https://img.shields.io/badge/tests-114%20passing-brightgreen.svg) ![Coverage: 80%](https://img.shields.io/badge/coverage-80%25-green.svg) ![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg) ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 
 ## Summary
 
@@ -22,7 +22,7 @@ The project also examines a second question: **how much of an AI system's decisi
 |---|---|
 | **Runs locally** | `docker compose up --build` brings up **8 containers**: `postgres` (pgvector), `rabbitmq`, `migrate` (one-shot Alembic), `mcp_server`, `worker`, `sweeper`, `gateway`, `dashboard`. |
 | **UI to try it** | Streamlit Ops Dashboard at `http://localhost:8501` — submit a claim, watch it move through the pipeline, and inspect the Judge 1 / Judge 2 / Supreme Court reasoning trail per transaction ([Phase 4](#phase-4--operations-dashboard-done)). |
-| **Tests** | **111 passing** — 81 unit + 30 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks) — **80% line coverage** over `src/` (`pytest --cov=src`). |
+| **Tests** | **114 passing** — 84 unit + 30 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks) — **80% line coverage** over `src/` (`pytest --cov=src`). |
 | **Load test** | Locust, 100 concurrent users against the full containerized stack: **2,630 requests, 0 failures, P95 87 ms** ([numbers](#system-performance--telemetry)). |
 | **Security** | MCP boundary with token authn, per-tool authz, server-side argument validation, rate limiting, and a fail-closed audit log. Prompt injection is handled structurally: tool access comes only from the authenticated identity, so injected text can't extend it (integration-tested), and a Prompt Guard model screens jailbreak attempts first ([Phase 1.B](#phase-1b--mcp-security-boundary-done)). |
 | **Cloud** | **Google Cloud is the primary deployment target — in progress** (Cloud Run, Cloud SQL for PostgreSQL + pgvector, Artifact Registry, with **Vertex AI** as the inference provider being exercised). AWS is kept as a secondary target ([Phase 6](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary)). |
@@ -439,7 +439,7 @@ Measured 2026-09-21 against the full `docker compose` stack (Locust: 100 users, 
 
 | Metric | Value |
 |---|---|
-| Test suite (unit + integration, measured 2026-09-22) | 111/111 passing (81 unit + 30 integration against real PostgreSQL/RabbitMQ), 80% line coverage over `src/` |
+| Test suite (unit + integration, measured 2026-09-22) | 114/114 passing (84 unit + 30 integration against real PostgreSQL/RabbitMQ), 80% line coverage over `src/` |
 | API ingestion latency, P95 (FastAPI → RabbitMQ) | 87 ms (P50 55 ms, P99 120 ms) |
 | Ingestion throughput (local containerized stack) | 45.5 req/s average over the run (~49 req/s steady-state), 2630 requests, 0 failures |
 | End-to-end processing time (LLM-dependent) | Not precisely benchmarked; a single real transaction (Prompt Guard → RAG retrieval → primary agent → Double Judge → Supreme Court cascade) observed completing within a few seconds outside load |
@@ -449,9 +449,9 @@ Measured 2026-09-21 against the full `docker compose` stack (Locust: 100 users, 
 ## Testing
 
 ### Unit and Integration
-Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-22): **111 passed, 0 failed, 80% line coverage over `src/`**.
+Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-22): **114 passed, 0 failed, 80% line coverage over `src/`**.
 
-- **Unit (81 tests, no network required for most):** provider factory, judge parsing and cascade routing, Prompt Guard, token-usage extraction, chunking, retrieval service, system-health service, recovery sweeper, worker concurrency, MCP security (client registry, PII masking, argument schemas), and the dashboard's API client, stats, and theme. Two repository tests in `tests/unit/` need a live PostgreSQL.
+- **Unit (84 tests, no network required for most):** provider factory, judge parsing and cascade routing, Prompt Guard, token-usage extraction, chunking, retrieval service, system-health service, recovery sweeper, worker concurrency, MCP security (client registry, PII masking, argument schemas), and the dashboard's API client, stats, and theme. Two repository tests in `tests/unit/` need a live PostgreSQL.
 - **Integration (30 tests, real PostgreSQL + RabbitMQ):** API gateway, PostgreSQL persistence, knowledge-base vector search, MCP server over HTTP (401/403/422/429 responses plus audit rows), rate limiter, worker idempotency and judge-reject routing, and the dashboard's read-only transaction/system-health routers.
 - **Load (Locust):** 100 concurrent users against the full `docker compose` stack — see [System Performance & Telemetry](#system-performance--telemetry).
 
@@ -648,6 +648,7 @@ uvicorn src.api.main:app --reload --port 8000  # terminal 4
 | `LANGCHAIN_ENDPOINT` | No | LangSmith API endpoint |
 | `LANGCHAIN_API_KEY` | No | LangSmith API key |
 | `LANGCHAIN_PROJECT` | No | LangSmith project name for this repo's traces |
+| `PROMPT_GUARD_THRESHOLD` | No | Prompt Guard malicious-probability score at or above which a claim is blocked as `BLOCKED_MALICIOUS_PROMPT` (default: 0.5) |
 | `MCP_SERVER_URL` | Yes | URL of the MCP server |
 | `MAX_LLM_RETRIES` | No | Maximum LLM retries (default: 3) |
 | `IDEMPOTENCY_TTL_SECONDS` | No | Idempotency window in seconds (default: 86400) |

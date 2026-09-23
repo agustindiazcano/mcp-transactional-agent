@@ -3,6 +3,7 @@ from langchain_core.messages import HumanMessage
 
 from src.agents.llm_factory import get_llm
 from src.agents.token_usage import extract_usage
+from src.core.config import settings
 
 logger = structlog.get_logger(__name__)
 
@@ -35,17 +36,27 @@ async def check_for_injection(user_input: str) -> bool:
         if usage is not None:
             logger.info("llm_token_usage", stage="prompt_guard", provider="groq", **usage)
 
-        output_text = str(response.content).strip().lower()
-        
-        # The model typically returns safe, unsafe, injection, or jailbreak
-        if "unsafe" in output_text or "injection" in output_text or "jailbreak" in output_text:
-            logger.warning("Prompt injection DETECTED!", classification=output_text)
+        # Groq's Prompt Guard endpoint returns a bare malicious-probability
+        # score (e.g. "0.9989"), not a label -- parse it as a float.
+        output_text = str(response.content).strip()
+        try:
+            score = float(output_text)
+        except ValueError:
+            logger.error(
+                "Prompt guard returned a non-numeric response, failing open.",
+                raw_output=output_text,
+            )
+            return False
+
+        threshold = settings.PROMPT_GUARD_THRESHOLD
+        if score >= threshold:
+            logger.warning("Prompt injection DETECTED!", score=score, threshold=threshold)
             return True
-            
-        logger.info("Input scan clear. No injection detected.")
+
+        logger.info("Input scan clear. No injection detected.", score=score, threshold=threshold)
         return False
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 -- deliberate fail-open, error is logged
         logger.error("Failed to run prompt guard, failing open (safe) to prevent block.", error=str(e))
         # Fail-open if the guard service goes down, so we don't break the whole app.
         # Real production systems might fail-closed depending on risk tolerance.
