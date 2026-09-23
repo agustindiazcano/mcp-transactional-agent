@@ -657,3 +657,44 @@ PR #44 (PENDING sync) is merged (`d6b36a4`). This branch starts from it. **Not c
 
 ## Next
 Part B: evidence for the judges.
+
+---
+
+# Update — Docs, Hook Fix, and the Plan for GCP and Evaluation (2026-09-23)
+
+## Merged or pending
+- **PR #45** (`perf/processing-throughput`): merged.
+- **PR #46** (`docs/agentic-workflow`): merged.
+  - README "AI-Assisted Development" rewritten: the context files, what the agent does end to end, and the guardrails.
+  - The "Human in the loop" subsection was **removed at the user's request**: reviewers may read it as rubber-stamping the AI.
+  - `lint_check` hook fixed: it now runs ruff and mypy from the project venv, and mypy only on `src/`, like CI.
+  - Test counts: **239 (189 unit + 50 integration)**, 84% coverage.
+- **`docs/readme-index-and-eval`: pushed, PR not opened yet.** The user opens it (no `gh` CLI): https://github.com/agustindiazcano/mcp-transactional-agent/compare/main...docs/readme-index-and-eval
+  - A table of contents at the top of the README, with links to every document.
+  - A new top-level "LLM Evaluation & Observability" section, linked from a line at the top of the Summary.
+  - The Documentation Index completed, and stale docs cleaned.
+
+## Decisions taken
+- **Evaluation tools:** Promptfoo and Langfuse next, Ragas later. LangSmith and TruLens are not adopted, because they overlap with Langfuse and Ragas. Recorded in the README and in PENDING Step 3.
+- **GCP deploy:**
+  - Use Terraform for the infrastructure (`infra/`, state in a GCS bucket, no secrets in the state).
+  - Build `demo-up` / `demo-down` scripts, or a `demo_enabled` variable: stop Cloud SQL and scale the worker/sweeper to 0 when not demoing. Cloud Run scales to zero on its own. The Vertex API can stay enabled, since it only bills per call.
+  - Set a budget alert in Billing.
+  - Messaging: recommended a managed RabbitMQ free tier (no code change). **Pub/Sub is still an open decision**; the user must confirm.
+- **Effort estimates:** calibrate to the agent's pace, in hours, not human-days. The user pushed back on day-sized estimates.
+
+## Waiting on the user
+- Open the `docs/readme-index-and-eval` PR, and update the GitHub profile text (use **239 tests**, not 232).
+- For GCP: the project ID and region (suggested `us-central1`), `gcloud` and Terraform installed, and a run of `! gcloud auth login` plus `! gcloud auth application-default login`.
+- For evaluation: a Langfuse Cloud account (free tier), with its keys in `.env`.
+- In `.env`: unset `LANGCHAIN_TRACING_V2`. It's the source of the worker's LangSmith `403` warnings.
+- Settings → Branches: branch protection on `main`, requiring the CI checks.
+
+## Next, in order
+1. GCP deploy with Vertex AI (needs the items above).
+2. LLM evaluation: Promptfoo, with about 100 labeled cases the user reviews, plus Langfuse.
+3. Part B: evidence for the judges (amount ≤ order, same currency, the right owner, failing closed).
+4. The Resolver agent. It needs the user's go-ahead, because it changes the Phase 1.E design.
+
+## State left behind
+The stack is still in chaos mode (mocks, MCP rate limit lifted), with one `agentic_worker`. Go back to normal with `docker compose up -d`.
