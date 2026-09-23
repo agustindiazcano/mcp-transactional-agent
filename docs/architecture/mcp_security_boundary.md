@@ -1,6 +1,6 @@
 # MCP Security Boundary (Phase 1.B)
 
-**Status:** In progress. This document is the specification for Phase 1.B; the implementation follows it, and each guarantee below is mapped to the test that verifies it.
+**Status:** Done. This document is the specification for Phase 1.B; the implementation follows it, and each guarantee below is mapped to the test that verifies it.
 
 ---
 
