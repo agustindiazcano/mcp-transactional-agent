@@ -45,10 +45,14 @@ async def create_claim(request: ClaimRequest, http_request: Request) -> dict[str
 
     message_body = request.model_dump_json().encode("utf-8")
 
+    # PERSISTENT: the 202 promises the claim will be processed. A durable queue
+    # alone isn't enough -- RabbitMQ drops transient messages on restart, which
+    # the chaos/idempotency test showed (tests/performance/chaos_idempotency.py).
     await channel.default_exchange.publish(
         aio_pika.Message(
             body=message_body,
-            content_type="application/json"
+            content_type="application/json",
+            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
         ),
         routing_key="agent_tasks_queue",
     )
