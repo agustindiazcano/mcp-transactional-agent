@@ -11,6 +11,15 @@ from src.core.database import get_engine, get_session_maker
 from src.core.models import Base, Transaction
 from src.worker.worker import process_message
 
+EXECUTED = {
+    "status": "executed",
+    "refund_id": 1,
+    "request_id": "test-req",
+    "transaction_id": "ord-1",
+    "amount": 50.0,
+    "currency": "USD",
+}
+
 
 @pytest_asyncio.fixture
 async def db_engine():
@@ -44,23 +53,12 @@ async def test_worker_idempotency_new_request(db_session: AsyncSession):
     
     # Mock message
     mock_message = AsyncMock()
-    mock_message.body = b'{"request_id": "test-req-new-123", "user_id": "user1", "claim_text": "Refund $50"}'
+    mock_message.body = b'{"request_id": "test-req-new-123", "user_id": "user1", "claim_text": "Refund $50", "order_id": "ord-1", "amount": 50.0, "currency": "USD"}'
     
-    from contextlib import asynccontextmanager
-    
-    @asynccontextmanager
-    async def mock_sse_client(*args, **kwargs):
-        yield (AsyncMock(), AsyncMock())
-        
-    @asynccontextmanager
-    async def mock_client_session(*args, **kwargs):
-        session = AsyncMock()
-        yield session
 
     # We mock the LLM factory, MCP execution, and Judge
     with patch("src.worker.worker.get_llm") as _, \
-         patch("src.worker.worker.sse_client", new=mock_sse_client), \
-         patch("src.worker.worker.ClientSession", new=mock_client_session), \
+         patch("src.worker.worker.execute_refund_via_mcp", new_callable=AsyncMock, return_value=EXECUTED), \
          patch("src.worker.worker.evaluate_decision", return_value={"verdict": "APPROVE", "reason": "Ok"}) as MockJudge:
              
         # Execute worker process
@@ -88,18 +86,8 @@ async def test_worker_persists_judge_trail(db_session: AsyncSession):
     await db_session.commit()
 
     mock_message = AsyncMock()
-    mock_message.body = b'{"request_id": "test-req-trail-123", "user_id": "user1", "claim_text": "Refund $50"}'
+    mock_message.body = b'{"request_id": "test-req-trail-123", "user_id": "user1", "claim_text": "Refund $50", "order_id": "ord-1", "amount": 50.0, "currency": "USD"}'
 
-    from contextlib import asynccontextmanager
-
-    @asynccontextmanager
-    async def mock_sse_client(*args, **kwargs):
-        yield (AsyncMock(), AsyncMock())
-
-    @asynccontextmanager
-    async def mock_client_session(*args, **kwargs):
-        session = AsyncMock()
-        yield session
 
     fake_trail = {
         "judge1": {"verdict": "APPROVE", "reason": "Gemini ok"},
@@ -111,8 +99,7 @@ async def test_worker_persists_judge_trail(db_session: AsyncSession):
 
     with patch("src.worker.worker.get_llm") as _, \
          patch("src.worker.worker.scan_for_injection", return_value=clear_guard), \
-         patch("src.worker.worker.sse_client", new=mock_sse_client), \
-         patch("src.worker.worker.ClientSession", new=mock_client_session), \
+         patch("src.worker.worker.execute_refund_via_mcp", new_callable=AsyncMock, return_value=EXECUTED), \
          patch(
              "src.worker.worker.evaluate_decision",
              return_value={"verdict": "APPROVE", "reason": "Ok", "trail": fake_trail},
@@ -125,6 +112,7 @@ async def test_worker_persists_judge_trail(db_session: AsyncSession):
         assert txn.judge_trail == {
             **fake_trail,
             "prompt_guard": {"status": "clear", "score": 0.001, "reason": None},
+            "execution": EXECUTED,
         }
 
 @pytest.mark.asyncio
@@ -139,19 +127,9 @@ async def test_worker_judge_reject(db_session: AsyncSession):
     mock_message = AsyncMock()
     mock_message.body = b'{"request_id": "test-req-reject-123", "user_id": "user1", "claim_text": "Refund $50000"}'
     
-    from contextlib import asynccontextmanager
-    @asynccontextmanager
-    async def mock_sse_client(*args, **kwargs):
-        yield (AsyncMock(), AsyncMock())
-        
-    @asynccontextmanager
-    async def mock_client_session(*args, **kwargs):
-        session = AsyncMock()
-        yield session
 
     with patch("src.worker.worker.get_llm") as _, \
-         patch("src.worker.worker.sse_client", new=mock_sse_client), \
-         patch("src.worker.worker.ClientSession", new=mock_client_session), \
+         patch("src.worker.worker.execute_refund_via_mcp", new_callable=AsyncMock, return_value=EXECUTED), \
          patch("src.worker.worker.evaluate_decision", return_value={"verdict": "REJECT", "reason": "Amount too high"}) as MockJudge:
              
         await process_message(mock_message, db_session)

@@ -2,21 +2,38 @@
 
 Tests cover:
 1. Race condition path: IntegrityError on INSERT -> ACK and discard (no LLM call).
-2. Happy path:  INSERT succeeds -> judge APPROVE -> SELECT FOR UPDATE -> COMPLETED.
+2. Happy path:  INSERT succeeds -> judge APPROVE -> execute_refund via MCP ->
+   SELECT FOR UPDATE -> COMPLETED.
 3. Rejection path: judge REJECT all retries -> SELECT FOR UPDATE -> PENDING_HUMAN_REVIEW.
+4. Execution paths: approved but not executable (no order_id/amount) ->
+   PENDING_HUMAN_REVIEW; execution failure after retries -> EXECUTION_FAILED
+   + nack(requeue=False).
 """
 import json
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
 from src.agents.prompt_guard import GuardResult
+from src.worker.refund_executor import RefundExecutionError
 
 CLEAR_GUARD = GuardResult(status="clear", score=0.001)
+APPROVE = {"verdict": "APPROVE", "reason": "All checks passed."}
+EXECUTED = {
+    "status": "executed",
+    "refund_id": 7,
+    "request_id": "req-test-001",
+    "transaction_id": "ord-001",
+    "amount": 50.0,
+    "currency": "USD",
+}
 
 
-def _make_message(body: dict) -> MagicMock:
+def _make_message(body: dict[str, Any]) -> MagicMock:
     msg = MagicMock()
     msg.body = json.dumps(body).encode()
     msg.ack = AsyncMock()
@@ -45,11 +62,75 @@ def _make_db_session(*, flush_raises: bool = False) -> AsyncMock:
     return session
 
 
-BODY = {
+def _locked_row(db_session: AsyncMock) -> MagicMock:
+    row: MagicMock = db_session.execute.return_value.scalar_one.return_value
+    return row
+
+
+BODY: dict[str, Any] = {
     "request_id": "req-test-001",
     "user_id": "usr-123",
     "claim_text": "I need a refund of 50 dollars.",
+    "order_id": "ord-001",
+    "amount": 50.0,
+    "currency": "USD",
 }
+
+BODY_WITHOUT_REFUND_DETAILS: dict[str, Any] = {
+    "request_id": "req-test-002",
+    "user_id": "usr-123",
+    "claim_text": "My order arrived broken.",
+    "order_id": None,
+    "amount": None,
+    "currency": None,
+}
+
+
+@contextmanager
+def _pipeline(
+    *,
+    guard: GuardResult = CLEAR_GUARD,
+    judge: dict[str, Any] | None = None,
+    retrieved_policy: str | None = None,
+    executor_result: dict[str, Any] | None = None,
+    executor_error: Exception | None = None,
+) -> Iterator[dict[str, MagicMock]]:
+    """Patch every external dependency of process_message."""
+    with ExitStack() as stack:
+        mocks = {
+            "guard": stack.enter_context(
+                patch(
+                    "src.worker.worker.scan_for_injection",
+                    new_callable=AsyncMock,
+                    return_value=guard,
+                )
+            ),
+            "judge": stack.enter_context(
+                patch(
+                    "src.worker.worker.evaluate_decision",
+                    new_callable=AsyncMock,
+                    return_value=judge or APPROVE,
+                )
+            ),
+            "get_llm": stack.enter_context(patch("src.worker.worker.get_llm")),
+            "get_embeddings": stack.enter_context(patch("src.worker.worker.get_embeddings")),
+            "retrieve": stack.enter_context(
+                patch(
+                    "src.worker.worker.retrieve_relevant_policy",
+                    new_callable=AsyncMock,
+                    return_value=retrieved_policy,
+                )
+            ),
+            "executor": stack.enter_context(
+                patch(
+                    "src.worker.worker.execute_refund_via_mcp",
+                    new_callable=AsyncMock,
+                    return_value=executor_result or EXECUTED,
+                    side_effect=executor_error,
+                )
+            ),
+        }
+        yield mocks
 
 
 @pytest.mark.asyncio
@@ -57,55 +138,94 @@ async def test_race_condition_integrity_error_discards_message() -> None:
     message = _make_message(BODY)
     db_session = _make_db_session(flush_raises=True)
 
-    with (
-        patch("src.worker.worker.scan_for_injection", new_callable=AsyncMock) as mock_guard,
-        patch("src.worker.worker.evaluate_decision", new_callable=AsyncMock) as mock_judge,
-        patch("src.worker.worker.get_llm"),
-        patch("src.worker.worker.sse_client"),
-    ):
+    with _pipeline() as mocks:
         from src.worker.worker import process_message
         await process_message(message, db_session)
 
     message.ack.assert_awaited_once()
     message.nack.assert_not_awaited()
-    mock_guard.assert_not_awaited()
-    mock_judge.assert_not_awaited()
+    mocks["guard"].assert_not_awaited()
+    mocks["judge"].assert_not_awaited()
+    mocks["executor"].assert_not_awaited()
     db_session.rollback.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_happy_path_approve_uses_pessimistic_lock() -> None:
+async def test_happy_path_approve_executes_refund_and_completes() -> None:
     message = _make_message(BODY)
     db_session = _make_db_session()
 
-    approve_result = {"verdict": "APPROVE", "reason": "All checks passed."}
-
-    mcp_session_mock = AsyncMock()
-    mcp_session_mock.initialize = AsyncMock()
-
-    with (
-        patch("src.worker.worker.scan_for_injection", new_callable=AsyncMock, return_value=CLEAR_GUARD),
-        patch("src.worker.worker.evaluate_decision", new_callable=AsyncMock, return_value=approve_result),
-        patch("src.worker.worker.get_llm"),
-        patch("src.worker.worker.get_embeddings") as mock_get_embeddings,
-        patch("src.worker.worker.retrieve_relevant_policy", new_callable=AsyncMock, return_value=None),
-        patch("src.worker.worker.sse_client") as mock_sse,
-        patch("src.worker.worker.ClientSession") as mock_cs,
-    ):
-        mock_sse.return_value.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock()))
-        mock_sse.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_cs.return_value.__aenter__ = AsyncMock(return_value=mcp_session_mock)
-        mock_cs.return_value.__aexit__ = AsyncMock(return_value=False)
-
+    with _pipeline() as mocks:
         from src.worker.worker import process_message
         await process_message(message, db_session)
 
     message.ack.assert_awaited_once()
     message.nack.assert_not_awaited()
     db_session.execute.assert_awaited()
-    locked_row = db_session.execute.return_value.scalar_one.return_value
+    mocks["get_embeddings"].assert_called_once()
+
+    call = mocks["executor"].await_args
+    assert call.kwargs["request_id"] == "req-test-001"
+    assert call.kwargs["transaction_id"] == "ord-001"
+    assert call.kwargs["amount"] == 50.0
+    assert call.kwargs["currency"] == "USD"
+
+    locked_row = _locked_row(db_session)
     assert locked_row.status == "COMPLETED"
-    mock_get_embeddings.assert_called_once()
+    assert locked_row.judge_trail["execution"] == EXECUTED
+
+
+@pytest.mark.asyncio
+async def test_currency_defaults_to_usd_when_claim_omits_it() -> None:
+    message = _make_message({**BODY, "currency": None})
+    db_session = _make_db_session()
+
+    with _pipeline() as mocks:
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    assert mocks["executor"].await_args.kwargs["currency"] == "USD"
+
+
+@pytest.mark.asyncio
+async def test_execution_failure_marks_execution_failed_and_dead_letters() -> None:
+    """Approved, but the refund could not be executed after every retry:
+    the row records EXECUTION_FAILED and the message is NACKed without
+    requeue, so it is neither lost silently nor retried forever."""
+    message = _make_message(BODY)
+    db_session = _make_db_session()
+
+    with _pipeline(executor_error=RefundExecutionError("mcp unreachable")):
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    locked_row = _locked_row(db_session)
+    assert locked_row.status == "EXECUTION_FAILED"
+    assert locked_row.judge_trail["execution"] == {
+        "status": "failed",
+        "error": "mcp unreachable",
+    }
+    db_session.commit.assert_awaited()
+    message.nack.assert_awaited_once_with(requeue=False)
+    message.ack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_approved_claim_without_refund_details_goes_to_human_review() -> None:
+    """Nothing to execute without an order and an amount: an approval alone
+    must not be reported as COMPLETED."""
+    message = _make_message(BODY_WITHOUT_REFUND_DETAILS)
+    db_session = _make_db_session()
+
+    with _pipeline() as mocks:
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    mocks["executor"].assert_not_awaited()
+    locked_row = _locked_row(db_session)
+    assert locked_row.status == "PENDING_HUMAN_REVIEW"
+    assert locked_row.judge_trail["execution"]["status"] == "not_executable"
+    message.ack.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -114,32 +234,18 @@ async def test_all_retries_exhausted_routes_to_human_review() -> None:
     db_session = _make_db_session()
     reject_result = {"verdict": "REJECT", "reason": "Missing amount field."}
 
-    mcp_session_mock = AsyncMock()
-    mcp_session_mock.initialize = AsyncMock()
-
     with (
-        patch("src.worker.worker.scan_for_injection", new_callable=AsyncMock, return_value=CLEAR_GUARD),
-        patch("src.worker.worker.evaluate_decision", new_callable=AsyncMock, return_value=reject_result),
-        patch("src.worker.worker.get_llm"),
-        patch("src.worker.worker.get_embeddings"),
-        patch("src.worker.worker.retrieve_relevant_policy", new_callable=AsyncMock, return_value=None),
-        patch("src.worker.worker.sse_client") as mock_sse,
-        patch("src.worker.worker.ClientSession") as mock_cs,
+        _pipeline(judge=reject_result) as mocks,
         patch("src.worker.worker.settings") as mock_settings,
     ):
-        mock_settings.MCP_SERVER_URL = "http://localhost:8080"
         mock_settings.MAX_LLM_RETRIES = 2
-        mock_sse.return_value.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock()))
-        mock_sse.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_cs.return_value.__aenter__ = AsyncMock(return_value=mcp_session_mock)
-        mock_cs.return_value.__aexit__ = AsyncMock(return_value=False)
-
         from src.worker.worker import process_message
         await process_message(message, db_session)
 
     message.ack.assert_awaited_once()
-    locked_row = db_session.execute.return_value.scalar_one.return_value
-    assert locked_row.status == "PENDING_HUMAN_REVIEW"
+    assert mocks["judge"].await_count == 2
+    mocks["executor"].assert_not_awaited()
+    assert _locked_row(db_session).status == "PENDING_HUMAN_REVIEW"
 
 
 @pytest.mark.asyncio
@@ -149,36 +255,15 @@ async def test_retrieved_policy_is_injected_into_judge_context() -> None:
     to carry it until the primary agent's own prompt-building loop exists."""
     message = _make_message(BODY)
     db_session = _make_db_session()
-    approve_result = {"verdict": "APPROVE", "reason": "All checks passed."}
 
-    mcp_session_mock = AsyncMock()
-    mcp_session_mock.initialize = AsyncMock()
-
-    with (
-        patch("src.worker.worker.scan_for_injection", new_callable=AsyncMock, return_value=CLEAR_GUARD),
-        patch("src.worker.worker.evaluate_decision", new_callable=AsyncMock, return_value=approve_result) as mock_judge,
-        patch("src.worker.worker.get_llm"),
-        patch("src.worker.worker.get_embeddings"),
-        patch(
-            "src.worker.worker.retrieve_relevant_policy",
-            new_callable=AsyncMock,
-            return_value="Refunds are issued within 30 days of purchase.",
-        ) as mock_retrieve,
-        patch("src.worker.worker.sse_client") as mock_sse,
-        patch("src.worker.worker.ClientSession") as mock_cs,
-    ):
-        mock_sse.return_value.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock()))
-        mock_sse.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_cs.return_value.__aenter__ = AsyncMock(return_value=mcp_session_mock)
-        mock_cs.return_value.__aexit__ = AsyncMock(return_value=False)
-
+    with _pipeline(retrieved_policy="Refunds are issued within 30 days of purchase.") as mocks:
         from src.worker.worker import process_message
         await process_message(message, db_session)
 
-    mock_retrieve.assert_awaited_once()
-    assert mock_retrieve.await_args.args[2] == BODY["claim_text"]
-    mock_judge.assert_awaited_once()
-    judge_context = mock_judge.await_args.kwargs["context"]
+    mocks["retrieve"].assert_awaited_once()
+    assert mocks["retrieve"].await_args.args[2] == BODY["claim_text"]
+    mocks["judge"].assert_awaited_once()
+    judge_context = mocks["judge"].await_args.kwargs["context"]
     assert judge_context["retrieved_policy"] == "Refunds are issued within 30 days of purchase."
 
 
@@ -188,42 +273,17 @@ async def test_retrieval_failure_fails_open_and_does_not_block_processing() -> N
     (same fail-open principle as prompt_guard.py's guard check)."""
     message = _make_message(BODY)
     db_session = _make_db_session()
-    approve_result = {"verdict": "APPROVE", "reason": "All checks passed."}
 
-    mcp_session_mock = AsyncMock()
-    mcp_session_mock.initialize = AsyncMock()
-
-    with (
-        patch("src.worker.worker.scan_for_injection", new_callable=AsyncMock, return_value=CLEAR_GUARD),
-        patch("src.worker.worker.evaluate_decision", new_callable=AsyncMock, return_value=approve_result) as mock_judge,
-        patch("src.worker.worker.get_llm"),
-        patch("src.worker.worker.get_embeddings", side_effect=RuntimeError("embeddings API down")),
-        patch("src.worker.worker.sse_client") as mock_sse,
-        patch("src.worker.worker.ClientSession") as mock_cs,
-    ):
-        mock_sse.return_value.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock()))
-        mock_sse.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_cs.return_value.__aenter__ = AsyncMock(return_value=mcp_session_mock)
-        mock_cs.return_value.__aexit__ = AsyncMock(return_value=False)
-
+    with _pipeline() as mocks:
+        mocks["get_embeddings"].side_effect = RuntimeError("embeddings API down")
         from src.worker.worker import process_message
         await process_message(message, db_session)
 
     message.ack.assert_awaited_once()
     message.nack.assert_not_awaited()
-    judge_context = mock_judge.await_args.kwargs["context"]
+    judge_context = mocks["judge"].await_args.kwargs["context"]
     assert "retrieved_policy" not in judge_context
-    locked_row = db_session.execute.return_value.scalar_one.return_value
-    assert locked_row.status == "COMPLETED"
-
-
-def _patched_mcp(mock_sse: MagicMock, mock_cs: MagicMock) -> None:
-    mcp_session_mock = AsyncMock()
-    mcp_session_mock.initialize = AsyncMock()
-    mock_sse.return_value.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock()))
-    mock_sse.return_value.__aexit__ = AsyncMock(return_value=False)
-    mock_cs.return_value.__aenter__ = AsyncMock(return_value=mcp_session_mock)
-    mock_cs.return_value.__aexit__ = AsyncMock(return_value=False)
+    assert _locked_row(db_session).status == "COMPLETED"
 
 
 @pytest.mark.asyncio
@@ -232,19 +292,17 @@ async def test_blocked_prompt_records_guard_result_in_trail() -> None:
     db_session = _make_db_session()
     blocked = GuardResult(status="blocked", score=0.999)
 
-    with (
-        patch("src.worker.worker.scan_for_injection", new_callable=AsyncMock, return_value=blocked),
-        patch("src.worker.worker.evaluate_decision", new_callable=AsyncMock) as mock_judge,
-    ):
+    with _pipeline(guard=blocked) as mocks:
         from src.worker.worker import process_message
         await process_message(message, db_session)
 
-    locked_row = db_session.execute.return_value.scalar_one.return_value
+    locked_row = _locked_row(db_session)
     assert locked_row.status == "BLOCKED_MALICIOUS_PROMPT"
     assert locked_row.judge_trail == {
         "prompt_guard": {"status": "blocked", "score": 0.999, "reason": None}
     }
-    mock_judge.assert_not_awaited()
+    mocks["judge"].assert_not_awaited()
+    mocks["executor"].assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -261,20 +319,11 @@ async def test_skipped_guard_is_recorded_alongside_judge_trail() -> None:
     }
     approve = {"verdict": "APPROVE", "reason": "ok", "trail": judge_trail}
 
-    with (
-        patch("src.worker.worker.scan_for_injection", new_callable=AsyncMock, return_value=skipped),
-        patch("src.worker.worker.evaluate_decision", new_callable=AsyncMock, return_value=approve),
-        patch("src.worker.worker.get_llm"),
-        patch("src.worker.worker.get_embeddings"),
-        patch("src.worker.worker.retrieve_relevant_policy", new_callable=AsyncMock, return_value=None),
-        patch("src.worker.worker.sse_client") as mock_sse,
-        patch("src.worker.worker.ClientSession") as mock_cs,
-    ):
-        _patched_mcp(mock_sse, mock_cs)
+    with _pipeline(guard=skipped, judge=approve):
         from src.worker.worker import process_message
         await process_message(message, db_session)
 
-    locked_row = db_session.execute.return_value.scalar_one.return_value
+    locked_row = _locked_row(db_session)
     assert locked_row.status == "COMPLETED"
     assert locked_row.judge_trail == {
         **judge_trail,
@@ -283,4 +332,5 @@ async def test_skipped_guard_is_recorded_alongside_judge_trail() -> None:
             "score": None,
             "reason": "ImportError: langchain-groq is not installed",
         },
+        "execution": EXECUTED,
     }

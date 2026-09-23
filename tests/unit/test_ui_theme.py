@@ -15,3 +15,8 @@ def test_ok_class_for_completed() -> None:
 
 def test_ok_class_for_processing() -> None:
     assert status_css_class("PROCESSING") == "dashboard-status-ok"
+
+
+def test_alert_class_for_execution_failed() -> None:
+    """An approved refund that could not be executed needs an operator."""
+    assert status_css_class("EXECUTION_FAILED") == "dashboard-status-alert"

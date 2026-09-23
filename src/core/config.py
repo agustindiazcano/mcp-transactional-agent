@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     REFUND_MAX_AMOUNT: float = 10000.0
     MCP_RATE_LIMIT_PER_MIN: int = 30
 
+    # MCP tool calls from the worker (src/worker/refund_executor.py). The read
+    # timeout bounds each attempt, since MCP SDK 2.2.0 hangs in call_tool when
+    # the security boundary rejects a request with a 4xx.
+    MCP_TOOL_TIMEOUT_SECONDS: float = 10.0
+    MCP_TOOL_MAX_RETRIES: int = 3
+    MCP_TOOL_BACKOFF_BASE_SECONDS: float = 1.0
+
     # Worker Settings
     MAX_LLM_RETRIES: int = 3
     IDEMPOTENCY_TTL_SECONDS: int = 86400
