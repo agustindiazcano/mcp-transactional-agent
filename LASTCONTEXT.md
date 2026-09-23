@@ -585,3 +585,11 @@ The queue was durable, but the gateway published **transient** messages, and Rab
 
 ## Next
 Processing throughput with 1, 2, and 4 workers (`--scale worker=N`). The chaos script can be reused without faults.
+
+---
+
+# Update — PENDING.md Synced (2026-09-23)
+
+PR #43 (chaos test) is merged (`fc34c32`). `PENDING.md` had not been updated in PRs #39–#43. On `chore/pending-md-sync`:
+- A new section, "Reliability, Evidence & Load Validation", lists what was done (real execution, orders and read tools, CI, mock mode, the chaos test) and what is still pending (throughput, stepped load, part B, part C, and the small items).
+- Three small items marked done that were already closed: the BLE001 in `judge.py`, the unused `type: ignore` in `llm_factory.py`, and the misplaced repository test.
