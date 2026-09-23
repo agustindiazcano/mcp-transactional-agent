@@ -375,3 +375,53 @@ The worker fetches `get_order` and `get_refund_history` through MCP before the j
 - checks deterministically that the amount doesn't exceed the order, the currency matches, and the order belongs to the claim's `user_id`;
 - fails closed to `PENDING_HUMAN_REVIEW` if a check fails, or if the order can't be read or doesn't exist;
 - injects the evidence into `<reference_context>` and records it in `judge_trail["evidence"]`.
+
+---
+
+# Pending Work and Plan (2026-09-23)
+
+## Still pending from 🟠 2
+
+**B. Evidence in the worker (next).** Touches the `worker.py` flow, but not ACK/NACK.
+- Before the judges, the worker fetches `get_order(order_id)` and `get_refund_history(user_id)` through MCP. Generalize `refund_executor.py`'s pattern (a fresh session per attempt, `read_timeout_seconds`, exponential backoff) into a reusable caller for any tool.
+- A deterministic check, in code and not left to the judges:
+  - the requested `amount` does not exceed the order's `amount`;
+  - the `currency` matches the order's;
+  - the order belongs to the claim's `user_id`.
+- **Fails closed:** if a check fails, the order doesn't exist, or it can't be read after the retries, the claim does not auto-approve and goes to `PENDING_HUMAN_REVIEW`, with the reason in the trail. This is unlike RAG, which fails open, because this is the CLAUDE.md §10 check.
+- The evidence is injected into `<reference_context>`, so the judges verify against facts, and recorded in `judge_trail["evidence"]`.
+- A claim without `order_id` keeps its current behavior (nothing to verify or execute, so `PENDING_HUMAN_REVIEW`).
+- Dashboard: show the evidence in the decision inspector.
+- Tests first: unit tests for the check (under, equal, over the amount; wrong currency; another user's order; not_found; tool failure), plus integration through the worker.
+
+**C. Real `validate_fraud_score` (after B, or in Phase 2).** It returns a fixed `0.12` today. It needs:
+- a formula (e.g. from `refund_count` and `totals_by_currency` in `get_refund_history`);
+- changing its arguments, which is a tool contract change (§8, confirm with the user).
+
+It overlaps the Phase 2 rule base, so it may make more sense to build it there.
+
+## Stronger load data and test coverage (for the job application)
+
+**What today's Locust numbers measure:** they hit `POST /api/v1/claims`, which answers 202 once the claim is published to RabbitMQ. The P95 of 87 ms is **ingestion**, not processing: it excludes the judges, RAG, and the refund. Raising users against the same endpoint mostly measures the laptop (Locust tends to saturate before FastAPI). The number gets bigger, not more solid.
+
+**Plan, in order of value:**
+1. **CI in GitHub Actions with a coverage gate.** README and CLAUDE.md say CI runs on every PR, but **there is no `.github/workflows`**, and a technical reviewer will notice. The workflow:
+   - runs ruff, mypy `--strict`, and pytest, with Postgres (`pgvector/pgvector:pg16`) and RabbitMQ as services;
+   - fails if coverage drops below 80% (`--cov-fail-under=80`).
+
+   It maps directly to the job posting ("CI/CD, GitHub Actions", "clear coverage thresholds"). The two pre-existing lint/type errors (BLE001 in `judge.py`, unused `type: ignore` in `llm_factory.py`) must be fixed first, or CI starts red.
+2. **Correctness under load and chaos (the most valuable result).**
+   - Send N claims (e.g. 2,000), about 10% of them deliberate duplicates (same `request_id`).
+   - During the run, kill the worker twice and restart RabbitMQ once.
+   - At the end, verify in the DB: 0 duplicate refunds, 0 lost messages (every `request_id` in a final state), and the Recovery Sweeper reclaiming what was left in `PROCESSING`.
+   - Target sentence: "2,000 claims, 10% duplicates, worker killed mid-run twice → 0 double refunds, 0 lost messages."
+   - **Prerequisite:** run it with mock providers, so there's no LLM cost and no rate limits. Judge 2, the Supreme Court, and the Prompt Guard hardcode their provider and ignore `LLM_PROVIDER=mock`. This needs a test-only override, or part of Phase 1.F first.
+3. **End-to-end processing throughput:** with mocks, claims/second with 1, 2, and 4 workers, plus end-to-end latency (`created_at` → `updated_at`). It shows horizontal scaling.
+4. **Stepped ingestion load:** 100 → 250 → 500 → 1000 users until the breaking point. Report the max RPS with P95 under a threshold, plus the hardware. Use distributed Locust (`--processes`), so Locust isn't the bottleneck. This is the least differentiating of the four.
+
+**Coverage:** 83% is supporting data, not the headline. What's tested matters more: idempotency against real Postgres, the boundary's 401/403/422/429 responses with their audit rows, and retries with timeouts. On the CV: "183 tests, integration tests against real Postgres/RabbitMQ, 83% coverage." As a CI gate, it becomes directly relevant.
+
+**Suggested order:** CI with a coverage gate → the chaos/idempotency test with mocks → throughput and stepped ingestion if there's time. Then B.
+
+## Branches (merge in this order)
+`feat/read-tools-and-evidence` (`bcd7704`) → `chore/isolated-test-database` (`001e4e3`) → `feat/orders-read-tools` (`602e54f`, plus this note). Each branch contains the one before it, so pushing `feat/orders-read-tools` carries all the commits.
