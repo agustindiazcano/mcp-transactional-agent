@@ -1,0 +1,19 @@
+# Local run against real Vertex AI (LLM_PROVIDER=vertex), with the host's ADC.
+#
+#   gcloud auth application-default login
+#   docker compose -f docker-compose.yml -f docker-compose.gcp.yml up -d --build
+#
+# Mounts the ADC file read-only into the only service that calls an LLM (the
+# worker: Prompt Guard, judges, retrieval embeddings). The credentials never
+# enter an image or the base compose file. On Cloud Run none of this applies:
+# the attached service account is the ADC.
+#
+# The default path is Windows' gcloud config dir; on Linux/macOS set
+# GCP_ADC_FILE=~/.config/gcloud/application_default_credentials.json.
+
+services:
+  worker:
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp_adc.json
+    volumes:
+      - ${GCP_ADC_FILE:-${APPDATA}/gcloud/application_default_credentials.json}:/run/secrets/gcp_adc.json:ro
