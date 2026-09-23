@@ -22,8 +22,9 @@ The project also examines a second question: **how much of an AI system's decisi
 |---|---|
 | **Runs locally** | `docker compose up --build` brings up **8 containers**: `postgres` (pgvector), `rabbitmq`, `migrate` (one-shot Alembic), `mcp_server`, `worker`, `sweeper`, `gateway`, `dashboard`. |
 | **UI to try it** | Streamlit Ops Dashboard at `http://localhost:8501` — submit a claim, watch it move through the pipeline, and inspect the Judge 1 / Judge 2 / Supreme Court reasoning trail per transaction ([Phase 4](#phase-4--operations-dashboard-done)). |
-| **Tests** | **221 passing** — 172 unit + 49 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks, on an isolated `_test` database) — **83% line coverage** over `src/` (`pytest --cov=src`). |
+| **Tests** | **232 passing** — 182 unit + 50 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks, on an isolated `_test` database) — **84% line coverage** over `src/` (`pytest --cov=src`). |
 | **Load test** | Locust, 100 concurrent users against the full containerized stack: **2,630 requests, 0 failures, P95 87 ms** ([numbers](#system-performance--telemetry)). |
+| **Processing throughput** | Full pipeline per claim (guard, RAG, Double Judge, refund through the MCP boundary; LLMs mocked): **9.2 claims/s with 1 worker → 19.6 with 8**, on a 4-core laptop ([numbers](#processing-throughput)). |
 | **Security** | MCP boundary with token authn, per-tool authz, server-side argument validation, rate limiting, and a fail-closed audit log. Prompt injection is handled structurally: tool access comes only from the authenticated identity, so injected text can't extend it (integration-tested), and a Prompt Guard model screens jailbreak attempts first ([Phase 1.B](#phase-1b--mcp-security-boundary-done)). |
 | **Cloud** | **Google Cloud is the primary deployment target — in progress** (Cloud Run, Cloud SQL for PostgreSQL + pgvector, Artifact Registry, with **Vertex AI** as the inference provider being exercised). AWS is kept as a secondary target ([Phase 6](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary)). |
 
@@ -450,11 +451,35 @@ Measured 2026-09-21 against the full `docker compose` stack (Locust: 100 users, 
 
 | Metric | Value |
 |---|---|
-| Test suite (unit + integration, measured 2026-09-22) | 124/124 passing (94 unit + 30 integration against real PostgreSQL/RabbitMQ), 81% line coverage over `src/` |
+| Test suite (unit + integration, measured 2026-09-23) | 232/232 passing (182 unit + 50 integration against real PostgreSQL/RabbitMQ), 84% line coverage over `src/` |
 | API ingestion latency, P95 (FastAPI → RabbitMQ) | 87 ms (P50 55 ms, P99 120 ms) |
 | Ingestion throughput (local containerized stack) | 45.5 req/s average over the run (~49 req/s steady-state), 2630 requests, 0 failures |
-| End-to-end processing time (LLM-dependent) | Not precisely benchmarked; a single real transaction (Prompt Guard → RAG retrieval → primary agent → Double Judge → Supreme Court cascade) observed completing within a few seconds outside load |
+| End-to-end processing time | Pipeline alone (LLMs mocked): 90 ms service time P50 with one worker — see [Processing Throughput](#processing-throughput). With real providers it is dominated by LLM latency: a single real transaction observed completing within a few seconds outside load |
 
+
+### Processing Throughput
+
+The ingestion numbers above stop at the gateway's `202`, when a claim is queued. This measures **processing**: the Prompt Guard, RAG retrieval, the Double Judge, and `execute_refund` through the MCP security boundary, with every claim approved and refunded. Every LLM role runs on `LLM_PROVIDER=mock`, so the numbers are the pipeline's own cost, not a provider's latency or rate limit.
+
+Measured 2026-09-23 with `tests/performance/processing_throughput.py --prefill` (1,000 claims per run, 3 runs per point, 6 for 2 workers) against `docker compose` plus `docker-compose.chaos.yml` (mocks, MCP rate limit lifted) and `docker-compose.scale.yml` (`--scale worker=N`). Hardware: a laptop with an Intel Core i5-8365U (4 cores / 8 threads, 15 W), 16 GB, Docker Desktop on WSL2. The load generator, PostgreSQL, RabbitMQ, and the MCP server share that CPU with the workers.
+
+| Workers | Claims/s (median, range) | Speedup | Service time P50 / P95 |
+|---|---|---|---|
+| 1 | **9.2** (8.2–9.3) | 1.00x | 90 / 154 ms |
+| 2 | **13.8** (7.6–15.9) | 1.51x | 123 / 200 ms |
+| 4 | **17.4** (12.9–17.6) | 1.90x | 198 / 312 ms |
+| 8 | **19.6** (19.1–19.7) | 2.14x | 367 / 610 ms |
+
+All 15,000 measured claims (15 runs) ended `COMPLETED` with exactly one refund each, checked in SQL: 15,000 refund rows over 15,000 distinct `request_id`s.
+
+- **How it's measured.** `--prefill` pauses the workers (`docker pause`), queues the whole run, and unpauses them. The drain rate is then the pool's capacity, not the gateway's: the gateway alone accepts about 20 claims/s from this client, which would otherwise cap the 4- and 8-worker runs. Throughput is claims ÷ (first claim taken → last final write). Service time is `created_at` → `updated_at`, which the worker stamps when it claims the message and when it writes the final status, so it excludes queueing.
+- **Where it stops scaling.** Per claim, the worker spends about 59 ms of CPU and the MCP server about 29 ms (read from `/proc/1/stat` over a 400-claim run). By 8 workers the laptop's 4 cores are saturated: throughput flattens, and service time grows with every worker added. The next bottleneck after the CPU is the single MCP server process, whose ~29 ms per claim caps it at roughly 34 claims/s on its own. Workers don't contend with each other: each claims a message with an atomic `INSERT` and consumes with `prefetch_count=1`.
+- **Variance.** Two of the six 2-worker runs dropped to 7.6 claims/s because throughput halved for about a minute mid-run, then recovered. The runs before and after were normal, and PostgreSQL autovacuum didn't coincide, so this is most likely the host: laptop thermal throttling or background load. The table reports medians and full ranges instead of hiding it.
+
+The measurement found three problems, all fixed on the same branch:
+1. **`updated_at` was stamped too early.** It used `now()`, which in PostgreSQL is the start of the enclosing transaction, not the time of the write. The worker keeps a transaction open from the retrieval query through the judges and the refund call, so `updated_at` missed that time: the dashboard's latency and any `created_at` → `updated_at` measurement read about 19 ms instead of 90–120 ms. Fixed with `clock_timestamp()` (no migration: the change is on the ORM's `onupdate`), with a red-first test.
+2. **The RabbitMQ healthcheck kept the broker busy even when idle.** Each `rabbitmq-diagnostics` check boots an Erlang VM and takes about 5 s, and it ran every 5 s, so one was almost always running: the idle broker spiked to ~150% CPU, against ~0.5% after the fix. Now it polls every 2 s while the broker starts (`start_interval`) and every 60 s after. The check only gates first boot, so readiness detection is unchanged. Measured the same way, one worker went from 6.0 to 8.8 claims/s with no code change.
+3. **The first version of `--prefill` stopped the workers** instead of pausing them. Restarting a worker re-imports LangChain, at about 100% CPU for several seconds per worker, inside the measured window. That understated throughput more with every worker added. It now uses `docker pause`.
 
 ### Correctness Under Faults
 
@@ -481,13 +506,14 @@ Idempotency was exercised for real, not just by duplicates: the second kill land
 ## Testing
 
 ### Unit and Integration
-Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-23): **221 passed, 0 failed, 84% line coverage over `src/`**.
+Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-23): **232 passed, 0 failed, 84% line coverage over `src/`**.
 
-- **Unit (172 tests, no database required):** provider factory, judge parsing and cascade routing, Prompt Guard, token-usage extraction, chunking, retrieval service, system-health service, recovery sweeper, worker concurrency and execution routing (`COMPLETED` / `EXECUTION_FAILED` / not executable), the MCP refund executor (retries, backoff, timeouts, tool errors), the gateway's claim schema, MCP security (client registry and the shipped allowlist, PII masking, argument schemas), the sample-order seed data, the dashboard's API client, stats, and theme, and the test-database guard.
-- **Integration (49 tests, real PostgreSQL + RabbitMQ):** API gateway, PostgreSQL persistence, the transaction and order repositories (including per-user refund history), the `get_order` / `get_refund_history` read tools, knowledge-base vector search, MCP server over HTTP (401/403/422/429 responses plus audit rows), the `execute_refund` tool and `refunds` ledger (including idempotent replays), rate limiter, worker idempotency and judge-reject routing, and the dashboard's read-only transaction/system-health routers.
+- **Unit (182 tests, no database required):** provider factory, judge parsing and cascade routing, Prompt Guard, token-usage extraction, chunking, retrieval service, system-health service, recovery sweeper, worker concurrency and execution routing (`COMPLETED` / `EXECUTION_FAILED` / not executable), the MCP refund executor (retries, backoff, timeouts, tool errors), the gateway's claim schema, MCP security (client registry and the shipped allowlist, PII masking, argument schemas), the sample-order seed data, the dashboard's API client, stats, and theme, and the test-database guard.
+- **Integration (50 tests, real PostgreSQL + RabbitMQ):** API gateway, PostgreSQL persistence, the transaction and order repositories (including per-user refund history), the `get_order` / `get_refund_history` read tools, knowledge-base vector search, MCP server over HTTP (401/403/422/429 responses plus audit rows), the `execute_refund` tool and `refunds` ledger (including idempotent replays), rate limiter, worker idempotency and judge-reject routing, and the dashboard's read-only transaction/system-health routers.
 - **Isolated test database:** the suite never touches the dev database. `tests/conftest.py` points `DATABASE_URL` at `TEST_DATABASE_URL` (default: the dev database's name plus `_test`, on the same server) before any test runs, and refuses to start if that name doesn't end in `_test` or matches the dev database. `tests/integration/conftest.py` creates it if missing and runs `alembic upgrade head` once per session, so tests run against the schema the migrations produce, never `Base.metadata.create_all()`. Integration fixtures still `TRUNCATE` their tables, which is now safe: before this, a full run emptied the dev database's `transactions`, `refunds`, `mcp_audit_logs`, and `knowledge_base` (RAG) tables.
 - **Load (Locust):** 100 concurrent users against the full `docker compose` stack — see [System Performance & Telemetry](#system-performance--telemetry).
 - **Chaos / idempotency (`tests/performance/chaos_idempotency.py`):** 2,000 claims with 10% duplicates while the worker is killed twice and RabbitMQ restarted once, then checked in SQL — see [Correctness Under Faults](#correctness-under-faults).
+- **Processing throughput (`tests/performance/processing_throughput.py`):** claims/s and service/end-to-end latency with 1–8 workers, LLMs mocked — see [Processing Throughput](#processing-throughput). Its analysis functions and the paced/timestamped submission are unit-tested.
 
 - **CI (GitHub Actions, `.github/workflows/ci.yml`):** every push runs `ruff`, `mypy --strict`, and the full suite against real PostgreSQL (pgvector) and RabbitMQ service containers, and fails if line coverage drops below 80%. `ruff` and `mypy` are pinned in the `dev` extras, since their default rule sets change between releases and CI must behave exactly like a local run.
 
@@ -782,7 +808,9 @@ Beyond the phases above, the following are candidate directions, not planned wor
 - No dead-letter exchange is configured: a message NACKed after `EXECUTION_FAILED` is dropped from the queue. The transaction row keeps the status and the error for an operator. A 4xx from the MCP boundary (e.g. a 422) is also retried like any other failure, even though it can't succeed. The retries are bounded, but they use up rate-limit quota.
 - A redelivered message whose row is still `PROCESSING` (its worker died mid-claim) is discarded as a duplicate, and recovery waits for the Recovery Sweeper's stale threshold (5 min by default). Nothing is lost, but that claim is delayed.
 - No offline prompt-regression suite yet (promptfoo is planned, not implemented — see `PENDING.md` Step 3); the only evaluation today is the runtime Double Judge.
-- Performance and cost figures are local, single-run measurements (see tables above) — not yet re-measured on cloud infrastructure or averaged across many transactions.
+- Performance and cost figures are local measurements on a 4-core laptop (see tables above), not yet re-measured on cloud infrastructure. Throughput is a median of 3–6 runs per point; the cost figure is still a single transaction.
+- The worker keeps a database transaction open from the retrieval query through the judges and the refund call. With real LLMs that means one connection sitting "idle in transaction" for seconds per claim. It is one connection per worker, so it's harmless at this scale, but it doesn't scale well.
+- The MCP server runs as one Python process, at about 29 ms of CPU per claim, which caps it near 34 claims/s. Past that point it needs replicas, which the audit-table rate limiter already supports.
 
 ---
 
