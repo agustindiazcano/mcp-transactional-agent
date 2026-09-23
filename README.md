@@ -22,7 +22,7 @@ The project also examines a second question: **how much of an AI system's decisi
 |---|---|
 | **Runs locally** | `docker compose up --build` brings up **8 containers**: `postgres` (pgvector), `rabbitmq`, `migrate` (one-shot Alembic), `mcp_server`, `worker`, `sweeper`, `gateway`, `dashboard`. |
 | **UI to try it** | Streamlit Ops Dashboard at `http://localhost:8501` — submit a claim, watch it move through the pipeline, and inspect the Judge 1 / Judge 2 / Supreme Court reasoning trail per transaction ([Phase 4](#phase-4--operations-dashboard-done)). |
-| **Tests** | **152 passing** — 117 unit + 35 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks) — **83% line coverage** over `src/` (`pytest --cov=src`). |
+| **Tests** | **183 passing** — 135 unit + 48 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks, on an isolated `_test` database) — **83% line coverage** over `src/` (`pytest --cov=src`). |
 | **Load test** | Locust, 100 concurrent users against the full containerized stack: **2,630 requests, 0 failures, P95 87 ms** ([numbers](#system-performance--telemetry)). |
 | **Security** | MCP boundary with token authn, per-tool authz, server-side argument validation, rate limiting, and a fail-closed audit log. Prompt injection is handled structurally: tool access comes only from the authenticated identity, so injected text can't extend it (integration-tested), and a Prompt Guard model screens jailbreak attempts first ([Phase 1.B](#phase-1b--mcp-security-boundary-done)). |
 | **Cloud** | **Google Cloud is the primary deployment target — in progress** (Cloud Run, Cloud SQL for PostgreSQL + pgvector, Artifact Registry, with **Vertex AI** as the inference provider being exercised). AWS is kept as a secondary target ([Phase 6](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary)). |
@@ -145,9 +145,12 @@ The ingestion gateway publishes each request to RabbitMQ and returns `202 Accept
 
 ### 3. MCP Server
 
-The LLM never touches the database or internal APIs. It reasons about the request and asks the MCP server to run a tool (`execute_refund`, `validate_fraud_score`). The server is a separate process, so a malformed or hallucinated tool call can only reach what the server exposes. Securing that boundary is [Phase 1.B](#phase-1b--mcp-security-boundary-done), below.
+The LLM never touches the database or internal APIs. It reasons about the request and asks the MCP server to run a tool (`execute_refund`, `get_order`, `get_refund_history`, `validate_fraud_score`). The server is a separate process, so a malformed or hallucinated tool call can only reach what the server exposes. Securing that boundary is [Phase 1.B](#phase-1b--mcp-security-boundary-done), below.
 
 - **`execute_refund(request_id, transaction_id, amount, currency)`** is real: it writes to the `refunds` ledger through `src/core/repositories/refund_repository.py` and returns a JSON result (`status` is `executed` or `already_executed`, plus `refund_id`, `amount`, and `currency`). It is idempotent by `request_id`.
+- **`get_order(order_id)`** (read-only) returns `{"status": "found", "order": {order_id, user_id, amount, currency, created_at}}` or `{"status": "not_found", "order_id"}`. A missing order is data, not an error. It reads the `orders` table (migration `c4d2a7e81f35`, `src/core/repositories/order_repository.py`); local sample rows come from `python -m scripts.seed_orders` (idempotent), never from a migration, so the same migrations can run against a real database.
+- **`get_refund_history(user_id, limit=20)`** (read-only) returns `refund_count` and `totals_by_currency` over all of the user's refunds, plus up to `limit` of them, newest first. `refunds` has no `user_id`: a refund's `transaction_id` is the refunded order, so the history is a join through `orders`.
+- Both read tools have argument schemas at the boundary (`GetOrderArgs`, `GetRefundHistoryArgs`: non-empty ids, `1 <= limit <= 100`, unknown fields rejected) and are on `worker-default`'s allowlist. They are not wired into the worker yet: fetching them as evidence before the judges is the next step.
 - **`validate_fraud_score(user_id)`** is still a stub that returns a fixed `0.12`.
 - **Who calls the write tool:** only the worker, and only after the judges approve (build sequence step 11). The LLM proposes; it never pushes the button.
 - **MCP SDK 2.2.0 caveat:** a `tools/call` response arrives over the SSE stream, not in the POST's HTTP response. When the security boundary rejects a call with a 4xx, the client never gets a response and `call_tool` would wait forever. `src/worker/refund_executor.py` therefore opens a new session per attempt with `read_timeout_seconds=MCP_TOOL_TIMEOUT_SECONDS`, which turns the hang into a bounded, retryable failure.
@@ -457,10 +460,11 @@ Measured 2026-09-21 against the full `docker compose` stack (Locust: 100 users, 
 ## Testing
 
 ### Unit and Integration
-Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-22): **152 passed, 0 failed, 83% line coverage over `src/`**.
+Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-23): **183 passed, 0 failed, 83% line coverage over `src/`**.
 
-- **Unit (117 tests, no network required for most):** provider factory, judge parsing and cascade routing, Prompt Guard, token-usage extraction, chunking, retrieval service, system-health service, recovery sweeper, worker concurrency and execution routing (`COMPLETED` / `EXECUTION_FAILED` / not executable), the MCP refund executor (retries, backoff, timeouts, tool errors), the gateway's claim schema, MCP security (client registry, PII masking, argument schemas), and the dashboard's API client, stats, and theme. Two repository tests in `tests/unit/` need a live PostgreSQL.
-- **Integration (35 tests, real PostgreSQL + RabbitMQ):** API gateway, PostgreSQL persistence, knowledge-base vector search, MCP server over HTTP (401/403/422/429 responses plus audit rows), the `execute_refund` tool and `refunds` ledger (including idempotent replays), rate limiter, worker idempotency and judge-reject routing, and the dashboard's read-only transaction/system-health routers.
+- **Unit (135 tests, no database required):** provider factory, judge parsing and cascade routing, Prompt Guard, token-usage extraction, chunking, retrieval service, system-health service, recovery sweeper, worker concurrency and execution routing (`COMPLETED` / `EXECUTION_FAILED` / not executable), the MCP refund executor (retries, backoff, timeouts, tool errors), the gateway's claim schema, MCP security (client registry and the shipped allowlist, PII masking, argument schemas), the sample-order seed data, the dashboard's API client, stats, and theme, and the test-database guard.
+- **Integration (48 tests, real PostgreSQL + RabbitMQ):** API gateway, PostgreSQL persistence, the transaction and order repositories (including per-user refund history), the `get_order` / `get_refund_history` read tools, knowledge-base vector search, MCP server over HTTP (401/403/422/429 responses plus audit rows), the `execute_refund` tool and `refunds` ledger (including idempotent replays), rate limiter, worker idempotency and judge-reject routing, and the dashboard's read-only transaction/system-health routers.
+- **Isolated test database:** the suite never touches the dev database. `tests/conftest.py` points `DATABASE_URL` at `TEST_DATABASE_URL` (default: the dev database's name plus `_test`, on the same server) before any test runs, and refuses to start if that name doesn't end in `_test` or matches the dev database. `tests/integration/conftest.py` creates it if missing and runs `alembic upgrade head` once per session, so tests run against the schema the migrations produce, never `Base.metadata.create_all()`. Integration fixtures still `TRUNCATE` their tables, which is now safe: before this, a full run emptied the dev database's `transactions`, `refunds`, `mcp_audit_logs`, and `knowledge_base` (RAG) tables.
 - **Load (Locust):** 100 concurrent users against the full `docker compose` stack — see [System Performance & Telemetry](#system-performance--telemetry).
 
 See the [Test Coverage Report](docs/testing/tdd_coverage.md).
@@ -481,7 +485,7 @@ pytest tests/ -v --tb=short
 # Unit tests only (no infrastructure required)
 pytest tests/unit/ -v
 
-# Integration tests (requires Docker infrastructure)
+# Integration tests (requires Docker infrastructure; uses <db>_test, created and migrated automatically)
 pytest tests/integration/ -v
 
 # Phase 2 confidence layer
@@ -554,7 +558,7 @@ agentic-mcp-engine/
         performance/
     docker/                   gateway.Dockerfile, worker.Dockerfile, mcp_server.Dockerfile,
                                dashboard.Dockerfile
-    scripts/                  ingest_knowledge_base.py
+    scripts/                  ingest_knowledge_base.py, seed_orders.py
     docs/                     policies/, architecture/, postmortems/, testing/
     alembic/
     alembic.ini
@@ -645,6 +649,7 @@ uvicorn src.api.main:app --reload --port 8000  # terminal 4
 | Variable | Required | Description |
 |---|---|---|
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `TEST_DATABASE_URL` | No | Database the test suite uses. Default: `DATABASE_URL`'s database name plus `_test`. Must end in `_test`, or the suite refuses to start |
 | `RABBITMQ_URL` | Yes | RabbitMQ AMQP connection string |
 | `LLM_PROVIDER` | Yes | `gemini`, `vertex`, `groq`, `openai`, `bedrock`, or `mock` |
 | `OPENAI_API_KEY` | Conditional | Required when `LLM_PROVIDER=openai` |
@@ -749,7 +754,7 @@ Beyond the phases above, the following are candidate directions, not planned wor
 - No TLS between internal services; no credential rotation or secret manager (tokens are read from environment and files).
 - No multi-tenancy; one set of business rules per deployment.
 - A database superuser can still modify the audit table; the log is protected against the MCP service, not against a compromised host.
-- `validate_fraud_score` is still a stub (fixed `0.12`), and there is no `orders` table yet, so neither the judges nor the refund tool can check a refund against the original purchase amount.
+- `validate_fraud_score` is still a stub (fixed `0.12`). The `orders` table and the `get_order` / `get_refund_history` read tools exist, but the worker doesn't fetch them yet, so a refund is still not checked against the original purchase amount.
 - No dead-letter exchange is configured: a message NACKed after `EXECUTION_FAILED` is dropped from the queue. The transaction row keeps the status and the error for an operator. A 4xx from the MCP boundary (e.g. a 422) is also retried like any other failure, even though it can't succeed. The retries are bounded, but they use up rate-limit quota.
 - No offline prompt-regression suite yet (promptfoo is planned, not implemented — see `PENDING.md` Step 3); the only evaluation today is the runtime Double Judge.
 - Performance and cost figures are local, single-run measurements (see tables above) — not yet re-measured on cloud infrastructure or averaged across many transactions.

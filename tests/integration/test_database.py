@@ -3,20 +3,16 @@ import pytest_asyncio
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.config import settings
 from src.core.database import get_engine, get_session_maker
-from src.core.models import Base, Transaction
+from src.core.models import Transaction
 
 
 @pytest_asyncio.fixture
 async def db_engine():
-    """Create a test engine connected to the local test database."""
-    # We assume a test DB is running or we just use SQLite in memory for this simple test,
-    # but since we need pgvector eventually, we use asyncpg against the local postgres.
-    # For test isolation, we'll connect to the default DB for the test.
-    engine = get_engine("postgresql+asyncpg://postgres:password@localhost:5432/agentic_engine")
-
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    """Engine on the isolated test database (tests/conftest.py points
+    settings.DATABASE_URL there), already migrated to head."""
+    engine = get_engine(settings.DATABASE_URL)
 
     yield engine
 

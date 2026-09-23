@@ -1,27 +1,35 @@
+"""Integration tests for src.core.repositories.transaction_repository.
+
+Runs on the isolated test database (tests/conftest.py), migrated by Alembic
+in tests/integration/conftest.py. Clears only this file's own `repo-test-%`
+rows rather than truncating, so it doesn't disturb other tests' data.
+"""
+from collections.abc import AsyncGenerator
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import settings
 from src.core.database import get_engine, get_session_maker
-from src.core.models import Base, Transaction
+from src.core.models import Transaction
 from src.core.repositories.transaction_repository import get_recent_transactions
+
+_OWN_ROWS = Transaction.request_id.like("repo-test-%")
 
 
 @pytest_asyncio.fixture
-async def db_session():
+async def db_session() -> AsyncGenerator[AsyncSession, None]:
     engine = get_engine(settings.DATABASE_URL)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
     session_maker = get_session_maker(engine)
     async with session_maker() as session:
-        await session.execute(delete(Transaction).where(Transaction.request_id.like("repo-test-%")))
+        await session.execute(delete(Transaction).where(_OWN_ROWS))
         await session.commit()
         yield session
-
-    async with engine.begin() as conn:
-        await conn.execute(text("TRUNCATE TABLE transactions RESTART IDENTITY CASCADE"))
+        await session.rollback()
+        await session.execute(delete(Transaction).where(_OWN_ROWS))
+        await session.commit()
     await engine.dispose()
 
 

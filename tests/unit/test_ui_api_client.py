@@ -63,3 +63,45 @@ async def test_post_claim_returns_response_body() -> None:
         result = await post_claim(user_id="u1", claim_text="Refund $50")
 
     assert result == {"status": "Accepted", "request_id": "new-req-1"}
+
+
+@pytest.mark.asyncio
+async def test_post_claim_sends_refund_details_when_given() -> None:
+    mock_response = httpx.Response(
+        202,
+        json={"status": "Accepted", "request_id": "new-req-2"},
+        request=httpx.Request("POST", "http://gateway/api/v1/claims"),
+    )
+
+    with patch("httpx.AsyncClient.post", return_value=mock_response) as mock_post:
+        await post_claim(
+            user_id="u1",
+            claim_text="Refund $50",
+            order_id="ord-1",
+            amount=50.0,
+            currency="USD",
+        )
+
+    assert mock_post.call_args.kwargs["json"] == {
+        "user_id": "u1",
+        "claim_text": "Refund $50",
+        "order_id": "ord-1",
+        "amount": 50.0,
+        "currency": "USD",
+    }
+
+
+@pytest.mark.asyncio
+async def test_post_claim_omits_refund_details_left_blank() -> None:
+    """A blank field must be left out, not sent as null or "": the gateway's
+    ClaimRequest rejects an empty order_id with a 422."""
+    mock_response = httpx.Response(
+        202,
+        json={"status": "Accepted", "request_id": "new-req-3"},
+        request=httpx.Request("POST", "http://gateway/api/v1/claims"),
+    )
+
+    with patch("httpx.AsyncClient.post", return_value=mock_response) as mock_post:
+        await post_claim(user_id="u1", claim_text="Refund $50", order_id="", amount=None)
+
+    assert mock_post.call_args.kwargs["json"] == {"user_id": "u1", "claim_text": "Refund $50"}

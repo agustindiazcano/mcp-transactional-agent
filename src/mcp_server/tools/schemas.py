@@ -36,7 +36,29 @@ class ValidateFraudScoreArgs(BaseModel):
     user_id: str = Field(min_length=1)
 
 
+class GetOrderArgs(BaseModel):
+    """Arguments for the read-only `get_order` tool."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    order_id: str = Field(min_length=1)
+
+
+class GetRefundHistoryArgs(BaseModel):
+    """Arguments for the read-only `get_refund_history` tool. `limit` caps
+    only the listed refunds; the count and totals cover all of them."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(min_length=1)
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+# A tool missing here skips argument validation at the boundary, so every
+# tool -- read tools included -- must be registered.
 TOOL_ARG_SCHEMAS: dict[str, type[BaseModel]] = {
     "execute_refund": ExecuteRefundArgs,
     "validate_fraud_score": ValidateFraudScoreArgs,
+    "get_order": GetOrderArgs,
+    "get_refund_history": GetRefundHistoryArgs,
 }

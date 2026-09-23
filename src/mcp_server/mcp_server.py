@@ -9,7 +9,12 @@ from starlette.types import ASGIApp
 from src.core.config import settings
 from src.core.currency import Currency
 from src.core.database import get_engine, get_session_maker
-from src.core.repositories.refund_repository import record_refund
+from src.core.repositories.order_repository import get_order as fetch_order
+from src.core.repositories.refund_repository import (
+    list_refunds_for_user,
+    record_refund,
+    summarize_refunds_for_user,
+)
 from src.mcp_server.security.client_registry import ClientRegistry
 from src.mcp_server.security.middleware import MCPSecurityMiddleware
 
@@ -77,6 +82,59 @@ async def execute_refund(
         "amount": float(refund.amount),
         "currency": refund.currency,
     }
+
+@mcp.tool()
+async def get_order(order_id: str) -> dict[str, Any]:
+    """Look up a purchase by `order_id`. Read-only.
+
+    Returns `{"status": "found", "order": {...}}`, or
+    `{"status": "not_found", "order_id": ...}` -- a missing order is data,
+    not an error, and the caller decides what it means for the claim.
+    Arguments are validated upstream against GetOrderArgs.
+    """
+    async with _require_session_maker()() as session:
+        order = await fetch_order(session, order_id)
+    if order is None:
+        return {"status": "not_found", "order_id": order_id}
+    return {
+        "status": "found",
+        "order": {
+            "order_id": order.order_id,
+            "user_id": order.user_id,
+            "amount": float(order.amount),
+            "currency": order.currency,
+            "created_at": order.created_at.isoformat(),
+        },
+    }
+
+
+@mcp.tool()
+async def get_refund_history(user_id: str, limit: int = 20) -> dict[str, Any]:
+    """Summarize and list the refunds on `user_id`'s orders. Read-only.
+
+    `refund_count` and `totals_by_currency` cover every refund; `refunds`
+    lists at most `limit` of them, newest first. Arguments are validated
+    upstream against GetRefundHistoryArgs.
+    """
+    async with _require_session_maker()() as session:
+        count, totals = await summarize_refunds_for_user(session, user_id)
+        refunds = await list_refunds_for_user(session, user_id, limit=limit)
+    return {
+        "user_id": user_id,
+        "refund_count": count,
+        "totals_by_currency": {currency: float(total) for currency, total in totals.items()},
+        "refunds": [
+            {
+                "request_id": refund.request_id,
+                "order_id": refund.transaction_id,
+                "amount": float(refund.amount),
+                "currency": refund.currency,
+                "created_at": refund.created_at.isoformat(),
+            }
+            for refund in refunds
+        ],
+    }
+
 
 @mcp.tool()
 def validate_fraud_score(user_id: str) -> float:

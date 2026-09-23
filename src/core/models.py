@@ -76,6 +76,34 @@ class Refund(Base):
     )
 
 
+class Order(Base):
+    """A purchase, read by the MCP `get_order` / `get_refund_history` tools.
+
+    The evidence a refund is checked against: a refund must not exceed the
+    order's amount (CLAUDE.md Section 10). `refunds.transaction_id` holds
+    the refunded order's `order_id`, which is how refund history is joined
+    to a user. Read-only from the application's side; local sample rows come
+    from scripts/seed_orders.py, never from a migration.
+    """
+
+    __tablename__ = "orders"
+    __table_args__ = (
+        UniqueConstraint("order_id", name="uq_orders_order_id"),
+        Index("ix_orders_user_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    order_id: Mapped[str] = mapped_column(String, nullable=False)
+    user_id: Mapped[str] = mapped_column(String, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
 class McpAuditLog(Base):
     """Immutable audit trail for every MCP tool-call attempt (Phase 1.B).
 

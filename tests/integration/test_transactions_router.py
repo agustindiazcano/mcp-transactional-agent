@@ -9,14 +9,12 @@ from sqlalchemy import delete, text
 from src.api.main import app
 from src.core.config import settings
 from src.core.database import get_engine, get_session_maker
-from src.core.models import Base, Transaction
+from src.core.models import Transaction
 
 
 @pytest_asyncio.fixture
 async def db_engine():
     engine = get_engine(settings.DATABASE_URL)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
     yield engine
     async with engine.begin() as conn:
         await conn.execute(text("TRUNCATE TABLE transactions RESTART IDENTITY CASCADE"))
