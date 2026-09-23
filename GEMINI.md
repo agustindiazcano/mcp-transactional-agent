@@ -99,6 +99,7 @@ When asked to build Phase 1 features, follow this logical sequence (all steps be
     - Execution still failing after `MCP_TOOL_MAX_RETRIES`: `EXECUTION_FAILED`, and the message is NACKed with `requeue=False`.
 
     The result is stored in the trail as `judge_trail["execution"]`. `validate_fraud_score` is still a stub (fixed `0.12`).
+11. Read Tools for Evidence (done, branch `feat/orders-read-tools`): an `orders` table (migration `c4d2a7e81f35`, `src/core/repositories/order_repository.py`; local sample rows via `python -m scripts.seed_orders`, never in a migration) and two read-only MCP tools on `worker-default`'s allowlist, each with a boundary argument schema: `get_order(order_id)` (`found` / `not_found`) and `get_refund_history(user_id, limit)` (count and per-currency totals over all refunds, plus the newest `limit`; joined through `orders`, since a refund's `transaction_id` is the refunded order). Not yet called by the worker: fetching them as evidence before the Double Judge, and checking the refund against the order amount deterministically, is the next increment.
 
 ## 5a-i. Development Phases — Phase 1.B (MCP Security Boundary, Done)
 

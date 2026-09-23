@@ -336,3 +336,42 @@ The dev `knowledge_base` was **empty** (0 rows), most likely left that way by ea
 
 ## Next
 Back to 🟠 2 on `feat/read-tools-and-evidence` (rebased on this or after merge): the `orders` migration, `scripts/seed_orders.py`, and the `get_order` / `get_refund_history` MCP tools, following the decisions recorded above.
+
+---
+
+# Update — Branch `feat/orders-read-tools`: Part A of 🟠 2, Orders and Read Tools (2026-09-23)
+
+🟠 2 was split into three increments, agreed with the user: **A** data and read tools (this branch), **B** evidence in the worker plus a deterministic amount check, **C** a real `validate_fraud_score` (it needs a formula and overlaps Phase 2, so it goes after B or into Phase 2).
+
+This branch starts from `chore/isolated-test-database`. Merge order: `feat/read-tools-and-evidence` → `chore/isolated-test-database` → this one. Not pushed, no PR.
+
+## What changed
+- **`orders` table:** model `Order` and migration `c4d2a7e81f35` (`order_id` UNIQUE, `user_id` indexed, `amount` `Numeric(12,2)`, `currency`, `created_at`). Schema only.
+- **`scripts/seed_orders.py`:** 6 sample orders for `user-1` (the dashboard's default), `user-2`, and `user-3`, in USD, EUR, and GBP, from 19.99 up to 2500. Idempotent (`ON CONFLICT DO NOTHING`, never overwrites).
+- **Repositories:**
+  - `order_repository.py`: `get_order()` and `insert_orders_if_absent()`.
+  - `refund_repository.py`: `list_refunds_for_user()` (newest first, limited) and `summarize_refunds_for_user()` (count and per-currency totals, never summed across currencies).
+  - `refunds` has no `user_id`: its `transaction_id` is the refunded `order_id`, so history is a **join through `orders`**. No change to `refunds` was needed. A refund whose order isn't in `orders` (like the old `ord-e2e-1`) doesn't appear in any user's history.
+- **MCP tools**, both read-only:
+  - `get_order(order_id)` returns `{status: found, order: {...}}` or `{status: not_found, order_id}`. Not found is data, not an error: part B decides what it means for the claim.
+  - `get_refund_history(user_id, limit=20)` returns `refund_count` and `totals_by_currency` over **all** refunds, plus the `limit` most recent.
+- **Boundary:** `GetOrderArgs` and `GetRefundHistoryArgs` in `TOOL_ARG_SCHEMAS` (non-empty ids, `1 <= limit <= 100`, `extra="forbid"`). A tool missing from that map would skip argument validation, and a test now guards it. Both tools are on `worker-default`'s allowlist in `mcp_clients.json`. `user_id` was already masked in the audit log.
+- **Docs:** README (MCP Server section, tests, layout, known limitations), plus a new §5a step 11 in CLAUDE.md, GEMINI.md, and AGENTS.md.
+- **Not done:** the add-mcp-tool runbook's "update the primary agent's prompt" step doesn't apply yet, since the primary agent is still mocked. It will apply to the Resolver.
+
+## Validation
+- Tests first (red, then green): schemas, the shipped allowlist, seed data, repositories (integration), and tools (direct call plus a 422 through HTTP with its `DENIED_VALIDATION` audit row).
+- **183/183 pass** (135 unit + 48 integration), 83% coverage. The new migration also ran on the `_test` database through the suite, so it is exercised against real Postgres. `ruff` and `mypy --strict` show only the known pre-existing errors.
+- **Dev DB:** confirmed with the user, then migrated `b3e1f0c9a2d4` → `c4d2a7e81f35` and seeded 6 orders. A second seed run inserted 0.
+- **Containers:** rebuilt `mcp_server`, `migrate`, `worker`, and `sweeper`. `migrate` first failed with `Can't locate revision c4d2a7e81f35`, because the dev DB was already migrated but the image still had the old migrations. Rebuilding the worker-based images fixed it. **Lesson: after migrating dev from the host, rebuild every image built from `worker.Dockerfile` before `docker compose up`.**
+- **Live through the real boundary** (token `worker-default`, `localhost:8080`):
+  - `get_order("ord-1001")` returned `found` (45.50 USD, user-1).
+  - `get_order("ord-nope")` returned `not_found`.
+  - `get_refund_history("user-1")` returned 0 refunds.
+  - Three `ALLOWED` audit rows, with `user_id` masked. They remain in the dev DB.
+
+## Next: part B
+The worker fetches `get_order` and `get_refund_history` through MCP before the judges, generalizing the fresh-session-per-attempt pattern from `refund_executor.py` to any tool. It then:
+- checks deterministically that the amount doesn't exceed the order, the currency matches, and the order belongs to the claim's `user_id`;
+- fails closed to `PENDING_HUMAN_REVIEW` if a check fails, or if the order can't be read or doesn't exist;
+- injects the evidence into `<reference_context>` and records it in `judge_trail["evidence"]`.

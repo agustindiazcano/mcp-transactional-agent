@@ -64,3 +64,13 @@ def test_is_allowed_checks_per_client_allowlist(registry_file):
     assert registry.is_allowed(worker_a, "execute_refund") is True
     assert registry.is_allowed(worker_a, "validate_fraud_score") is False
     assert registry.is_allowed(worker_b, "validate_fraud_score") is True
+
+
+def test_worker_default_may_call_the_read_tools():
+    """The shipped registry (mcp_clients.json) must allowlist the read tools
+    for the worker, or every evidence fetch is denied at the boundary."""
+    registry = ClientRegistry.from_file("mcp_clients.json")
+    worker = next(c for c in registry._clients if c.client_id == "worker-default")
+
+    assert registry.is_allowed(worker, "get_order")
+    assert registry.is_allowed(worker, "get_refund_history")

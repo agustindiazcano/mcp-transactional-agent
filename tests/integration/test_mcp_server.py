@@ -10,6 +10,7 @@ from sqlalchemy import select, text
 from src.core.config import settings
 from src.core.database import get_engine, get_session_maker
 from src.core.models import McpAuditLog, Refund
+from src.core.repositories.order_repository import insert_orders_if_absent
 from src.mcp_server.security.client_registry import ClientRegistry
 
 # We need to make sure the app can be imported
@@ -35,7 +36,12 @@ def _test_registry() -> ClientRegistry:
             {
                 "client_id": "test-worker",
                 "token_hash": VALID_TOKEN_HASH,
-                "allowed_tools": ["execute_refund", "validate_fraud_score"],
+                "allowed_tools": [
+                    "execute_refund",
+                    "validate_fraud_score",
+                    "get_order",
+                    "get_refund_history",
+                ],
             }
         ]
     )
@@ -49,7 +55,7 @@ async def db_engine():
     # why -- only clear this file's own rows.
     async with engine.begin() as conn:
         await conn.execute(text("TRUNCATE TABLE mcp_audit_logs RESTART IDENTITY CASCADE"))
-        await conn.execute(text("TRUNCATE TABLE refunds RESTART IDENTITY CASCADE"))
+        await conn.execute(text("TRUNCATE TABLE refunds, orders RESTART IDENTITY CASCADE"))
     await engine.dispose()
 
 
@@ -89,6 +95,8 @@ async def test_mcp_tools_registered():
 
     assert "execute_refund" in tool_names
     assert "validate_fraud_score" in tool_names
+    assert "get_order" in tool_names
+    assert "get_refund_history" in tool_names
 
 
 @pytest.mark.asyncio
@@ -375,3 +383,99 @@ async def test_execute_refund_is_idempotent_by_request_id(db_engine):
             await session.execute(select(Refund).where(Refund.request_id == "req-tool-2"))
         ).scalars().all()
     assert len(rows) == 1
+
+
+async def _seed_orders(session_maker) -> None:
+    async with session_maker() as session:
+        await insert_orders_if_absent(
+            session,
+            [
+                {"order_id": "ord-t1", "user_id": "carol", "amount": 80.0, "currency": "USD"},
+                {"order_id": "ord-t2", "user_id": "carol", "amount": 25.0, "currency": "GBP"},
+            ],
+        )
+
+
+@pytest.mark.asyncio
+async def test_get_order_returns_found_order(db_engine):
+    from src.mcp_server.mcp_server import get_order
+
+    session_maker = get_session_maker(db_engine)
+    create_app(registry=_test_registry(), session_maker=session_maker)
+    await _seed_orders(session_maker)
+
+    result = await get_order(order_id="ord-t1")
+
+    assert result["status"] == "found"
+    assert result["order"]["order_id"] == "ord-t1"
+    assert result["order"]["user_id"] == "carol"
+    assert result["order"]["amount"] == 80.0
+    assert result["order"]["currency"] == "USD"
+    json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_get_order_reports_unknown_order_as_not_found(db_engine):
+    """Not found is data, not an error: the caller decides what it means."""
+    from src.mcp_server.mcp_server import get_order
+
+    create_app(registry=_test_registry(), session_maker=get_session_maker(db_engine))
+
+    result = await get_order(order_id="ord-missing")
+
+    assert result == {"status": "not_found", "order_id": "ord-missing"}
+
+
+@pytest.mark.asyncio
+async def test_get_refund_history_summarizes_and_lists_refunds(db_engine):
+    from src.mcp_server.mcp_server import execute_refund, get_refund_history
+
+    session_maker = get_session_maker(db_engine)
+    create_app(registry=_test_registry(), session_maker=session_maker)
+    await _seed_orders(session_maker)
+    await execute_refund(request_id="rh-1", transaction_id="ord-t1", amount=80.0, currency="USD")
+    await execute_refund(request_id="rh-2", transaction_id="ord-t2", amount=10.0, currency="GBP")
+
+    result = await get_refund_history(user_id="carol", limit=1)
+
+    assert result["user_id"] == "carol"
+    assert result["refund_count"] == 2
+    assert result["totals_by_currency"] == {"USD": 80.0, "GBP": 10.0}
+    assert len(result["refunds"]) == 1
+    assert set(result["refunds"][0]) == {"request_id", "order_id", "amount", "currency", "created_at"}
+    json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_get_refund_history_for_user_without_refunds(db_engine):
+    from src.mcp_server.mcp_server import get_refund_history
+
+    create_app(registry=_test_registry(), session_maker=get_session_maker(db_engine))
+
+    result = await get_refund_history(user_id="nobody")
+
+    assert result == {"user_id": "nobody", "refund_count": 0, "totals_by_currency": {}, "refunds": []}
+
+
+@pytest.mark.asyncio
+async def test_get_order_with_unknown_field_is_rejected_and_audited(async_mcp_client, db_engine):
+    """Read tools sit behind the same argument validation as write tools."""
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {"name": "get_order", "arguments": {"order_id": "ord-t1", "user_id": "x"}},
+    }
+
+    response = await async_mcp_client.post(
+        "/messages/?session_id=00000000-0000-0000-0000-000000000000",
+        headers={"Authorization": f"Bearer {VALID_TOKEN}"},
+        content=json.dumps(payload),
+    )
+
+    assert response.status_code == 422
+    async with get_session_maker(db_engine)() as session:
+        rows = (
+            await session.execute(select(McpAuditLog).where(McpAuditLog.tool == "get_order"))
+        ).scalars().all()
+    assert [row.decision for row in rows] == ["DENIED_VALIDATION"]

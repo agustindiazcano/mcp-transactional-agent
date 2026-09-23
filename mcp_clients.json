@@ -4,7 +4,7 @@
     {
       "client_id": "worker-default",
       "token_hash": "29bd3e040c4f5241393db789248f995cd227de5d2c042ad7e84ebbf5a3c545c1",
-      "allowed_tools": ["execute_refund", "validate_fraud_score"]
+      "allowed_tools": ["execute_refund", "validate_fraud_score", "get_order", "get_refund_history"]
     }
   ]
 }
