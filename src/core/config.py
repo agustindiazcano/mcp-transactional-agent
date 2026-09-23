@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     # "global": the Gemini 3.5 models aren't served from regional endpoints.
     VERTEX_PROJECT: str = ""
     VERTEX_LOCATION: str = "global"
+    # Embeddings are also served regionally, where they answer ~4x faster.
+    VERTEX_EMBEDDING_LOCATION: str = "us-central1"
     VERTEX_MODEL: str = "gemini-3.5-flash-lite"
     VERTEX_EMBEDDING_MODEL: str = "gemini-embedding-001"
 

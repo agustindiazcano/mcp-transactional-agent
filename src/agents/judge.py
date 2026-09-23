@@ -115,18 +115,19 @@ async def evaluate_decision(action_name: str, action_args: dict[str, Any], conte
     # LLM construction happens inside _run_single_judge so a missing optional
     # provider package (e.g. langchain-groq) fails that judge closed to REJECT
     # instead of raising out of evaluate_decision().
+    p1, p2 = provider_for_role("judge1"), provider_for_role("judge2")
     results = await asyncio.gather(
-        _run_single_judge(provider_for_role("judge1"), 0.0, messages, stage="judge1"),
-        _run_single_judge(provider_for_role("judge2"), 0.0, messages, stage="judge2"),
+        _run_single_judge(p1, 0.0, messages, stage="judge1"),
+        _run_single_judge(p2, 0.0, messages, stage="judge2"),
         return_exceptions=True
     )
     
     res1, res2 = results
     
     if isinstance(res1, BaseException):
-        res1 = {"verdict": "REJECT", "reason": f"Gemini Judge Exception: {res1!s}"}
+        res1 = {"verdict": "REJECT", "reason": f"Judge 1 ({p1}) exception: {res1!s}"}
     if isinstance(res2, BaseException):
-        res2 = {"verdict": "REJECT", "reason": f"Groq Judge Exception: {res2!s}"}
+        res2 = {"verdict": "REJECT", "reason": f"Judge 2 ({p2}) exception: {res2!s}"}
         
     v1 = res1.get("verdict")
     v2 = res2.get("verdict")
@@ -140,11 +141,11 @@ async def evaluate_decision(action_name: str, action_args: dict[str, Any], conte
     if v1 == "APPROVE" and v2 == "APPROVE":
         return {
             "verdict": "APPROVE",
-            "reason": "Approved by both Gemini and Groq (GPT-OSS).",
+            "reason": f"Approved by both judges (judge1: {p1}, judge2: {p2}).",
             "trail": trail,
         }
     else:
-        logger.warning(f"Double Judge REJECT or disagreement detected (Gemini={v1}, Groq={v2}). Escalating to Supreme Court Judge...")
+        logger.warning(f"Double Judge REJECT or disagreement detected (judge1/{p1}={v1}, judge2/{p2}={v2}). Escalating to Supreme Court Judge...")
         try:
             # Supreme Court tie-breaker
             supreme_res = await _run_single_judge(
@@ -169,9 +170,9 @@ async def evaluate_decision(action_name: str, action_args: dict[str, Any], conte
             logger.error(f"Supreme Court failed or API key missing, falling back to base judges: {e}")
             reasons = []
             if v1 == "REJECT":
-                reasons.append(f"Gemini: {res1.get('reason')}")
+                reasons.append(f"Judge 1 ({p1}): {res1.get('reason')}")
             if v2 == "REJECT":
-                reasons.append(f"Groq: {res2.get('reason')}")
+                reasons.append(f"Judge 2 ({p2}): {res2.get('reason')}")
 
             return {
                 "verdict": "REJECT",

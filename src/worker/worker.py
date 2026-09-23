@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agents.judge import evaluate_decision
-from src.agents.llm_factory import get_embeddings, get_llm
+from src.agents.llm_factory import get_embeddings, get_llm, resolve_provider
 from src.agents.prompt_guard import GuardResult, scan_for_injection
 from src.core.config import settings
 from src.core.currency import Currency
@@ -89,9 +89,10 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
         retrieved_policy: str | None = None
         if claim_text:
             try:
-                embeddings_client = get_embeddings()
+                embeddings_provider = resolve_provider()
+                embeddings_client = get_embeddings(embeddings_provider)
                 retrieved_policy = await retrieve_relevant_policy(
-                    db_session, embeddings_client, claim_text
+                    db_session, embeddings_client, claim_text, provider=embeddings_provider
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"Retrieval skipped for {request_id}: {e}")

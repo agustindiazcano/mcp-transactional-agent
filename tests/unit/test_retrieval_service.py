@@ -49,7 +49,7 @@ async def test_retrieve_relevant_policy_returns_none_for_blank_claim() -> None:
     session = AsyncMock()
     embeddings_client = AsyncMock()
 
-    result = await retrieve_relevant_policy(session, embeddings_client, "   ")
+    result = await retrieve_relevant_policy(session, embeddings_client, "   ", provider="mock")
 
     assert result is None
     embeddings_client.aembed_query.assert_not_awaited()
@@ -66,7 +66,9 @@ async def test_retrieve_relevant_policy_returns_none_when_knowledge_base_empty()
         new_callable=AsyncMock,
         return_value=[],
     ):
-        result = await retrieve_relevant_policy(session, embeddings_client, "I want a refund")
+        result = await retrieve_relevant_policy(
+            session, embeddings_client, "I want a refund", provider="mock"
+        )
 
     assert result is None
 
@@ -85,7 +87,9 @@ async def test_retrieve_relevant_policy_returns_top_match_content() -> None:
         new_callable=AsyncMock,
         return_value=[fake_row],
     ):
-        result = await retrieve_relevant_policy(session, embeddings_client, "I want a refund")
+        result = await retrieve_relevant_policy(
+            session, embeddings_client, "I want a refund", provider="mock"
+        )
 
     assert result == "Refunds within 30 days of purchase."
     embeddings_client.aembed_query.assert_awaited_once_with("I want a refund")
@@ -95,7 +99,8 @@ async def test_retrieve_relevant_policy_returns_top_match_content() -> None:
 async def test_retrieve_relevant_policy_logs_estimated_token_usage() -> None:
     """Cost measurement (PENDING.md Step 1): LangChain's Embeddings interface
     exposes no real token usage, so this logs a character-count estimate,
-    flagged estimated=True so it's never confused with a metered figure."""
+    flagged estimated=True so it's never confused with a metered figure. The
+    provider is the one the caller built the client for, not a fixed label."""
     session = AsyncMock()
     embeddings_client = AsyncMock()
     embeddings_client.aembed_query = AsyncMock(return_value=[0.1] * 768)
@@ -106,12 +111,14 @@ async def test_retrieve_relevant_policy_logs_estimated_token_usage() -> None:
         new_callable=AsyncMock,
         return_value=[],
     ), patch("src.core.services.retrieval_service.usage_logger") as mock_usage_logger:
-        await retrieve_relevant_policy(session, embeddings_client, claim_text)
+        await retrieve_relevant_policy(
+            session, embeddings_client, claim_text, provider="vertex"
+        )
 
     mock_usage_logger.info.assert_called_once_with(
         "llm_token_usage",
         stage="retrieval_embedding",
-        provider="gemini",
+        provider="vertex",
         input_tokens=3,
         output_tokens=0,
         total_tokens=3,

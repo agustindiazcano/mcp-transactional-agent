@@ -323,6 +323,7 @@ When refusing an action under this section, always state the correct alternative
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP credentials for Vertex AI when running outside GCP (on Cloud Run, the attached service account / ADC is used instead) |
 | `VERTEX_PROJECT` | Phase 6: GCP project for Vertex AI (empty: the project ADC resolves) |
 | `VERTEX_LOCATION` | Phase 6: Vertex AI location (default: `global`; the Gemini 3.5 models aren't served from regional endpoints) |
+| `VERTEX_EMBEDDING_LOCATION` | Phase 6: Vertex location for embeddings (default: `us-central1`; ~4x faster than `global` for `gemini-embedding-001`) |
 | `VERTEX_MODEL` | Phase 6: Vertex chat model for the Gemini roles (default: `gemini-3.5-flash-lite`) |
 | `VERTEX_EMBEDDING_MODEL` | Phase 6: Vertex embeddings model, requested at 768 dims (default: `gemini-embedding-001`) |
 | `GROQ_API_KEY` | Groq API key |
