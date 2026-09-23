@@ -21,7 +21,7 @@ The lifecycle of a single transaction flows through the following steps:
 4. **Agent Orchestration (LLM Factory)**: The worker provisions LLMs via the Abstract Factory (routing to Gemini, Vertex AI, Groq, GPT-4o, Bedrock, etc., based on environment config) and runs the project's own async orchestration loop — Prompt Guard, Double Judge, self-correction, Supreme Court cascade — rather than a LangChain agent loop. (The primary agent's proposed action is still mocked; replacing it with a real Front-Desk agent is Phase 1.E.) 
    - *Safe Mode (Mock)*: By default in local environments, the factory provisions a `FakeListChatModel` that returns deterministic, static JSON to simulate the agent without incurring network overhead or token costs, while still preserving the structural contract expected by the LLM Judge.
 5. **Tool Execution (MCP Server)**: To fulfill the transaction, the LLM requests tool executions. The worker proxies these requests via HTTP/SSE to the standalone MCP Server, which validates authorization and executes the underlying domain logic.
-6. **Guardrail Evaluation (Double LLM-as-a-Judge)**: Once the primary LLM determines its final proposed action, the worker pauses the flow. It sends the proposed action, arguments, and context to an independent, concurrent dual-judge system (Gemini and Llama 3). Both judges evaluate the action strictly for scope authorization, schema validity, and business rule compliance at temperature 0.0.
+6. **Guardrail Evaluation (Double LLM-as-a-Judge)**: Once the primary LLM determines its final proposed action, the worker pauses the flow. It sends the proposed action, arguments, and context to an independent, concurrent dual-judge system (Gemini and GPT-OSS 20B via Groq). Both judges evaluate the action strictly for scope authorization, schema validity, and business rule compliance at temperature 0.0.
 7. **Final Commit (PostgreSQL)**: 
    - If BOTH judges return `APPROVE`, the transaction is committed to the database as `COMPLETED`.
    - If EITHER judge returns `REJECT`, the transaction is saved as `PENDING_HUMAN_REVIEW`, preventing any automated financial execution.
@@ -62,7 +62,7 @@ sequenceDiagram
         MCP-->>Worker: Tool Result
         
         Worker->>Judge: evaluate_decision()
-        Note right of Judge: Double Judge (Gemini + Llama 3)<br>Evaluates scope, format, and business rules concurrently
+        Note right of Judge: Double Judge (Gemini + GPT-OSS 20B)<br>Evaluates scope, format, and business rules concurrently
         Judge-->>Worker: Verdict (APPROVE/REJECT)
         
         alt Verdict == APPROVE
@@ -84,5 +84,5 @@ The engine enforces strict layer isolation. Here is how the `src/` directory map
 - **`src/api/` (Ingestion Gateway)**: Contains the FastAPI routers and Pydantic schemas. Its only job is validation and enqueueing. It does not perform any business logic or LLM calls.
 - **`src/worker/` (Async Consumer)**: The heart of the background processing. It manages the `aio-pika` connection, creates database sessions, enforces idempotency, and orchestrates the interaction between the LLM, the MCP Server, and the Guardrail Judge.
 - **`src/mcp_server/` (Tool Sandbox)**: A standalone ASGI server exposing tools via HTTP/SSE. It acts as the execution layer. It never initiates LLM calls itself, and it acts as an isolated boundary preventing the AI from direct DB/system access.
-- **`src/agents/` (AI Intelligence)**: Houses the `llm_factory.py` (which instantiates the correct underlying cloud model dynamically) and `judge.py` (the deterministic Double LLM-as-a-Judge interceptor running Gemini and Llama 3 concurrently).
+- **`src/agents/` (AI Intelligence)**: Houses the `llm_factory.py` (which instantiates the correct underlying cloud model dynamically) and `judge.py` (the deterministic Double LLM-as-a-Judge interceptor running Gemini and GPT-OSS 20B (via Groq) concurrently).
 - **`src/core/` (Domain Logic & Infrastructure)**: Contains shared resources: PostgreSQL connection singletons (`database.py`), SQLAlchemy models (`models.py`), and the `pydantic-settings` configuration definitions (`config.py`).

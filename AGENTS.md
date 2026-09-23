@@ -21,7 +21,7 @@ The project is organized around Phase 1 (core transactional engine, production-r
 - Database and Idempotency: PostgreSQL (with pgvector extension, Phase 1.D), SQLAlchemy (async ORM), Alembic.
 - AI Core: custom async orchestration (the pipeline, retries, Double Judge, and Supreme Court cascade are hand-written — no LangChain chains/agents); LangChain (`langchain-core`) only as a thin provider-adapter layer behind `llm_factory.py`. Providers: Google GenAI (Gemini), Google Vertex AI (primary cloud provider, Phase 6, in progress), Groq API, OpenAI, AWS Bedrock (secondary).
 - Agent Sandbox: Model Context Protocol (MCP) Python SDK, over HTTP/SSE transport (see Section 4).
-- LLMOps (Testing and Guardrails): Promptfoo (shift-left testing), Langfuse (telemetry), Asymmetric Double LLM-as-a-Judge pattern for runtime output evaluation (Gemini + Llama 3), plus a Prompt Guard pre-execution filter and a Supreme Court cascade judge for disagreement escalation.
+- LLMOps (Testing and Guardrails): Promptfoo (shift-left testing), Langfuse (telemetry), Asymmetric Double LLM-as-a-Judge pattern for runtime output evaluation (Gemini + GPT-OSS 20B via Groq), plus a Prompt Guard pre-execution filter and a Supreme Court cascade judge for disagreement escalation.
 - Load Testing: Locust (concurrency/chaos validation, Phase 1.C).
 - Containerization (Phase 1.C): Docker, Docker Compose.
 - RAG Ingestion (Phase 1.D): provider-agnostic embeddings API (Gemini `gemini-embedding-001`, truncated to 768 dims, by default), `pgvector`. Cloud-native embeddings (Vertex AI on the primary GCP track, Amazon Titan on the secondary AWS track) are a Phase 6 swap, not a Phase 1.D dependency.
@@ -84,7 +84,7 @@ When asked to build Phase 1 features, follow this logical sequence (all steps be
 3. MCP Server: Implement `mcp_server.py` exposing isolated tools such as `get_user_history` and `execute_refund`.
 4. Worker Layer: Implement `worker.py` to consume RabbitMQ messages, verify idempotency, orchestrate the LLM call through the MCP server, and commit the final transaction.
 5. Pre-Execution Shield: A Prompt Guard model (`llama-prompt-guard-2-22m`) intercepts malicious prompts and jailbreak attempts before they reach the primary agent, failing fast.
-6. Guardrails: Intercept the LLM decision with a concurrent dual-judge evaluation (Asymmetric Double LLM-as-a-Judge using Gemini and Llama 3) before persisting the final status to PostgreSQL.
+6. Guardrails: Intercept the LLM decision with a concurrent dual-judge evaluation (Asymmetric Double LLM-as-a-Judge using Gemini and GPT-OSS 20B via Groq) before persisting the final status to PostgreSQL.
 7. Self-Correction Loop: If the base judges reject on a formatting or logic error, route the feedback back to the primary agent for self-correction up to `MAX_LLM_RETRIES`.
 8. Cascade Architecture (Supreme Court): If the base judges disagree or repeatedly reject, escalate to a Supreme Court Judge (Gemini 3.5 Flash) for a tie-breaking decision before falling back to `PENDING_HUMAN_REVIEW`.
 9. Concurrency Control: Pessimistic row locking (`SELECT ... FOR UPDATE`) plus a `UniqueConstraint` on `request_id` prevent double-processing; a background Recovery Sweeper (`FOR UPDATE SKIP LOCKED`) reclaims and re-queues `PROCESSING` rows abandoned by a crashed worker.
@@ -316,7 +316,7 @@ When refusing an action under this section, always state the correct alternative
 
 ## 10. Asymmetric Double LLM-as-a-Judge Guardrail Contract
 
-Every LLM decision must pass through the concurrent Double Judge (Gemini + Llama 3 via Groq) before being committed. Both judges evaluate:
+Every LLM decision must pass through the concurrent Double Judge (Gemini + GPT-OSS 20B via Groq, `openai/gpt-oss-20b`) before being committed. Both judges evaluate:
 - Was the action within the agent's authorized scope?
 - Is the output well-formed and parseable?
 - Does the decision contradict any business rule (e.g., refund exceeds the original transaction amount)?

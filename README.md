@@ -103,7 +103,7 @@ The project also examines a second question: **how much of an AI system's decisi
 3. **MCP server:** A separate HTTP/SSE service that is the only component able to execute side-effecting tools.
 4. **Worker:** RabbitMQ consumer with idempotency checks in PostgreSQL before any LLM call.
 5. **Pre-Execution Shield (Prompt Guard):** A specialized 22M parameter model (`llama-prompt-guard-2-22m`) intercepts malicious prompts and jailbreak attempts before they reach the primary agent, failing fast.
-6. **Asymmetric Double LLM-as-a-Judge:** A dual-model jury (Gemini and Groq GPT-OSS) evaluates the primary agent's output concurrently.
+6. **Asymmetric Double LLM-as-a-Judge:** A dual-model jury (Gemini and GPT-OSS 20B via Groq) evaluates the primary agent's output concurrently.
 7. **Self-Correction Loop:** If the base judges reject a formatting or logic error, the feedback is routed back to the primary agent for self-correction up to `MAX_LLM_RETRIES`.
 8. **Cascade Architecture (Supreme Court):** If the base judges disagree or repeatedly reject, the transaction escalates to a Supreme Court Judge (Gemini 3.5 Flash) for a final tie-breaking decision before falling back to `PENDING_HUMAN_REVIEW`.
 9. **Provider routing:** Abstract Factory for swapping LLM providers per component, with explicit temperature control.
@@ -121,7 +121,7 @@ The project also examines a second question: **how much of an AI system's decisi
 | **Google Vertex AI** | Inference provider for the GCP deployment (Phase 6, in progress): same Gemini model family, authenticated via service account / ADC instead of an API key, and billed/governed inside the GCP project. The factory branch exists (`provider="vertex"`); validating it against real credentials is in progress. |
 | **Gemini AI Studio** | Primary agent (using `gemini-3.5-flash-lite`) and Judge 1. |
 | **AWS Bedrock (Claude 3.5 Sonnet / Llama 3)** | Secondary cloud target: AWS-native inference without data leaving the account. |
-| **Groq (Llama 3)** | Judge 2: ultra-low latency and deterministic auditing at temperature 0.0. |
+| **Groq** | Judge 2 (`openai/gpt-oss-20b`): ultra-low latency and deterministic auditing at temperature 0.0 — a different model family from Judge 1 (Gemini), so their errors are less correlated. Also hosts the Prompt Guard classifier (`meta-llama/llama-prompt-guard-2-22m`). |
 | **Mock** | Offline `FakeListChatModel` returning fixed valid JSON, for local development without token spend. |
 
 ### 2. Idempotency and Message Handling
