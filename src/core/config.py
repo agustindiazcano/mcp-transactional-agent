@@ -16,7 +16,11 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""
-    
+
+    # Prompt Guard: Groq returns a malicious-probability score in [0, 1];
+    # inputs scoring at or above this are blocked as BLOCKED_MALICIOUS_PROMPT.
+    PROMPT_GUARD_THRESHOLD: float = 0.5
+
     # MCP
     MCP_SERVER_URL: str = "http://127.0.0.1:8080/sse"
 

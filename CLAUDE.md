@@ -300,6 +300,7 @@ When refusing an action under this section, always state the correct alternative
 | `AWS_SECRET_ACCESS_KEY` | AWS secret (when LLM_PROVIDER=bedrock) |
 | `LANGFUSE_SECRET_KEY` | Langfuse telemetry secret |
 | `LANGFUSE_PUBLIC_KEY` | Langfuse telemetry public key |
+| `PROMPT_GUARD_THRESHOLD` | Prompt Guard malicious-probability score (Groq returns a float in [0, 1], not a label) at or above which a claim is blocked (default: 0.5) |
 | `MCP_SERVER_URL` | URL of the running MCP server |
 | `GATEWAY_URL` | Phase 4, dashboard side: base URL of the gateway API the Streamlit dashboard consumes (default: `http://localhost:8000`) |
 | `MAX_LLM_RETRIES` | Maximum retry count for LLM calls (default: 3) |
