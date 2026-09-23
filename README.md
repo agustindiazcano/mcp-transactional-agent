@@ -1,10 +1,53 @@
 # Agentic MCP Engine and RAG Gateway
 
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg) [![CI](https://github.com/agustindiazcano/mcp-transactional-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/agustindiazcano/mcp-transactional-agent/actions/workflows/ci.yml) ![Coverage: 83%](https://img.shields.io/badge/coverage-83%25-green.svg) ![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg) ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg) [![CI](https://github.com/agustindiazcano/mcp-transactional-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/agustindiazcano/mcp-transactional-agent/actions/workflows/ci.yml) ![Coverage: 84%](https://img.shields.io/badge/coverage-84%25-green.svg) ![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg) ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+
+## Table of Contents
+
+**Overview**
+- [Summary](#summary) · [Project Status](#project-status) · [Tech Stack](#tech-stack) · [Roadmap](#roadmap)
+- [LLM Evaluation & Observability](#llm-evaluation--observability): Promptfoo, Langfuse, Ragas
+
+**Phases**
+- [Phase 1 — Core Engine](#phase-1--core-engine-feature-complete-running-locally)
+  - [1.B MCP Security Boundary](#phase-1b--mcp-security-boundary-done)
+  - [1.C Containerized Local Deployment](#phase-1c--containerized-local-deployment-done--deployment-and-load-validated)
+  - [1.D RAG over Business Rules](#phase-1d--rag-over-business-rules-pgvector-provider-agnostic-embeddings-done)
+  - [1.E Front-Desk / Back-Office Workflow](#phase-1e--front-desk--back-office-asymmetric-agentic-workflow-designed-not-yet-implemented)
+  - [1.F Dynamic LLM Provider Selection](#phase-1f--dynamic-llm-provider-selection-designed-not-yet-implemented)
+- [Phase 2 — Confidence Layer](#phase-2--confidence-layer-in-progress)
+- [Phase 3 — Quality Drift Detection](#phase-3--quality-drift-detection-designed-not-yet-implemented)
+- [Phase 4 — Operations Dashboard](#phase-4--operations-dashboard-done)
+- [Phase 5 — MLP vs. Rule Base](#phase-5--offline-comparison-mlp-vs-rule-base-designed-not-yet-implemented)
+- [Phase 6 — Cloud Deployment](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary)
+
+**Measurements**
+- [Cost per Transaction](#cost-per-transaction)
+- [System Performance & Telemetry](#system-performance--telemetry)
+  - [Processing Throughput](#processing-throughput)
+  - [Correctness Under Faults](#correctness-under-faults)
+
+**Engineering**
+- [Testing](#testing) · [AI-Assisted Development](#ai-assisted-development) · [Project Structure](#project-structure)
+
+**Setup & Reference**
+- [Quick Start (Docker)](#quick-start-docker) · [Environment Variables](#environment-variables)
+- [Architecture Decision Records](#architecture-decision-records) · [Research Directions](#research-directions) · [Known Limitations](#known-limitations)
+
+**Documents** ([full index](#documentation-index))
+- Architecture: [Core Engine](docs/phases/phase_1_core_engine.md) · [MCP Security Boundary](docs/architecture/mcp_security_boundary.md) · [Microservices Debugging Protocol](docs/architecture/microservices_debugging_protocol.md)
+- Roadmaps: [Deterministic Guardrails](docs/deterministic_guardrails_roadmap.md) · [Advanced AI](docs/architecture/advanced_ai_roadmap.md)
+- Testing: [Test Coverage](docs/testing/tdd_coverage.md) · [Failure Injection](docs/testing/chaos_engineering_armageddon.md) · [Telemetry & Performance](docs/testing/telemetry_performance.md) · [LLMOps & Observability](docs/testing/llmops_observability.md)
+- Postmortems: [2026-09-21 MCP Transport Failures](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md)
+- Operations and agent context: [Runbook](RUNBOOK.md) · [Refund Policy (RAG source)](docs/policies/refund_policy.md) · [CLAUDE.md](CLAUDE.md) · [PENDING.md](PENDING.md) · [LASTCONTEXT.md](LASTCONTEXT.md)
+
+---
 
 ## Summary
 
 An asynchronous workflow engine for running LLM agents against transactional business logic (refunds, fraud checks) without giving the model direct access to the database or internal APIs.
+
+**Evaluation:** every decision is checked at runtime by a Prompt Guard and two LLM judges. The next increment measures those judges offline, with **[Promptfoo, Langfuse, and Ragas](#llm-evaluation--observability)**: a labeled regression set and prompt-injection red-teaming gated in CI, plus per-claim tracing and cost.
 
 It addresses three problems that appear when LLMs are placed in a write path: non-deterministic output, uncontrolled access to side-effecting operations, and synchronous blocking on slow inference calls. The engine combines an event-driven pipeline (FastAPI → RabbitMQ → worker), a Model Context Protocol (MCP) server as the only route to side-effecting tools, and retrieval over business rules stored in PostgreSQL/pgvector (Phase 1.D).
 
@@ -16,7 +59,7 @@ The project also examines a second question: **how much of an AI system's decisi
 
 ## Project Status
 
-**At a glance** (as of 2026-09-22)
+**At a glance** (as of 2026-09-23)
 
 | | |
 |---|---|
@@ -54,7 +97,7 @@ The project also examines a second question: **how much of an AI system's decisi
 | **RAG Ingestion (Phase 1.D)** | Provider-agnostic embeddings (Gemini `gemini-embedding-001`, truncated to 768 dims, by default), `pgvector` |
 | **LLM Providers** | Gemini AI Studio, Google Vertex AI (being exercised for the GCP deployment), Groq, OpenAI (GPT-4o), AWS Bedrock (secondary) |
 | **Frontend** | Streamlit + pandas (Ops Dashboard, Phase 4) |
-| **LLM Evaluation & Tracing** | Runtime Double LLM-as-a-Judge (implemented); promptfoo, TruLens/Ragas, Langfuse (planned — see [Evaluation and Regression](#5-evaluation-and-regression-design-not-yet-implemented--see-pendingmd-step-3)) |
+| **LLM Evaluation & Tracing** | Runtime Double LLM-as-a-Judge and Prompt Guard (implemented); Promptfoo and Langfuse (next); Ragas (later). See [LLM Evaluation & Observability](#llm-evaluation--observability) |
 | **Testing** | Pytest, pytest-asyncio, pytest-cov, Locust |
 | **Infrastructure** | Docker, Docker Compose (local); Google Cloud — Cloud Run, Cloud SQL for PostgreSQL, Artifact Registry (in progress); AWS (secondary) |
 
@@ -78,21 +121,49 @@ The project also examines a second question: **how much of an AI system's decisi
 
 ---
 
+## LLM Evaluation & Observability
+
+The runtime guardrails decide each claim. This section covers how their quality gets measured. The runtime pieces run today; offline evaluation and tracing are the next increment ([PENDING.md](PENDING.md), Step 3).
+
+| Layer | Tool | Status | What it answers |
+|---|---|---|---|
+| Runtime decision check | Asymmetric Double LLM-as-a-Judge + Supreme Court tie-break | Implemented | Should this claim be approved? |
+| Pre-execution shield | Prompt Guard (`llama-prompt-guard-2-22m`) | Implemented | Is this input a jailbreak or an injection attempt? |
+| Cost accounting | Structured `llm_token_usage` logs (`src/agents/token_usage.py`) | Implemented | Tokens and cost per stage (see [Cost per Transaction](#cost-per-transaction)) |
+| Offline evaluation, gated in CI | **Promptfoo** | Next | How accurate the judges are on a labeled set of about 100 cases: legitimate claims, obvious fraud, borderline refunds, and prompt injection. Reports precision, recall, false approvals, and verdict stability across repeated runs, plus red-teaming for prompt injection. A change that drops accuracy below the threshold fails CI. |
+| Tracing | **Langfuse** | Next | One trace per claim: every LLM call with its input, output, latency, tokens, and cost, replacing the log lines above. |
+| RAG evaluation | **Ragas** | Later | Context relevance and groundedness of the retrieval → judge path. Deferred because the knowledge base has 4 chunks today, too few for these scores to mean much. |
+
+**Not adopted, deliberately:**
+- **LangSmith** overlaps with Langfuse, and its strength is tracing LangChain chains. Here the orchestration is custom code, and LangChain is only a provider-adapter layer.
+- **TruLens** covers tracing plus the RAG triad, which Langfuse and Ragas already cover separately, without adding a second dashboard.
+
+Details: [LLMOps & Observability](docs/testing/llmops_observability.md).
+
+---
+
 ## Documentation Index
 
 ### Architecture
 - **[Phase 1: Core Engine Architecture](docs/phases/phase_1_core_engine.md):** The asynchronous pipeline, event-driven design, and MCP server.
 - **[Advanced AI Roadmap](docs/architecture/advanced_ai_roadmap.md):** Research directions for later iterations (constrained decoding, conformal prediction, rule-based reward models).
 - **[Deterministic Guardrails Roadmap](docs/deterministic_guardrails_roadmap.md):** Deterministic and auditable mechanisms beyond LLM-as-a-Judge, including classical ML baselines.
+- **[MCP Security Boundary](docs/architecture/mcp_security_boundary.md):** The Phase 1.B specification: each guarantee (authentication, authorization, validation, rate limiting, audit) mapped to the test that verifies it.
 - **[Microservices Debugging Protocol](docs/architecture/microservices_debugging_protocol.md):** How to isolate the transport plane from the application plane when two containers fail to communicate — the doctrine that resolved the Phase 1.C MCP transport postmortem.
 
 ### Testing & Reliability
 - **[Test Coverage Report](docs/testing/tdd_coverage.md):** Unit and integration test coverage.
 - **[Failure Injection Tests](docs/testing/chaos_engineering_armageddon.md):** Ten failure scenarios, their severity, and the invariants each one verifies.
 - **[Telemetry & Performance Testing](docs/testing/telemetry_performance.md):** Concurrency testing, coverage, and LLM tracing.
+- **[LLMOps & Observability](docs/testing/llmops_observability.md):** The evaluation and tracing plan: Promptfoo, Langfuse, and Ragas, and why LangSmith and TruLens were left out.
 
 ### Postmortems
 - **[2026-09-21: Phase 1.C Load Test — MCP Transport Failures](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md):** Three MCP-adjacent bugs found while attempting the Phase 1.C load test. All three fixed and verified against the real containerized stack, including a re-run of the Locust load test. Full timeline, root cause, and every reproduction attempt that didn't work.
+
+### Operations and Agent Context
+- **[Runbook](RUNBOOK.md):** Local setup, operations, and running the test suites step by step.
+- **[Refund Policy](docs/policies/refund_policy.md):** The business policy the RAG pipeline indexes and the judges receive as context.
+- **[CLAUDE.md](CLAUDE.md)** (mirrored in [AGENTS.md](AGENTS.md) and [GEMINI.md](GEMINI.md)), **[PENDING.md](PENDING.md)**, **[LASTCONTEXT.md](LASTCONTEXT.md):** The coding agents' contract, the prioritized roadmap, and the session handoff log. See [AI-Assisted Development](#ai-assisted-development).
 
 ---
 
@@ -159,17 +230,6 @@ The LLM never touches the database or internal APIs. It reasons about the reques
 ### 4. Retrieval over Business Rules
 
 Before calling a transactional tool, the agent retrieves the relevant business rules by similarity search over `pgvector`. Implemented as [Phase 1.D](#phase-1d--rag-over-business-rules-pgvector-provider-agnostic-embeddings-done), below: the Worker embeds the incoming claim, retrieves the nearest policy chunk from `knowledge_base`, and injects it into the Double Judge's context. Retrieval is best-effort — a failure logs a warning and processing continues without retrieved context, it never blocks a transaction.
-
-### 5. Evaluation and Regression (design; not yet implemented — see `PENDING.md` Step 3)
-
-**Implemented today:** the runtime judge (Double LLM-as-a-Judge, described in the build sequence above) and LangChain (`langchain-core`, `langchain-google-genai`, `langchain-groq`) as a thin provider-adapter layer behind `src/agents/llm_factory.py` — the orchestration itself (pipeline, retries, judge cascade) is custom code, not LangChain chains or agents.
-
-**Not yet implemented**, despite being described elsewhere in this repo as if they were running (`docs/testing/telemetry_performance.md`'s Langfuse paragraph, and an earlier version of this section) — no `promptfoo` or `langfuse` dependency is declared in `pyproject.toml`, and nothing in `src/` imports either:
-
-- **Regression (Promptfoo):** a `promptfooconfig.yaml` test matrix (~100 cases — obvious fraud, borderline refunds, prompt-injection attempts) run against the primary agent's and Judge 1/2's prompts as `assert`-style checks in CI, so a prompt or model change that drops accuracy below a threshold (e.g. 95%) blocks the merge instead of shipping silently.
-- **RAG evaluation (TruLens or Ragas):** scoring Phase 1.D's retrieval → judge path on the RAG triad — Context Relevance (is the matched `knowledge_base` chunk actually about the claim?), Groundedness (does the judge's verdict cite only what was retrieved, not invented policy?), and Answer Relevance (does the final decision address the actual claim?).
-- **LLM observability (Langfuse):** `LANGFUSE_SECRET_KEY`/`LANGFUSE_PUBLIC_KEY` are already optional env vars (see the table below), but no callback handler is wired into `src/agents/` or `src/worker/worker.py` yet. Once added, a failed transaction's full trace (embedding time, Prompt Guard token usage, judge input/output, MCP validation failure) becomes inspectable end-to-end instead of reconstructed from log lines.
-- **LangSmith / LangChain native tracing:** `LANGCHAIN_TRACING_V2`, `LANGCHAIN_ENDPOINT`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT` are in `.env.example` but unverified against this project's actual chains. LangSmith and Langfuse overlap significantly (both trace LLM call graphs); `PENDING.md` Step 3 calls out deciding which one earns a permanent place here before wiring both.
 
 ---
 
@@ -728,9 +788,9 @@ uvicorn src.api.main:app --reload --port 8000  # terminal 4
 | `GROQ_API_KEY` | Conditional | Required when `LLM_PROVIDER=groq` |
 | `AWS_ACCESS_KEY_ID` | Conditional | Required when `LLM_PROVIDER=bedrock` |
 | `AWS_SECRET_ACCESS_KEY` | Conditional | Required when `LLM_PROVIDER=bedrock` |
-| `LANGFUSE_SECRET_KEY` | No | Langfuse tracing secret key (planned, not yet wired in — see `PENDING.md` Step 3) |
-| `LANGFUSE_PUBLIC_KEY` | No | Langfuse tracing public key (planned, not yet wired in — see `PENDING.md` Step 3) |
-| `LANGCHAIN_TRACING_V2` | No | Enables LangSmith tracing for LangChain calls (planned, not yet verified — see `PENDING.md` Step 3) |
+| `LANGFUSE_SECRET_KEY` | No | Langfuse tracing secret key (next increment, not yet wired in — see [LLM Evaluation & Observability](#llm-evaluation--observability)) |
+| `LANGFUSE_PUBLIC_KEY` | No | Langfuse tracing public key (next increment, not yet wired in) |
+| `LANGCHAIN_TRACING_V2` | No | LangSmith tracing. Not adopted (Langfuse is the planned tracer); leave unset |
 | `LANGCHAIN_ENDPOINT` | No | LangSmith API endpoint |
 | `LANGCHAIN_API_KEY` | No | LangSmith API key |
 | `LANGCHAIN_PROJECT` | No | LangSmith project name for this repo's traces |
@@ -827,7 +887,7 @@ Beyond the phases above, the following are candidate directions, not planned wor
 - `validate_fraud_score` is still a stub (fixed `0.12`). The `orders` table and the `get_order` / `get_refund_history` read tools exist, but the worker doesn't fetch them yet, so a refund is still not checked against the original purchase amount.
 - No dead-letter exchange is configured: a message NACKed after `EXECUTION_FAILED` is dropped from the queue. The transaction row keeps the status and the error for an operator. A 4xx from the MCP boundary (e.g. a 422) is also retried like any other failure, even though it can't succeed. The retries are bounded, but they use up rate-limit quota.
 - A redelivered message whose row is still `PROCESSING` (its worker died mid-claim) is discarded as a duplicate, and recovery waits for the Recovery Sweeper's stale threshold (5 min by default). Nothing is lost, but that claim is delayed.
-- No offline prompt-regression suite yet (promptfoo is planned, not implemented — see `PENDING.md` Step 3); the only evaluation today is the runtime Double Judge.
+- No offline evaluation of the judges yet: Promptfoo is the next increment (see [LLM Evaluation & Observability](#llm-evaluation--observability)). Today the only evaluation is the runtime Double Judge.
 - Performance and cost figures are local measurements on a 4-core laptop (see tables above), not yet re-measured on cloud infrastructure. Throughput is a median of 3–6 runs per point; the cost figure is still a single transaction.
 - The worker keeps a database transaction open from the retrieval query through the judges and the refund call. With real LLMs that means one connection sitting "idle in transaction" for seconds per claim. It is one connection per worker, so it's harmless at this scale, but it doesn't scale well.
 - The MCP server runs as one Python process, at about 29 ms of CPU per claim, which caps it near 34 claims/s. Past that point it needs replicas, which the audit-table rate limiter already supports.
