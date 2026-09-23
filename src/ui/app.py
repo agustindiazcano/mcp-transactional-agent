@@ -14,6 +14,7 @@ import streamlit as st
 from src.ui.api_client import get_system_health, get_transactions, post_claim
 from src.ui.stats import compute_p95_latency, compute_throughput
 from src.ui.theme import CSS, status_css_class
+from src.ui.trail import describe_prompt_guard
 
 T = TypeVar("T")
 
@@ -67,6 +68,10 @@ def render_judge_trail(judge_trail: dict[str, Any] | None) -> None:
             unsafe_allow_html=True,
         )
         return
+
+    guard_line = describe_prompt_guard(judge_trail.get("prompt_guard"))
+    if guard_line:
+        st.markdown(f"**Prompt Guard:** {guard_line}")
 
     for label, key in (("Judge 1 (Gemini)", "judge1"), ("Judge 2 (Groq)", "judge2")):
         entry = judge_trail.get(key)

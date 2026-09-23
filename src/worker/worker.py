@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agents.judge import evaluate_decision
 from src.agents.llm_factory import get_embeddings, get_llm
-from src.agents.prompt_guard import check_for_injection
+from src.agents.prompt_guard import GuardResult, scan_for_injection
 from src.core.config import settings
 from src.core.models import Transaction
 from src.core.services.retrieval_service import retrieve_relevant_policy
@@ -56,9 +56,10 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
 
         # ── Step 2: Pre-Execution Shield (Prompt Guard) ─────────────────────
         claim_text = body.get("claim_text", "")
+        guard_result: GuardResult | None = None
         if claim_text:
-            is_injection = await check_for_injection(claim_text)
-            if is_injection:
+            guard_result = await scan_for_injection(claim_text)
+            if guard_result.is_injection:
                 # Acquire row lock before updating status
                 res = await db_session.execute(
                     select(Transaction)
@@ -67,6 +68,7 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                 )
                 locked_txn = res.scalar_one()
                 locked_txn.status = "BLOCKED_MALICIOUS_PROMPT"
+                locked_txn.judge_trail = {"prompt_guard": guard_result.to_trail()}
                 await db_session.commit()
                 logger.warning(f"🚫 Transaction {request_id} blocked: malicious prompt detected.")
                 await message.ack()
@@ -137,7 +139,12 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
             .with_for_update()
         )
         locked_txn = res.scalar_one()
-        locked_txn.judge_trail = judge_result.get("trail")
+        # A 'skipped' guard (failed open) is recorded here too, so an
+        # unscanned claim is never indistinguishable from a clean one.
+        trail: dict[str, Any] | None = judge_result.get("trail")
+        if guard_result is not None:
+            trail = {**(trail or {}), "prompt_guard": guard_result.to_trail()}
+        locked_txn.judge_trail = trail
 
         if judge_result.get("verdict") == "APPROVE":
             locked_txn.status = "COMPLETED"

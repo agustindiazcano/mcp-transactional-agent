@@ -1,4 +1,4 @@
-﻿"""Unit tests for strict concurrency control in worker.process_message.
+"""Unit tests for strict concurrency control in worker.process_message.
 
 Tests cover:
 1. Race condition path: IntegrityError on INSERT -> ACK and discard (no LLM call).
@@ -10,6 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.exc import IntegrityError
+
+from src.agents.prompt_guard import GuardResult
+
+CLEAR_GUARD = GuardResult(status="clear", score=0.001)
 
 
 def _make_message(body: dict) -> MagicMock:
@@ -54,7 +58,7 @@ async def test_race_condition_integrity_error_discards_message() -> None:
     db_session = _make_db_session(flush_raises=True)
 
     with (
-        patch("src.worker.worker.check_for_injection", new_callable=AsyncMock) as mock_guard,
+        patch("src.worker.worker.scan_for_injection", new_callable=AsyncMock) as mock_guard,
         patch("src.worker.worker.evaluate_decision", new_callable=AsyncMock) as mock_judge,
         patch("src.worker.worker.get_llm"),
         patch("src.worker.worker.sse_client"),
@@ -80,7 +84,7 @@ async def test_happy_path_approve_uses_pessimistic_lock() -> None:
     mcp_session_mock.initialize = AsyncMock()
 
     with (
-        patch("src.worker.worker.check_for_injection", new_callable=AsyncMock, return_value=False),
+        patch("src.worker.worker.scan_for_injection", new_callable=AsyncMock, return_value=CLEAR_GUARD),
         patch("src.worker.worker.evaluate_decision", new_callable=AsyncMock, return_value=approve_result),
         patch("src.worker.worker.get_llm"),
         patch("src.worker.worker.get_embeddings") as mock_get_embeddings,
@@ -114,7 +118,7 @@ async def test_all_retries_exhausted_routes_to_human_review() -> None:
     mcp_session_mock.initialize = AsyncMock()
 
     with (
-        patch("src.worker.worker.check_for_injection", new_callable=AsyncMock, return_value=False),
+        patch("src.worker.worker.scan_for_injection", new_callable=AsyncMock, return_value=CLEAR_GUARD),
         patch("src.worker.worker.evaluate_decision", new_callable=AsyncMock, return_value=reject_result),
         patch("src.worker.worker.get_llm"),
         patch("src.worker.worker.get_embeddings"),
@@ -151,7 +155,7 @@ async def test_retrieved_policy_is_injected_into_judge_context() -> None:
     mcp_session_mock.initialize = AsyncMock()
 
     with (
-        patch("src.worker.worker.check_for_injection", new_callable=AsyncMock, return_value=False),
+        patch("src.worker.worker.scan_for_injection", new_callable=AsyncMock, return_value=CLEAR_GUARD),
         patch("src.worker.worker.evaluate_decision", new_callable=AsyncMock, return_value=approve_result) as mock_judge,
         patch("src.worker.worker.get_llm"),
         patch("src.worker.worker.get_embeddings"),
@@ -190,7 +194,7 @@ async def test_retrieval_failure_fails_open_and_does_not_block_processing() -> N
     mcp_session_mock.initialize = AsyncMock()
 
     with (
-        patch("src.worker.worker.check_for_injection", new_callable=AsyncMock, return_value=False),
+        patch("src.worker.worker.scan_for_injection", new_callable=AsyncMock, return_value=CLEAR_GUARD),
         patch("src.worker.worker.evaluate_decision", new_callable=AsyncMock, return_value=approve_result) as mock_judge,
         patch("src.worker.worker.get_llm"),
         patch("src.worker.worker.get_embeddings", side_effect=RuntimeError("embeddings API down")),
@@ -211,3 +215,72 @@ async def test_retrieval_failure_fails_open_and_does_not_block_processing() -> N
     assert "retrieved_policy" not in judge_context
     locked_row = db_session.execute.return_value.scalar_one.return_value
     assert locked_row.status == "COMPLETED"
+
+
+def _patched_mcp(mock_sse: MagicMock, mock_cs: MagicMock) -> None:
+    mcp_session_mock = AsyncMock()
+    mcp_session_mock.initialize = AsyncMock()
+    mock_sse.return_value.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock()))
+    mock_sse.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_cs.return_value.__aenter__ = AsyncMock(return_value=mcp_session_mock)
+    mock_cs.return_value.__aexit__ = AsyncMock(return_value=False)
+
+
+@pytest.mark.asyncio
+async def test_blocked_prompt_records_guard_result_in_trail() -> None:
+    message = _make_message(BODY)
+    db_session = _make_db_session()
+    blocked = GuardResult(status="blocked", score=0.999)
+
+    with (
+        patch("src.worker.worker.scan_for_injection", new_callable=AsyncMock, return_value=blocked),
+        patch("src.worker.worker.evaluate_decision", new_callable=AsyncMock) as mock_judge,
+    ):
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    locked_row = db_session.execute.return_value.scalar_one.return_value
+    assert locked_row.status == "BLOCKED_MALICIOUS_PROMPT"
+    assert locked_row.judge_trail == {
+        "prompt_guard": {"status": "blocked", "score": 0.999, "reason": None}
+    }
+    mock_judge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_skipped_guard_is_recorded_alongside_judge_trail() -> None:
+    """A guard that could not score the input fails open, but the
+    transaction's trail must say so instead of looking like a clean scan."""
+    message = _make_message(BODY)
+    db_session = _make_db_session()
+    skipped = GuardResult(status="skipped", reason="ImportError: langchain-groq is not installed")
+    judge_trail = {
+        "judge1": {"verdict": "APPROVE", "reason": "ok"},
+        "judge2": {"verdict": "APPROVE", "reason": "ok"},
+        "supreme_court": None,
+    }
+    approve = {"verdict": "APPROVE", "reason": "ok", "trail": judge_trail}
+
+    with (
+        patch("src.worker.worker.scan_for_injection", new_callable=AsyncMock, return_value=skipped),
+        patch("src.worker.worker.evaluate_decision", new_callable=AsyncMock, return_value=approve),
+        patch("src.worker.worker.get_llm"),
+        patch("src.worker.worker.get_embeddings"),
+        patch("src.worker.worker.retrieve_relevant_policy", new_callable=AsyncMock, return_value=None),
+        patch("src.worker.worker.sse_client") as mock_sse,
+        patch("src.worker.worker.ClientSession") as mock_cs,
+    ):
+        _patched_mcp(mock_sse, mock_cs)
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    locked_row = db_session.execute.return_value.scalar_one.return_value
+    assert locked_row.status == "COMPLETED"
+    assert locked_row.judge_trail == {
+        **judge_trail,
+        "prompt_guard": {
+            "status": "skipped",
+            "score": None,
+            "reason": "ImportError: langchain-groq is not installed",
+        },
+    }
