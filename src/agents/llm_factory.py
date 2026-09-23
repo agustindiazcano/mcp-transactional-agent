@@ -8,9 +8,9 @@ from pydantic import SecretStr
 
 from src.core.config import settings
 
-# Optional imports for various cloud providers. OpenAI, Vertex AI and Bedrock
-# aren't declared dependencies; pyproject's [tool.mypy] overrides let mypy
-# pass whether or not they're installed (they aren't in CI).
+# Optional imports for various cloud providers. OpenAI and Bedrock aren't
+# declared dependencies; pyproject's [tool.mypy] overrides let mypy pass
+# whether or not they're installed (they aren't in CI).
 try:
     from langchain_google_genai import (
         ChatGoogleGenerativeAI,
@@ -26,9 +26,10 @@ except ImportError:
     ChatOpenAI: Any = None  # type: ignore
 
 try:
-    from langchain_google_vertexai import ChatVertexAI
+    from langchain_google_vertexai import ChatVertexAI, VertexAIEmbeddings
 except ImportError:
     ChatVertexAI: Any = None  # type: ignore
+    VertexAIEmbeddings: Any = None  # type: ignore
 
 try:
     from langchain_aws import ChatBedrock
@@ -80,10 +81,13 @@ def get_llm(provider: str | None = None, temperature: float = 0.7, model_name: s
     elif provider == "vertex":
         if ChatVertexAI is None:
             raise ImportError("langchain-google-vertexai is not installed")
-        # Ensure credentials are provided in the environment or ADC
+        # Credentials come from ADC (the Cloud Run service account, or
+        # GOOGLE_APPLICATION_CREDENTIALS locally) -- no API key.
         return cast(BaseChatModel, ChatVertexAI(
-            model_name="gemini-1.5-pro",
-            temperature=temperature
+            model=settings.VERTEX_MODEL,
+            project=settings.VERTEX_PROJECT or None,
+            location=settings.VERTEX_LOCATION,
+            temperature=temperature,
         ))
         
     elif provider == "gemini":
@@ -155,9 +159,9 @@ def get_embeddings(provider: str | None = None) -> Embeddings:
     embeddings path is Phase 6 work, not implemented here.
 
     Args:
-        provider: Override the default provider from settings. Currently
-            supports 'gemini' (also used for 'vertex', same embedding model)
-            and 'mock'.
+        provider: Override the default provider from settings. Supports
+            'gemini' (AI Studio, API key), 'vertex' (Vertex AI, ADC; same
+            embedding model family) and 'mock'.
     """
     if provider is None:
         provider = settings.LLM_PROVIDER
@@ -166,7 +170,17 @@ def get_embeddings(provider: str | None = None) -> Embeddings:
     if provider == "mock":
         return _DeterministicHashEmbeddings(dim=768)
 
-    if provider in ("gemini", "vertex"):
+    if provider == "vertex":
+        if VertexAIEmbeddings is None:
+            raise ImportError("langchain-google-vertexai is not installed")
+        return cast(Embeddings, VertexAIEmbeddings(
+            model=settings.VERTEX_EMBEDDING_MODEL,
+            project=settings.VERTEX_PROJECT or None,
+            location=settings.VERTEX_LOCATION,
+            dimensions=768,
+        ))
+
+    if provider == "gemini":
         if GoogleGenerativeAIEmbeddings is None:
             raise ImportError("langchain-google-genai is not installed")
         return cast(Embeddings, GoogleGenerativeAIEmbeddings(

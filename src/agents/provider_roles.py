@@ -25,8 +25,14 @@ def provider_for_role(role: LlmRole) -> str:
     """Return the provider that answers ``role``.
 
     LLM_PROVIDER=mock routes every role to the mock, so local and load-test runs
-    make no paid calls. Any other value keeps the fixed pairing above.
+    make no paid calls. LLM_PROVIDER=vertex runs the Gemini roles on Vertex AI
+    (same model family, service-account auth on GCP). Any other value keeps the
+    fixed pairing above.
     """
-    if settings.LLM_PROVIDER.lower().strip() == "mock":
+    configured = settings.LLM_PROVIDER.lower().strip()
+    if configured == "mock":
         return "mock"
-    return DEFAULT_ROLE_PROVIDERS[role]
+    provider = DEFAULT_ROLE_PROVIDERS[role]
+    if configured == "vertex" and provider == "gemini":
+        return "vertex"
+    return provider
