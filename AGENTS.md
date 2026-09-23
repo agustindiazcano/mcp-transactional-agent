@@ -122,6 +122,11 @@ All five items below are implemented in `src/mcp_server/security/` (`client_regi
     - **Worker crash on broker restart:** `ack()` on the closed channel raised, the handler's `nack()` raised again, and the process died; its first reconnect failed while the broker was down, so only Docker's bounded restart brought it back. Fixed: `src/worker/amqp.py` (`safe_ack`/`safe_nack` log and move on — the broker redelivers and idempotency absorbs it — and `connect_with_retry`), `handle_delivery()` in `worker.py`.
 
     Result after both fixes: 1,800/1,800 `COMPLETED`, 0 double refunds, 0 lost, nothing stuck in `PROCESSING`; the worker survived the broker restart without a restart; the second kill landed between `execute_refund` and the final commit, and the sweeper's requeue came back `already_executed` with the same `refund_id`.
+6. Processing throughput (done, branch `perf/processing-throughput`): `tests/performance/processing_throughput.py --prefill` (workers `docker pause`d while 1,000 claims are queued, then unpaused, so the drain rate is the pool's and not the gateway's) against the chaos override plus `docker-compose.scale.yml` (drops the worker's fixed `container_name` so `--scale worker=N` works). Median claims/s on a 4-core laptop, LLMs mocked: 1 worker 9.2, 2 → 13.8, 4 → 17.4, 8 → 19.6. It flattens because the laptop's CPU saturates (per claim: ~59 ms of CPU in the worker, ~29 ms in the single MCP server process, which caps that process near 34/s). It found and fixed two measurement-distorting bugs:
+    - **`updated_at` stamped too early:** `onupdate=func.now()` is the start of the enclosing transaction, which the worker holds open from retrieval through the judges and the refund, so `created_at` → `updated_at` (and the dashboard's latency) missed that time. Now `func.clock_timestamp()` (ORM-side, no migration).
+    - **RabbitMQ healthcheck kept the idle broker at up to ~150% CPU:** each `rabbitmq-diagnostics` run boots an Erlang VM for ~5s, and the interval was 5s. Now `start_interval: 2s` during boot and `interval: 60s` after (it only gates first boot).
+
+    Don't measure scaling with `docker stop`/`start`: a restarted worker re-imports LangChain inside the measured window. Pause instead.
 
 ## 5a-iii. Development Phases — Phase 1.D (RAG over Business Rules, Done)
 

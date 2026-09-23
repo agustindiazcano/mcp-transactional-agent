@@ -45,7 +45,10 @@ class Transaction(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
-        onupdate=func.now(),
+        # clock_timestamp(), not now(): now() is the start of the enclosing
+        # transaction, which the worker keeps open through the judges and the
+        # refund call, so it would stamp the final write too early.
+        onupdate=func.clock_timestamp(),
         nullable=False,
     )
     judge_trail: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)

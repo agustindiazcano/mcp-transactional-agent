@@ -163,3 +163,46 @@ async def test_worker_idempotency_existing_request(db_session: AsyncSession):
         # It should ack immediately without calling LLM
         mock_message.ack.assert_called_once()
         MockGetLlm.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_worker_updated_at_marks_the_final_write(db_session: AsyncSession):
+    """updated_at must be when the final status was written, not when the
+    session's open transaction began. Retrieval queries the session after the
+    claim commit, so that transaction stays open through the judges and the
+    refund call; PostgreSQL's now() would stamp its start, hiding that time
+    from created_at -> updated_at (the dashboard's latency and any throughput
+    measurement)."""
+    import asyncio
+
+    request_id = "test-req-updated-at"
+    slow_step_seconds = 0.5
+
+    async def retrieval_that_queries(session, *_args, **_kwargs):
+        await session.execute(text("SELECT 1"))  # opens a transaction, as the real one does
+
+    async def slow_refund(**_kwargs):
+        await asyncio.sleep(slow_step_seconds)
+        return EXECUTED
+
+    mock_message = AsyncMock()
+    mock_message.body = (
+        b'{"request_id": "test-req-updated-at", "user_id": "user1", "claim_text": "Refund $50",'
+        b' "order_id": "ord-1", "amount": 50.0, "currency": "USD"}'
+    )
+    clear_guard = GuardResult(status="clear", score=0.001)
+
+    with patch("src.worker.worker.get_llm"), \
+         patch("src.worker.worker.get_embeddings"), \
+         patch("src.worker.worker.scan_for_injection", return_value=clear_guard), \
+         patch("src.worker.worker.retrieve_relevant_policy", side_effect=retrieval_that_queries), \
+         patch("src.worker.worker.execute_refund_via_mcp", side_effect=slow_refund), \
+         patch("src.worker.worker.evaluate_decision",
+               return_value={"verdict": "APPROVE", "reason": "Ok"}):
+        await process_message(mock_message, db_session)
+
+    db_session.expire_all()
+    txn = (await db_session.execute(
+        select(Transaction).where(Transaction.request_id == request_id)
+    )).scalar_one()
+    assert txn.status == "COMPLETED"
+    assert (txn.updated_at - txn.created_at).total_seconds() >= slow_step_seconds

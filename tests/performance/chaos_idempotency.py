@@ -150,6 +150,8 @@ class SubmitStats:
     """Gateway-side counters for the submission phase."""
 
     accepted: int = 0
+    # Host wall-clock time of each request_id's first 202, for latency.
+    accepted_at: dict[str, float] = field(default_factory=dict)
     retried_attempts: int = 0
     gave_up: list[str] = field(default_factory=list)
     seconds: float = 0.0
@@ -168,6 +170,7 @@ async def _submit_one(
             response = await client.post("/api/v1/claims", json=claim.body)
             if response.status_code == 202:
                 stats.accepted += 1
+                stats.accepted_at.setdefault(claim.request_id, time.time())
                 return
             logger.warning("submit_rejected", request_id=claim.request_id,
                            status=response.status_code)
@@ -179,20 +182,33 @@ async def _submit_one(
 
 
 async def submit_all(
-    gateway_url: str, plan: list[Claim], concurrency: int, max_attempts: int
+    gateway_url: str,
+    plan: list[Claim],
+    concurrency: int,
+    max_attempts: int,
+    rate: float = 0.0,
+    transport: httpx.AsyncBaseTransport | None = None,
 ) -> SubmitStats:
-    """Submit the whole plan with bounded concurrency, in plan order."""
+    """Submit the whole plan with bounded concurrency, in plan order.
+
+    With ``rate`` > 0, claim i is not sent before ``i / rate`` seconds into the
+    run (an open-loop arrival rate); 0 sends as fast as concurrency allows.
+    """
     stats = SubmitStats()
     semaphore = asyncio.Semaphore(concurrency)
     started = time.monotonic()
 
-    async with httpx.AsyncClient(base_url=gateway_url, timeout=10.0) as client:
+    async with httpx.AsyncClient(
+        base_url=gateway_url, timeout=10.0, transport=transport
+    ) as client:
 
-        async def bounded(claim: Claim) -> None:
+        async def bounded(index: int, claim: Claim) -> None:
+            if rate > 0:
+                await asyncio.sleep(max(0.0, started + index / rate - time.monotonic()))
             async with semaphore:
                 await _submit_one(client, claim, stats, max_attempts)
 
-        await asyncio.gather(*(bounded(claim) for claim in plan))
+        await asyncio.gather(*(bounded(i, claim) for i, claim in enumerate(plan)))
 
     stats.seconds = time.monotonic() - started
     return stats

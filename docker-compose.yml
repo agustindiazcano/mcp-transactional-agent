@@ -37,11 +37,18 @@ services:
       # check_port_connectivity (not `-q ping`) verifies the AMQP listener on 5672 is
       # actually accepting connections — `ping` alone can pass before the listener binds,
       # which raced app containers into a connection-refused on first boot.
+      #
+      # Each check boots a whole Erlang VM for the CLI and takes ~5s, so a 5s
+      # interval kept one running almost all the time: the idle broker spiked to
+      # ~150% CPU, taken from the workers (found by the throughput test). The
+      # check only gates first boot (depends_on: service_healthy), so it polls
+      # every 2s while starting and every 60s after that.
       test: rabbitmq-diagnostics -q check_port_connectivity
-      interval: 5s
-      timeout: 5s
+      interval: 60s
+      timeout: 15s
       retries: 10
-      start_period: 40s
+      start_period: 60s
+      start_interval: 2s
     networks:
       - agentic_net
 

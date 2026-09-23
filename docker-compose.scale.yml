@@ -1,0 +1,16 @@
+# Override that lets compose run several worker containers:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.chaos.yml \
+#       -f docker-compose.scale.yml up -d --scale worker=4
+#
+# docker-compose.yml pins `container_name: agentic_worker`, and a fixed name
+# can exist only once, so `--scale worker=N` fails without this. The replicas
+# get compose's generated names (<project>-worker-1, -2, ...). Workers need no
+# other change to scale: each claims a message with an atomic INSERT and
+# consumes with prefetch=1, so RabbitMQ spreads the queue across them.
+#
+# The chaos test kills the worker by its fixed name, so it runs without this
+# file. Go back to the normal stack with `docker compose up -d`.
+services:
+  worker:
+    container_name: !reset null

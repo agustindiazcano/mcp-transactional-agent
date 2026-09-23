@@ -4,14 +4,16 @@ In this project, we strictly adhere to the **Test-Driven Development (TDD)** met
 
 This document explains in human-readable terms what we are testing and the current coverage of Phase 1 (Core Engine), divided into Unit Tests and Integration (End-to-End) Tests.
 
-## Current Status (full run, 2026-09-22)
+## Current Status (full run, 2026-09-23)
 
 | Tier | Tests | Infrastructure |
 |---|---|---|
-| Unit (`tests/unit/`) | 94 | None for most; `test_transaction_repository.py` needs a live PostgreSQL |
-| Integration (`tests/integration/`) | 30 | Real PostgreSQL (pgvector) + RabbitMQ via `docker compose up -d postgres rabbitmq` |
-| **Total** | **124 passed, 0 failed** | **81% line coverage over `src/`** (`pytest --cov=src`) |
-| Load (`tests/performance/locustfile.py`) | Locust, 100 users | Full `docker compose` stack — 2,630 requests, 0 failures, P95 87 ms |
+| Unit (`tests/unit/`) | 182 | None |
+| Integration (`tests/integration/`) | 50 | Real PostgreSQL (pgvector) + RabbitMQ via `docker compose up -d postgres rabbitmq`, on an isolated `_test` database |
+| **Total** | **232 passed, 0 failed** | **84% line coverage over `src/`** (`pytest --cov=src`); CI fails under 80% |
+| Load (`tests/performance/locustfile.py`) | Locust, 100 users | Full `docker compose` stack — 2,630 requests, 0 failures, P95 87 ms (ingestion only) |
+| Chaos (`tests/performance/chaos_idempotency.py`) | 2,000 claims, 10% duplicates | Worker killed twice, RabbitMQ restarted once — 0 double refunds, 0 lost |
+| Throughput (`tests/performance/processing_throughput.py`) | 15 runs × 1,000 claims | 1 → 8 workers: 9.2 → 19.6 claims/s, LLMs mocked, 4-core laptop — 15,000 `COMPLETED`, one refund each |
 
 Beyond the Phase 1 core described below, the suite also covers: Prompt Guard, token-usage extraction, chunking and retrieval (Phase 1.D), the recovery sweeper and worker concurrency, the MCP security boundary (`tests/unit/security/`, `test_rate_limiter.py`, and HTTP-level 401/403/422/429 + audit-row assertions in `test_mcp_server.py` — Phase 1.B), and the Phase 4 dashboard (API client, stats, theme, and the read-only `transactions`/`system-health` routers).
 

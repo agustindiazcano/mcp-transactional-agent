@@ -593,3 +593,67 @@ Processing throughput with 1, 2, and 4 workers (`--scale worker=N`). The chaos s
 PR #43 (chaos test) is merged (`fc34c32`). `PENDING.md` had not been updated in PRs #39–#43. On `chore/pending-md-sync`:
 - A new section, "Reliability, Evidence & Load Validation", lists what was done (real execution, orders and read tools, CI, mock mode, the chaos test) and what is still pending (throughput, stepped load, part B, part C, and the small items).
 - Three small items marked done that were already closed: the BLE001 in `judge.py`, the unused `type: ignore` in `llm_factory.py`, and the misplaced repository test.
+
+🔴 1. Throughput de procesamiento con 1, 2 y 4 workers. Es lo que sigue en el plan. Complementa bien el test de caos: ya mostramos que el sistema es correcto, y esto muestra que escala horizontalmente. Hoy un worker procesa unos 5 reclamos por segundo con mock. Hay que medir reclamos por segundo y la latencia de punta a punta (created_at → updated_at), reusando el script sin inyectar fallas.
+
+🟠 2. Parte B: evidencia para los jueces. El worker trae get_order y get_refund_history antes de juzgar, y un chequeo determinístico verifica monto ≤ orden, misma moneda y dueño correcto. Si algo falla, el reclamo va a PENDING_HUMAN_REVIEW. Cierra la regla de la sección §10 que hoy nadie verifica. Yo la pondría antes del paso 3.
+
+🟡 3. Ingesta escalonada con Locust: 100 → 250 → 500 → 1000 usuarios. Es la prueba que menos te diferencia.
+
+🟡 4. Parte C: un validate_fraud_score real. Cambia el contrato de la tool, así que hay que confirmarlo, o dejarlo para la Fase 2.
+
+🟢 Pendientes chicos:
+- No reintentar los 4xx del boundary MCP.
+- Agregar una dead-letter queue.
+- Acortar la espera del sweeper para los mensajes reentregados.
+- Arreglar los warnings 403 de LangSmith.
+- Gemini ignora temperature=0.
+
+Aviso: el stack sigue corriendo en modo caos, con todo en mock y sin rate limit en el MCP. Para el paso 1 conviene dejarlo así. Si querés volver a los proveedores reales: docker compose up -d.
+---
+
+# Update — Branch `perf/processing-throughput`: Processing Throughput with 1–8 Workers (2026-09-23)
+
+PR #44 (PENDING sync) is merged (`d6b36a4`). This branch starts from it. **Not committed, no PR yet.**
+
+## Results
+`tests/performance/processing_throughput.py --prefill`, 1,000 claims per run, 3 runs per point (6 for 2 workers), every LLM role on mock, MCP rate limit lifted. Laptop: i5-8365U (4 cores / 8 threads), Docker Desktop on WSL2.
+
+| Workers | Claims/s (median, range) | Speedup | Service P50 / P95 |
+|---|---|---|---|
+| 1 | 9.2 (8.2–9.3) | 1.00x | 90 / 154 ms |
+| 2 | 13.8 (7.6–15.9) | 1.51x | 123 / 200 ms |
+| 4 | 17.4 (12.9–17.6) | 1.90x | 198 / 312 ms |
+| 8 | 19.6 (19.1–19.7) | 2.14x | 367 / 610 ms |
+
+- All 15,000 claims (15 runs) ended `COMPLETED`, checked in SQL: 15,000 refunds over 15,000 distinct `request_id`s.
+- **Why it flattens:** the laptop's CPU saturates. Per claim, the worker uses ~59 ms of CPU and the MCP server ~29 ms (from `/proc/1/stat`). The single MCP server process would cap near 34/s on its own; that's the next bottleneck.
+- **Variance:** two 2-worker runs dropped to 7.6/s because throughput halved for about a minute mid-run and then recovered. Autovacuum didn't coincide; most likely the host (thermal throttling or background load). The README reports medians and ranges.
+
+## What changed
+- **`tests/performance/processing_throughput.py`** (new):
+  - Three modes: burst, `--prefill` (pause the workers, queue everything, unpause), and `--rate R` (paced arrivals, for latency without a backlog).
+  - Reports claims/s, steady-state claims/s (middle 80% of completions), and service / queue-wait / end-to-end latency. The end-to-end latency uses the gateway's 202 time on the host clock, shifted onto the DB clock by a measured offset.
+- **`tests/performance/chaos_idempotency.py`:** `submit_all` records each claim's accept time and takes an optional `rate` and `transport`, for testing.
+- **`docker-compose.scale.yml`** (new): `container_name: !reset null` on the worker, so `--scale worker=N` works. The chaos test still runs without it, because it kills `agentic_worker` by name.
+- **Tests first:** `tests/unit/test_processing_throughput.py` (10 tests), plus the `updated_at` integration test.
+
+## Three findings, all fixed
+1. **`updated_at` stamped too early.** `onupdate=func.now()` gives the start of the transaction, and the worker keeps one open from the retrieval query through the judges and the refund call. `created_at` → `updated_at` read ~19 ms instead of 90–120 ms, including the dashboard's P95. Fixed with `func.clock_timestamp()`, ORM-side, so no migration. Red-first test: `test_worker_updated_at_marks_the_final_write`.
+2. **The RabbitMQ healthcheck kept the idle broker at up to ~150% CPU.** Each `rabbitmq-diagnostics` run boots an Erlang VM for about 5 s, and it ran every 5 s. It now uses `start_interval: 2s` while booting and `interval: 60s` after (the check only gates first boot). Measured the same way, one worker went from 6.0 to 8.8 claims/s. The broker was verified healthy about 7 s after being recreated.
+3. **My own first `--prefill` used `docker stop`/`start`.** Restarted workers re-import LangChain inside the measured window, which penalized more workers more. It now uses `docker pause`/`unpause`. The runs made the stop/start way were discarded.
+
+## Validation
+- **232/232 pass** (182 unit + 50 integration), in both modes (the local `.env` and `LLM_PROVIDER=mock`). Coverage 84%. `ruff` and `mypy --strict src` are clean.
+- Docs: README (a new "Processing Throughput" section, the summary row, test counts, Known Limitations) and CLAUDE.md / AGENTS.md / GEMINI.md §5a-ii item 6. PENDING.md updated.
+
+## New pending items (in PENDING.md)
+- MCP server replicas (a single process caps near 34 claims/s).
+- The worker holds a DB transaction open across the judges and the MCP call ("idle in transaction" for seconds with real LLMs).
+
+## State left behind
+- The stack is back in chaos mode with one worker named `agentic_worker` (mock providers, MCP rate limit lifted). Go back to normal with `docker compose up -d`.
+- The dev DB holds the measured rows (prefixes `tput-`, `prof-`).
+
+## Next
+Part B: evidence for the judges.
