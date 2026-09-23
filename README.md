@@ -22,7 +22,7 @@ The project also examines a second question: **how much of an AI system's decisi
 |---|---|
 | **Runs locally** | `docker compose up --build` brings up **8 containers**: `postgres` (pgvector), `rabbitmq`, `migrate` (one-shot Alembic), `mcp_server`, `worker`, `sweeper`, `gateway`, `dashboard`. |
 | **UI to try it** | Streamlit Ops Dashboard at `http://localhost:8501` — submit a claim, watch it move through the pipeline, and inspect the Judge 1 / Judge 2 / Supreme Court reasoning trail per transaction ([Phase 4](#phase-4--operations-dashboard-done)). |
-| **Tests** | **232 passing** — 182 unit + 50 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks, on an isolated `_test` database) — **84% line coverage** over `src/` (`pytest --cov=src`). |
+| **Tests** | **239 passing** — 189 unit + 50 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks, on an isolated `_test` database) — **84% line coverage** over `src/` (`pytest --cov=src`). |
 | **Load test** | Locust, 100 concurrent users against the full containerized stack: **2,630 requests, 0 failures, P95 87 ms** ([numbers](#system-performance--telemetry)). |
 | **Processing throughput** | Full pipeline per claim (guard, RAG, Double Judge, refund through the MCP boundary; LLMs mocked): **9.2 claims/s with 1 worker → 19.6 with 8**, on a 4-core laptop ([numbers](#processing-throughput)). |
 | **Security** | MCP boundary with token authn, per-tool authz, server-side argument validation, rate limiting, and a fail-closed audit log. Prompt injection is handled structurally: tool access comes only from the authenticated identity, so injected text can't extend it (integration-tested), and a Prompt Guard model screens jailbreak attempts first ([Phase 1.B](#phase-1b--mcp-security-boundary-done)). |
@@ -451,7 +451,7 @@ Measured 2026-09-21 against the full `docker compose` stack (Locust: 100 users, 
 
 | Metric | Value |
 |---|---|
-| Test suite (unit + integration, measured 2026-09-23) | 232/232 passing (182 unit + 50 integration against real PostgreSQL/RabbitMQ), 84% line coverage over `src/` |
+| Test suite (unit + integration, measured 2026-09-23) | 239/239 passing (189 unit + 50 integration against real PostgreSQL/RabbitMQ), 84% line coverage over `src/` |
 | API ingestion latency, P95 (FastAPI → RabbitMQ) | 87 ms (P50 55 ms, P99 120 ms) |
 | Ingestion throughput (local containerized stack) | 45.5 req/s average over the run (~49 req/s steady-state), 2630 requests, 0 failures |
 | End-to-end processing time | Pipeline alone (LLMs mocked): 90 ms service time P50 with one worker — see [Processing Throughput](#processing-throughput). With real providers it is dominated by LLM latency: a single real transaction observed completing within a few seconds outside load |
@@ -506,9 +506,9 @@ Idempotency was exercised for real, not just by duplicates: the second kill land
 ## Testing
 
 ### Unit and Integration
-Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-23): **232 passed, 0 failed, 84% line coverage over `src/`**.
+Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-23): **239 passed, 0 failed, 84% line coverage over `src/`**.
 
-- **Unit (182 tests, no database required):** provider factory, judge parsing and cascade routing, Prompt Guard, token-usage extraction, chunking, retrieval service, system-health service, recovery sweeper, worker concurrency and execution routing (`COMPLETED` / `EXECUTION_FAILED` / not executable), the MCP refund executor (retries, backoff, timeouts, tool errors), the gateway's claim schema, MCP security (client registry and the shipped allowlist, PII masking, argument schemas), the sample-order seed data, the dashboard's API client, stats, and theme, and the test-database guard.
+- **Unit (189 tests, no database required):** provider factory, judge parsing and cascade routing, Prompt Guard, token-usage extraction, chunking, retrieval service, system-health service, recovery sweeper, worker concurrency and execution routing (`COMPLETED` / `EXECUTION_FAILED` / not executable), the MCP refund executor (retries, backoff, timeouts, tool errors), the gateway's claim schema, MCP security (client registry and the shipped allowlist, PII masking, argument schemas), the sample-order seed data, the dashboard's API client, stats, and theme, and the test-database guard.
 - **Integration (50 tests, real PostgreSQL + RabbitMQ):** API gateway, PostgreSQL persistence, the transaction and order repositories (including per-user refund history), the `get_order` / `get_refund_history` read tools, knowledge-base vector search, MCP server over HTTP (401/403/422/429 responses plus audit rows), the `execute_refund` tool and `refunds` ledger (including idempotent replays), rate limiter, worker idempotency and judge-reject routing, and the dashboard's read-only transaction/system-health routers.
 - **Isolated test database:** the suite never touches the dev database. `tests/conftest.py` points `DATABASE_URL` at `TEST_DATABASE_URL` (default: the dev database's name plus `_test`, on the same server) before any test runs, and refuses to start if that name doesn't end in `_test` or matches the dev database. `tests/integration/conftest.py` creates it if missing and runs `alembic upgrade head` once per session, so tests run against the schema the migrations produce, never `Base.metadata.create_all()`. Integration fixtures still `TRUNCATE` their tables, which is now safe: before this, a full run emptied the dev database's `transactions`, `refunds`, `mcp_audit_logs`, and `knowledge_base` (RAG) tables.
 - **Load (Locust):** 100 concurrent users against the full `docker compose` stack — see [System Performance & Telemetry](#system-performance--telemetry).
@@ -562,7 +562,7 @@ mypy src/ --strict
 The project uses the `src/` layout so every internal import is absolute (`from src.core import database`) and resolves the same way in local runs, tests, and Docker.
 
 ```
-agentic-mcp-engine/
+mcp-transactional-agent/
     src/
         api/                  FastAPI entry points
             routers/          transactions.py, system.py — Phase 4's read-only endpoints
@@ -612,40 +612,60 @@ agentic-mcp-engine/
     docs/                     policies/, architecture/, postmortems/, testing/
     alembic/
     alembic.ini
-    .claude/                  Claude Code skills, hooks, agent config
-    .agents/                  Gemini Antigravity agent config
+    .claude/                  Claude Code skills and hooks
+    .agents/                  Gemini Antigravity skills, hooks, and rules
+    .github/workflows/ci.yml  Lint, types, tests, 80% coverage gate
     .env.example
     mcp_clients.json          Phase 1.B client registry (token hashes only)
     pyproject.toml
-    docker-compose.yml
-    CLAUDE.md
-    PENDING.md
+    docker-compose.yml        Full local stack (8 containers)
+    docker-compose.chaos.yml  Override: mock LLMs, MCP rate limit lifted (chaos/throughput)
+    docker-compose.scale.yml  Override: lets --scale worker=N run
+    CLAUDE.md                 Agent contract (mirrored in AGENTS.md, GEMINI.md)
+    PENDING.md                Prioritized roadmap
+    LASTCONTEXT.md            Session handoff log
+    RUNBOOK.md                Local setup and operations
 ```
 
 ---
 
 ## AI-Assisted Development
 
-The project is developed alongside AI coding agents (Gemini Antigravity and Claude Code). The `.agents/` directory holds the configuration that keeps them within the project's conventions.
+This project is built with AI coding agents: Claude Code is the primary agent, and Gemini Antigravity is used alongside it. They work under an explicit, versioned contract rather than ad-hoc prompting. The agent writes the code, tests, and docs, and drives the git workflow. The human sets direction, approves risky changes, and checks the agent's claims against evidence.
 
-### Skills (procedures the agent follows)
-- **`new-feature`:** Ten-step sequence for adding a feature while respecting layer isolation (routers → services → repositories).
-- **`add-mcp-tool`:** Checklist for adding an MCP tool without breaking running agents.
-- **`db-migration`:** Safe Alembic practices, including `pgvector` columns.
-- **`debug-worker`:** Diagnosis of RabbitMQ queue and idempotency issues.
-- **`tests`:** Local validation (`ruff`, `mypy`, `pytest`) before committing.
-- **`commit`:** Reviews changes and writes a Conventional Commits message.
-- **`ship`:** Tests, lint, commit, and push if everything passes.
-- **`push-dev`:** Commit and push without validation, for work-in-progress branches only.
-- **`trash`:** Discards a failed attempt (`git restore` and `git clean`).
+### The contract: context files in the repo
 
-### Hooks
-- **`safety_guard` (pre-tool):** Pauses for manual confirmation before destructive commands (SQL `DROP`, `rm -rf`) or edits to critical files.
-- **`lint_check` (post-tool):** Runs `ruff` and `mypy` after every Python edit and feeds errors back to the agent.
-- **`context_injector` (pre-invocation):** Periodically restates the architectural rules (for example, no business logic in routers).
+| File | Role |
+|---|---|
+| `CLAUDE.md` (mirrored in `AGENTS.md` and `GEMINI.md`) | Architecture rules, layer boundaries, mandatory Red-Green-Refactor TDD, git conventions, and the actions that need human sign-off (Section 8). The three files are kept identical, so every agent gets the same rules. |
+| `PENDING.md` | The prioritized roadmap. The agent reads it to pick the next task and checks items off as they land. The safety hook refuses to delete or empty it. |
+| `LASTCONTEXT.md` | A session handoff log: the decisions made and who made them, what changed, the validation results, the state left behind (e.g. "stack still in chaos mode"), and the next step. A new session starts by reading it instead of re-deriving context. |
+| `RUNBOOK.md`, `docs/postmortems/`, `docs/architecture/microservices_debugging_protocol.md` | Operational knowledge the agent must follow. For example, isolate the transport plane from the application plane before blaming Docker networking. |
 
-### Rules
-`workspace.md` holds persistent guidelines, such as mandatory type annotations and no blocking I/O.
+### What the agent does, end to end
+- **TDD:** writes the failing test first, confirms it fails for the right reason, then writes the fix. For example, the `updated_at` bug got a red integration test reproducing it before the one-line `clock_timestamp()` fix.
+- **Validation before every commit:** `ruff`, `mypy --strict`, and the full suite against real PostgreSQL and RabbitMQ, in both provider modes (`tests` and `ship` skills).
+- **Git workflow:** GitHub Flow with one short-lived branch per change (`feat/`, `fix/`, `perf/`, `docs/`), Conventional Commits split by concern, and a PR description with a summary and a test plan. GitHub Actions re-runs lint, types, and tests with an 80% coverage gate. Every commit carries a `Co-Authored-By` trailer, so authorship is transparent. PRs are opened and merged by the human.
+- **Experiments and diagnosis:** runs the load, chaos, and throughput tests, checks their invariants in SQL, and profiles bottlenecks. That's how the lost-message bug, the worker crash on a broker restart, and the RabbitMQ healthcheck's CPU cost were found.
+- **Documentation:** keeps the README, the three contract files, `PENDING.md`, and `LASTCONTEXT.md` in sync with each change, including correcting figures that have gone stale.
+
+### Guardrails on the agent itself
+Hooks live in `.claude/hooks/`, mirrored in `.agents/hooks/`:
+- **`safety_guard` (before each tool call), three tiers:**
+  - *Deny*, which never runs: deleting or emptying `PENDING.md`.
+  - *Ask*: destructive SQL without a `WHERE`, `DROP`, `alembic downgrade`, force push, `reset --hard`, `git clean -f`, `docker compose down -v`, and writing to secrets files.
+  - *Ask before editing* protected files: migrations, the worker's ACK/NACK logic, the MCP tool contract, the rule base, compose files, and `.env`.
+- **`lint_check` (after each edit):** runs `ruff` on every Python edit, and `mypy --strict` on files under `src/` (the same scope as CI), using the project's virtualenv. It feeds only real errors back to the agent and stays silent when the file is clean.
+- **`context_injector` (Antigravity only):** periodically restates the architecture rules. Antigravity also reads persistent guidelines from `.agents/rules/workspace.md`.
+
+Skills live in `.claude/skills/`, mirrored in `.agents/skills/`. They are procedures the agent must follow for this repo's risky or repetitive operations:
+- **`new-feature`:** adds a feature while respecting layer isolation (routers → services → repositories).
+- **`add-mcp-tool`:** evolves the MCP tool contract without breaking live agents.
+- **`db-migration`:** safe Alembic practice, including `pgvector` columns and confirming the revision before applying.
+- **`llm-provider-switch`:** changes or adds an LLM provider behind the factory, without touching business logic.
+- **`debug-worker`:** root-causes lost, duplicated, or stuck messages without breaking the ACK/NACK or idempotency contract.
+- **`tests`, `commit`, `ship`:** local validation, then a Conventional Commit, then push, only if everything passes.
+- **`push-dev`, `trash`:** a no-validation push for work-in-progress branches, and discarding a failed attempt.
 
 ---
 
@@ -654,8 +674,8 @@ The project is developed alongside AI coding agents (Gemini Antigravity and Clau
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/agustindiazcano/agentic-mcp-engine.git
-cd agentic-mcp-engine
+git clone https://github.com/agustindiazcano/mcp-transactional-agent.git
+cd mcp-transactional-agent
 cp .env.example .env
 ```
 
