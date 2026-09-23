@@ -39,7 +39,7 @@
 - Roadmaps: [Deterministic Guardrails](docs/deterministic_guardrails_roadmap.md) · [Advanced AI](docs/architecture/advanced_ai_roadmap.md)
 - Testing: [Test Coverage](docs/testing/tdd_coverage.md) · [Failure Injection](docs/testing/chaos_engineering_armageddon.md) · [Telemetry & Performance](docs/testing/telemetry_performance.md) · [LLMOps & Observability](docs/testing/llmops_observability.md)
 - Postmortems: [2026-09-21 MCP Transport Failures](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md)
-- Operations and agent context: [Runbook](RUNBOOK.md) · [Refund Policy (RAG source)](docs/policies/refund_policy.md) · [CLAUDE.md](CLAUDE.md) · [PENDING.md](PENDING.md) · [LASTCONTEXT.md](LASTCONTEXT.md)
+- Operations and agent context: [Runbook](RUNBOOK.md) · [Refund Policy (RAG source)](docs/policies/refund_policy.md) · [CLAUDE.md](CLAUDE.md) · [PENDING.md](PENDING.md) · [LASTCONTEXT.md](LASTCONTEXT.md) · [Work Log](docs/worklog/)
 
 ---
 
@@ -163,7 +163,7 @@ Details: [LLMOps & Observability](docs/testing/llmops_observability.md).
 ### Operations and Agent Context
 - **[Runbook](RUNBOOK.md):** Local setup, operations, and running the test suites step by step.
 - **[Refund Policy](docs/policies/refund_policy.md):** The business policy the RAG pipeline indexes and the judges receive as context.
-- **[CLAUDE.md](CLAUDE.md)** (mirrored in [AGENTS.md](AGENTS.md) and [GEMINI.md](GEMINI.md)), **[PENDING.md](PENDING.md)**, **[LASTCONTEXT.md](LASTCONTEXT.md):** The coding agents' contract, the prioritized roadmap, and the session handoff log. See [AI-Assisted Development](#ai-assisted-development).
+- **[CLAUDE.md](CLAUDE.md)** (mirrored in [AGENTS.md](AGENTS.md) and [GEMINI.md](GEMINI.md)), **[PENDING.md](PENDING.md)**, **[LASTCONTEXT.md](LASTCONTEXT.md)**, **[Work Log](docs/worklog/):** The coding agents' contract, the prioritized roadmap, the current-state handoff, and the history of past sessions. See [AI-Assisted Development](#ai-assisted-development).
 
 ---
 
@@ -669,7 +669,7 @@ mcp-transactional-agent/
     docker/                   gateway.Dockerfile, worker.Dockerfile, mcp_server.Dockerfile,
                                dashboard.Dockerfile
     scripts/                  ingest_knowledge_base.py, seed_orders.py
-    docs/                     policies/, architecture/, postmortems/, testing/
+    docs/                     policies/, architecture/, postmortems/, testing/, worklog/
     alembic/
     alembic.ini
     .claude/                  Claude Code skills and hooks
@@ -683,7 +683,7 @@ mcp-transactional-agent/
     docker-compose.scale.yml  Override: lets --scale worker=N run
     CLAUDE.md                 Agent contract (mirrored in AGENTS.md, GEMINI.md)
     PENDING.md                Prioritized roadmap
-    LASTCONTEXT.md            Session handoff log
+    LASTCONTEXT.md            Current state for the next session (history in docs/worklog/)
     RUNBOOK.md                Local setup and operations
 ```
 
@@ -699,7 +699,8 @@ This project is built with AI coding agents: Claude Code is the primary agent, a
 |---|---|
 | `CLAUDE.md` (mirrored in `AGENTS.md` and `GEMINI.md`) | Architecture rules, layer boundaries, mandatory Red-Green-Refactor TDD, git conventions, and the actions that need human sign-off (Section 8). The three files are kept identical, so every agent gets the same rules. |
 | `PENDING.md` | The prioritized roadmap. The agent reads it to pick the next task and checks items off as they land. The safety hook refuses to delete or empty it. |
-| `LASTCONTEXT.md` | A session handoff log: the decisions made and who made them, what changed, the validation results, the state left behind (e.g. "stack still in chaos mode"), and the next step. A new session starts by reading it instead of re-deriving context. |
+| `LASTCONTEXT.md` | The current state, kept short: where things stand, the decisions in force, what is waiting on the user, the next steps, the state the environment was left in (e.g. "stack still in chaos mode"), and gotchas that still apply. A new session starts by reading it instead of re-deriving context. |
+| `docs/worklog/` | The history: each past session's decisions, changes, and validation, moved out of `LASTCONTEXT.md` once superseded. |
 | `RUNBOOK.md`, `docs/postmortems/`, `docs/architecture/microservices_debugging_protocol.md` | Operational knowledge the agent must follow. For example, isolate the transport plane from the application plane before blaming Docker networking. |
 
 ### What the agent does, end to end
