@@ -27,3 +27,19 @@ logs/
 
 # Notes
 .PENDING.md
+
+# Terraform (infra/)
+# Provider binaries and module cache, downloaded by `terraform init`.
+.terraform/
+# State lives in the GCS backend; a local copy would hold resource IDs and must never be committed.
+*.tfstate
+*.tfstate.*
+# Variable files can carry environment-specific values.
+*.tfvars
+*.tfvars.json
+crash.log
+crash.*.log
+# Saved plans (`plan -out=tfplan`) are binary and may contain sensitive values.
+tfplan
+*.tfplan
+# .terraform.lock.hcl is intentionally NOT ignored: it pins provider versions, like a lockfile.
