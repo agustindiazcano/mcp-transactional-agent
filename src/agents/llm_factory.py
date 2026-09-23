@@ -41,6 +41,11 @@ except ImportError:
     ChatGroq: Any = None  # type: ignore
 
 
+# Groq-hosted Llama Prompt Guard; it answers with a bare malicious-probability
+# score, not the judges' JSON, so the mock provider needs a response of its own.
+PROMPT_GUARD_MODEL = "meta-llama/llama-prompt-guard-2-22m"
+
+
 def get_llm(provider: str | None = None, temperature: float = 0.7, model_name: str | None = None) -> BaseChatModel:
     """
     Factory function to instantiate the active LLM based on environment configuration.
@@ -55,6 +60,9 @@ def get_llm(provider: str | None = None, temperature: float = 0.7, model_name: s
     provider = provider.lower().strip()
 
     if provider == "mock":
+        if model_name == PROMPT_GUARD_MODEL:
+            # A benign score, so the guard reports 'clear' instead of 'skipped'
+            return FakeListChatModel(responses=["0.0"])
         # Returns a valid JSON matching what the LLM-as-a-Judge expects
         return FakeListChatModel(
             responses=['{"verdict": "APPROVE", "reason": "Mocked for local dev"}']

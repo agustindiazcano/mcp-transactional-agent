@@ -498,3 +498,31 @@ Proposal: when `LLM_PROVIDER=mock`, every role (Judge 1, Judge 2, Supreme Court,
 - Gemini `temperature=0` determinism.
 - Declare `langchain-google-vertexai` (Phase 6).
 - The known Phase 1.B limitations.
+
+---
+
+# Update — Branch `feat/mock-provider-all-roles`: Every LLM Role Honors `LLM_PROVIDER=mock` (2026-09-23)
+
+PR #41 (`chore/ci-github-actions`) is merged into `main` (`a977f5a`). This branch starts from it.
+
+## What changed
+- **`src/agents/provider_roles.py`** (new): `provider_for_role(role)` for `judge1`, `judge2`, `supreme_court`, and `prompt_guard`.
+  - With `LLM_PROVIDER=mock`, every role returns `"mock"`.
+  - With any other value, the pairing stays as it was: Gemini for Judge 1 and the Supreme Court, Groq for Judge 2 and the Prompt Guard. The Double Judge keeps two model families.
+  - This is the first slice of Phase 1.F. The per-request override and the admin lever will be added as overrides on top of this lookup.
+- **`judge.py`** and **`prompt_guard.py`** ask `provider_for_role()` instead of hardcoding `"gemini"`/`"groq"`. The guard logs the real provider in its usage line.
+- **`llm_factory.py`:** a new `PROMPT_GUARD_MODEL` constant. The mock returns `"0.0"` for that model, so under mock the guard reports `clear` and not `skipped`. The guard parses a float, not the judges' JSON.
+- **Tests (red first):** `test_provider_roles.py`, plus mock-mode tests in the judge, guard, and factory tests. Under mock, `evaluate_decision()` approves with no network access and the Supreme Court is not called.
+  - Found along the way: CI runs with `LLM_PROVIDER=mock`, so the existing tests that assert the Gemini/Groq pairing would have gone red in CI. They now pin `LLM_PROVIDER=gemini` with an autouse fixture.
+- **Docs:** the Phase 1.F section in CLAUDE.md, GEMINI.md, AGENTS.md, and README; PENDING Step 6; the README test counts.
+
+## Validation
+- **199/199 pass** in both modes: with the local `.env` (`gemini`) and with `LLM_PROVIDER=mock` (as in CI). Coverage is 83%.
+- `ruff` and `mypy --strict` are clean.
+
+## Not done yet
+- The containers are not rebuilt, and the stack has not been run with `LLM_PROVIDER=mock`. That happens when setting up the chaos test.
+- `retrieval_service.py` still logs `provider="gemini"` in its usage line, whatever the real provider is. This is minor.
+
+## Next
+Check that RabbitMQ is durable (queue and persistent messages), then run the chaos/idempotency test.

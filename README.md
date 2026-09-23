@@ -22,7 +22,7 @@ The project also examines a second question: **how much of an AI system's decisi
 |---|---|
 | **Runs locally** | `docker compose up --build` brings up **8 containers**: `postgres` (pgvector), `rabbitmq`, `migrate` (one-shot Alembic), `mcp_server`, `worker`, `sweeper`, `gateway`, `dashboard`. |
 | **UI to try it** | Streamlit Ops Dashboard at `http://localhost:8501` — submit a claim, watch it move through the pipeline, and inspect the Judge 1 / Judge 2 / Supreme Court reasoning trail per transaction ([Phase 4](#phase-4--operations-dashboard-done)). |
-| **Tests** | **183 passing** — 135 unit + 48 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks, on an isolated `_test` database) — **83% line coverage** over `src/` (`pytest --cov=src`). |
+| **Tests** | **199 passing** — 151 unit + 48 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks, on an isolated `_test` database) — **83% line coverage** over `src/` (`pytest --cov=src`). |
 | **Load test** | Locust, 100 concurrent users against the full containerized stack: **2,630 requests, 0 failures, P95 87 ms** ([numbers](#system-performance--telemetry)). |
 | **Security** | MCP boundary with token authn, per-tool authz, server-side argument validation, rate limiting, and a fail-closed audit log. Prompt injection is handled structurally: tool access comes only from the authenticated identity, so injected text can't extend it (integration-tested), and a Prompt Guard model screens jailbreak attempts first ([Phase 1.B](#phase-1b--mcp-security-boundary-done)). |
 | **Cloud** | **Google Cloud is the primary deployment target — in progress** (Cloud Run, Cloud SQL for PostgreSQL + pgvector, Artifact Registry, with **Vertex AI** as the inference provider being exercised). AWS is kept as a secondary target ([Phase 6](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary)). |
@@ -292,7 +292,7 @@ Rather than one LLM that both interprets the user and decides the outcome, this 
 
 ### Problem (as it stood before this phase)
 
-`src/agents/llm_factory.py`'s `get_llm(provider=...)` already implements the Factory pattern the [Tech Stack](#tech-stack)'s "Interface Segregation and Factory Pattern" directive promises — the abstraction itself is real. What isn't: every call site hardcodes its provider. `judge.py` always calls Judge 1 and the Supreme Court tie-break with `"gemini"` and Judge 2 with `"groq"`. The only lever an operator has is the global `LLM_PROVIDER` env var, and changing it means editing `.env` and restarting containers — there's no way to mix providers per judge role, per request, or swap a default without a redeploy.
+`src/agents/llm_factory.py`'s `get_llm(provider=...)` already implements the Factory pattern the [Tech Stack](#tech-stack)'s "Interface Segregation and Factory Pattern" directive promises — the abstraction itself is real. What isn't: the role → provider pairing is fixed. Judge 1 and the Supreme Court tie-break always use `"gemini"`, Judge 2 and the Prompt Guard `"groq"`. The first slice is done: that pairing now lives in one place (`src/agents/provider_roles.py`), and `LLM_PROVIDER=mock` routes every role to the mock, so local and load-test runs make no paid calls. The only lever an operator has is the global `LLM_PROVIDER` env var, and changing it means editing `.env` and restarting containers — there's no way to mix providers per judge role, per request, or swap a default without a redeploy.
 
 ### Design: two complementary levers, not a single choice
 
@@ -304,7 +304,7 @@ These aren't mutually exclusive, and which one gets built first is an implementa
 ### Scope
 
 1. Extend `ClaimRequest`/the claims ingestion path with the optional per-judge provider fields.
-2. Thread the chosen provider through `worker.py` → `evaluate_decision()` → `_run_single_judge()`, replacing the hardcoded `"gemini"`/`"groq"` literals — falling back to today's hardcoded pairing when a caller doesn't specify one, so existing behavior doesn't change unless a caller opts in.
+2. Thread the chosen provider through `worker.py` → `evaluate_decision()` → `_run_single_judge()`, as an override on top of `provider_for_role()` — falling back to today's fixed pairing when a caller doesn't specify one, so existing behavior doesn't change unless a caller opts in.
 3. Add the two provider dropdowns to the dashboard's ingestion panel.
 4. The global admin-config lever is a separate, later increment — not required to ship items 1-3.
 5. Does not touch the MCP tool-call provider boundary (Phase 1.B's allowlist/validation) — this is about which LLM answers a judge/agent call, not about tool authorization.
@@ -460,7 +460,7 @@ Measured 2026-09-21 against the full `docker compose` stack (Locust: 100 users, 
 ## Testing
 
 ### Unit and Integration
-Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-23): **183 passed, 0 failed, 83% line coverage over `src/`**.
+Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-23): **199 passed, 0 failed, 83% line coverage over `src/`**.
 
 - **Unit (135 tests, no database required):** provider factory, judge parsing and cascade routing, Prompt Guard, token-usage extraction, chunking, retrieval service, system-health service, recovery sweeper, worker concurrency and execution routing (`COMPLETED` / `EXECUTION_FAILED` / not executable), the MCP refund executor (retries, backoff, timeouts, tool errors), the gateway's claim schema, MCP security (client registry and the shipped allowlist, PII masking, argument schemas), the sample-order seed data, the dashboard's API client, stats, and theme, and the test-database guard.
 - **Integration (48 tests, real PostgreSQL + RabbitMQ):** API gateway, PostgreSQL persistence, the transaction and order repositories (including per-user refund history), the `get_order` / `get_refund_history` read tools, knowledge-base vector search, MCP server over HTTP (401/403/422/429 responses plus audit rows), the `execute_refund` tool and `refunds` ledger (including idempotent replays), rate limiter, worker idempotency and judge-reject routing, and the dashboard's read-only transaction/system-health routers.

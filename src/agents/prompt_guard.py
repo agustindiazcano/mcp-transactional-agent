@@ -4,7 +4,8 @@ from typing import Any, Literal
 import structlog
 from langchain_core.messages import HumanMessage
 
-from src.agents.llm_factory import get_llm
+from src.agents.llm_factory import PROMPT_GUARD_MODEL, get_llm
+from src.agents.provider_roles import provider_for_role
 from src.agents.token_usage import extract_usage
 from src.core.config import settings
 
@@ -47,14 +48,15 @@ async def scan_for_injection(user_input: str) -> GuardResult:
     could not produce a score (fail open).
     """
     try:
-        # Deliberately hardcoded, not gated by LLM_PROVIDER: this is a static,
+        # Not gated by LLM_PROVIDER except in mock mode: this is a static,
         # ultra-low-latency pre-execution shield and must not inherit the
         # provider configured for the heavy reasoning agent (segregation of
         # duties, not an oversight — see PENDING.md).
+        provider = provider_for_role("prompt_guard")
         guard_model = get_llm(
-            provider="groq",
+            provider=provider,
             temperature=0.0,
-            model_name="meta-llama/llama-prompt-guard-2-22m"
+            model_name=PROMPT_GUARD_MODEL,
         )
 
         # Prompt Guard is fine-tuned to classify text simply by receiving it
@@ -66,7 +68,7 @@ async def scan_for_injection(user_input: str) -> GuardResult:
 
         usage = extract_usage(response)
         if usage is not None:
-            logger.info("llm_token_usage", stage="prompt_guard", provider="groq", **usage)
+            logger.info("llm_token_usage", stage="prompt_guard", provider=provider, **usage)
 
         # Groq's Prompt Guard endpoint returns a bare malicious-probability
         # score (e.g. "0.9989"), not a label -- parse it as a float.
