@@ -26,12 +26,6 @@ except ImportError:
     ChatOpenAI: Any = None  # type: ignore
 
 try:
-    from langchain_google_vertexai import ChatVertexAI, VertexAIEmbeddings
-except ImportError:
-    ChatVertexAI: Any = None  # type: ignore
-    VertexAIEmbeddings: Any = None  # type: ignore
-
-try:
     from langchain_aws import ChatBedrock
 except ImportError:
     ChatBedrock: Any = None  # type: ignore
@@ -79,12 +73,14 @@ def get_llm(provider: str | None = None, temperature: float = 0.7, model_name: s
         ))
         
     elif provider == "vertex":
-        if ChatVertexAI is None:
-            raise ImportError("langchain-google-vertexai is not installed")
+        if ChatGoogleGenerativeAI is None:
+            raise ImportError("langchain-google-genai is not installed")
+        # langchain-google-genai's Vertex backend (ChatVertexAI is deprecated).
         # Credentials come from ADC (the Cloud Run service account, or
         # GOOGLE_APPLICATION_CREDENTIALS locally) -- no API key.
-        return cast(BaseChatModel, ChatVertexAI(
+        return cast(BaseChatModel, ChatGoogleGenerativeAI(
             model=settings.VERTEX_MODEL,
+            vertexai=True,
             project=settings.VERTEX_PROJECT or None,
             location=settings.VERTEX_LOCATION,
             temperature=temperature,
@@ -171,13 +167,14 @@ def get_embeddings(provider: str | None = None) -> Embeddings:
         return _DeterministicHashEmbeddings(dim=768)
 
     if provider == "vertex":
-        if VertexAIEmbeddings is None:
-            raise ImportError("langchain-google-vertexai is not installed")
-        return cast(Embeddings, VertexAIEmbeddings(
+        if GoogleGenerativeAIEmbeddings is None:
+            raise ImportError("langchain-google-genai is not installed")
+        return cast(Embeddings, GoogleGenerativeAIEmbeddings(
             model=settings.VERTEX_EMBEDDING_MODEL,
+            vertexai=True,
             project=settings.VERTEX_PROJECT or None,
             location=settings.VERTEX_LOCATION,
-            dimensions=768,
+            output_dimensionality=768,
         ))
 
     if provider == "gemini":

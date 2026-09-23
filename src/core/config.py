@@ -23,8 +23,9 @@ class Settings(BaseSettings):
 
     # Vertex AI (Phase 6, GCP). Auth is ADC / the Cloud Run service account,
     # never an API key. An empty VERTEX_PROJECT lets ADC resolve the project.
+    # "global": the Gemini 3.5 models aren't served from regional endpoints.
     VERTEX_PROJECT: str = ""
-    VERTEX_LOCATION: str = "us-central1"
+    VERTEX_LOCATION: str = "global"
     VERTEX_MODEL: str = "gemini-3.5-flash-lite"
     VERTEX_EMBEDDING_MODEL: str = "gemini-embedding-001"
 

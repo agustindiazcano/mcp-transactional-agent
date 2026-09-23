@@ -196,7 +196,7 @@ The detector is pluggable via `DRIFT_DETECTOR`, over the time series of judge/Tr
 Decision (2026-09-22): Google Cloud Platform is the primary deployment target and Vertex AI the primary cloud inference provider; AWS is a secondary target. Rationale: the stack already runs on the Gemini model family (Judge 1, Supreme Court, `gemini-embedding-001`), so Vertex AI gives the same models with service-account auth and in-project governance, and the Phase 1.C containers map almost 1:1 onto Cloud Run. Dependencies (Phase 1.C containerization, Phase 1.D provider-agnostic embeddings) are both complete.
 
 **Primary — Google Cloud (in progress):**
-1. Vertex AI provider: code done (branch `feat/vertex-provider`) — `langchain-google-vertexai` is declared; `get_llm("vertex")` and `get_embeddings("vertex")` read `VERTEX_MODEL`/`VERTEX_EMBEDDING_MODEL`/`VERTEX_PROJECT`/`VERTEX_LOCATION` and authenticate via ADC (no API key), embeddings stay at 768 dims; `LLM_PROVIDER=vertex` moves the Gemini roles (Judge 1, Supreme Court) to Vertex while Judge 2 and the Prompt Guard stay on Groq. Still to do: validate against real credentials. Changing providers must stay behind the factory (Section 4) — no business-logic changes.
+1. Vertex AI provider: code done (branch `feat/vertex-provider`) — through `langchain-google-genai`'s Vertex mode (`vertexai=True`; `langchain-google-vertexai`'s `ChatVertexAI` is deprecated), `get_llm("vertex")` and `get_embeddings("vertex")` read `VERTEX_MODEL`/`VERTEX_EMBEDDING_MODEL`/`VERTEX_PROJECT`/`VERTEX_LOCATION` and authenticate via ADC (no API key), embeddings stay at 768 dims; `LLM_PROVIDER=vertex` moves the Gemini roles (Judge 1, Supreme Court) to Vertex while Judge 2 and the Prompt Guard stay on Groq. Validated from the host against the real project (chat and 768-dim embeddings); the Gemini 3.5 models are served only from the `global` location. Changing providers must stay behind the factory (Section 4) — no business-logic changes.
 2. Artifact Registry: push the existing `docker/*.Dockerfile` images (gateway, worker, mcp_server, dashboard).
 3. Cloud Run: gateway, MCP server, dashboard as HTTP services; worker and Recovery Sweeper as min-instance consumers. Keep the worker and MCP server as separate services over HTTP/SSE (Section 4) — do not collapse them.
 4. Cloud SQL for PostgreSQL with `pgvector`; Alembic runs as a one-shot job, mirroring the local `migrate` service. Section 8's migration-confirmation rule applies to the cloud database too.
@@ -322,7 +322,7 @@ When refusing an action under this section, always state the correct alternative
 | `GEMINI_API_KEY` | Google GenAI API key |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP credentials for Vertex AI when running outside GCP (on Cloud Run, the attached service account / ADC is used instead) |
 | `VERTEX_PROJECT` | Phase 6: GCP project for Vertex AI (empty: the project ADC resolves) |
-| `VERTEX_LOCATION` | Phase 6: Vertex AI region (default: `us-central1`) |
+| `VERTEX_LOCATION` | Phase 6: Vertex AI location (default: `global`; the Gemini 3.5 models aren't served from regional endpoints) |
 | `VERTEX_MODEL` | Phase 6: Vertex chat model for the Gemini roles (default: `gemini-3.5-flash-lite`) |
 | `VERTEX_EMBEDDING_MODEL` | Phase 6: Vertex embeddings model, requested at 768 dims (default: `gemini-embedding-001`) |
 | `GROQ_API_KEY` | Groq API key |

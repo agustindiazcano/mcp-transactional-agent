@@ -87,16 +87,17 @@ def test_get_llm_groq():
 
 
 def test_get_llm_vertex_uses_configured_model_project_and_location():
-    """Vertex authenticates with ADC / the Cloud Run service account, so the
-    factory passes no API key -- only the model, project, and region, all from
-    settings rather than hardcoded."""
+    """Vertex runs through langchain-google-genai's Vertex mode (ChatVertexAI is
+    deprecated). It authenticates with ADC / the Cloud Run service account, so
+    the factory passes no API key -- only the model, project, and region, all
+    from settings rather than hardcoded."""
     mock_settings = Settings(
         LLM_PROVIDER="vertex",
         VERTEX_MODEL="gemini-test-model",
         VERTEX_PROJECT="demo-project",
         VERTEX_LOCATION="europe-west1",
     )
-    with patch("src.agents.llm_factory.settings", mock_settings),          patch("src.agents.llm_factory.ChatVertexAI") as MockVertex:
+    with patch("src.agents.llm_factory.settings", mock_settings),          patch("src.agents.llm_factory.ChatGoogleGenerativeAI") as MockVertex:
         mock_instance = MagicMock(spec=BaseChatModel)
         MockVertex.return_value = mock_instance
 
@@ -105,6 +106,7 @@ def test_get_llm_vertex_uses_configured_model_project_and_location():
         assert llm is mock_instance
         MockVertex.assert_called_once_with(
             model="gemini-test-model",
+            vertexai=True,
             project="demo-project",
             location="europe-west1",
             temperature=0.0,
@@ -114,7 +116,7 @@ def test_get_llm_vertex_uses_configured_model_project_and_location():
 def test_get_llm_vertex_without_project_lets_adc_resolve_it():
     """An empty VERTEX_PROJECT means 'use the project ADC resolves', not ''."""
     mock_settings = Settings(LLM_PROVIDER="vertex", VERTEX_PROJECT="")
-    with patch("src.agents.llm_factory.settings", mock_settings),          patch("src.agents.llm_factory.ChatVertexAI") as MockVertex:
+    with patch("src.agents.llm_factory.settings", mock_settings),          patch("src.agents.llm_factory.ChatGoogleGenerativeAI") as MockVertex:
         get_llm()
 
         assert MockVertex.call_args.kwargs["project"] is None
@@ -125,7 +127,8 @@ def test_vertex_defaults_match_the_gemini_models_the_stack_already_uses():
 
     assert defaults.VERTEX_MODEL == "gemini-3.5-flash-lite"
     assert defaults.VERTEX_EMBEDDING_MODEL == "gemini-embedding-001"
-    assert defaults.VERTEX_LOCATION == "us-central1"
+    # The Gemini 3.5 models are served only from Vertex's global endpoint.
+    assert defaults.VERTEX_LOCATION == "global"
 
 
 def test_get_llm_bedrock():
@@ -199,7 +202,7 @@ def test_get_embeddings_unknown_provider_raises():
 
 
 def test_get_embeddings_vertex_uses_vertex_client_at_768_dims():
-    """LLM_PROVIDER=vertex must not fall back to the AI Studio client (which
+    """LLM_PROVIDER=vertex must use the Vertex backend, not AI Studio (which
     needs GEMINI_API_KEY): on Cloud Run only ADC is available. The vector size
     must stay 768 to match knowledge_base.embedding."""
     from src.agents.llm_factory import get_embeddings
@@ -210,17 +213,17 @@ def test_get_embeddings_vertex_uses_vertex_client_at_768_dims():
         VERTEX_LOCATION="europe-west1",
         VERTEX_EMBEDDING_MODEL="gemini-embedding-test",
     )
-    with patch("src.agents.llm_factory.settings", mock_settings),          patch("src.agents.llm_factory.VertexAIEmbeddings") as MockVertexEmb,          patch("src.agents.llm_factory.GoogleGenerativeAIEmbeddings") as MockStudioEmb:
+    with patch("src.agents.llm_factory.settings", mock_settings),          patch("src.agents.llm_factory.GoogleGenerativeAIEmbeddings") as MockVertexEmb:
         mock_instance = MagicMock()
         MockVertexEmb.return_value = mock_instance
 
         embeddings = get_embeddings()
 
         assert embeddings is mock_instance
-        MockStudioEmb.assert_not_called()
         MockVertexEmb.assert_called_once_with(
             model="gemini-embedding-test",
+            vertexai=True,
             project="demo-project",
             location="europe-west1",
-            dimensions=768,
+            output_dimensionality=768,
         )
