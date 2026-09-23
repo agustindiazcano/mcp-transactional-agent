@@ -39,7 +39,7 @@
 - Roadmaps: [Deterministic Guardrails](docs/deterministic_guardrails_roadmap.md) · [Advanced AI](docs/architecture/advanced_ai_roadmap.md)
 - Testing: [Test Coverage](docs/testing/tdd_coverage.md) · [Failure Injection](docs/testing/chaos_engineering_armageddon.md) · [Telemetry & Performance](docs/testing/telemetry_performance.md) · [LLMOps & Observability](docs/testing/llmops_observability.md)
 - Postmortems: [2026-09-21 MCP Transport Failures](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md)
-- Operations and agent context: [Runbook](RUNBOOK.md) · [Refund Policy (RAG source)](docs/policies/refund_policy.md) · [CLAUDE.md](CLAUDE.md) · [PENDING.md](PENDING.md) · [LASTCONTEXT.md](LASTCONTEXT.md)
+- Operations and agent context: [Runbook](RUNBOOK.md) · [Refund Policy (RAG source)](docs/policies/refund_policy.md) · [CLAUDE.md](CLAUDE.md) · [PENDING.md](PENDING.md) · [LASTCONTEXT.md](LASTCONTEXT.md) · [Work Log](docs/worklog/)
 
 ---
 
@@ -54,6 +54,8 @@ It addresses three problems that appear when LLMs are placed in a write path: no
 **Guardrails, up front:** a structural boundary against prompt injection — nothing in the prompt or in retrieved documents can extend a caller's tool access, because tool authorization comes only from the caller's authenticated identity, enforced server-side and covered by an integration test (a restricted identity calling `execute_refund` gets a denied, audited call) — plus a Prompt Guard model that screens jailbreak attempts before any agent runs. It also favors deterministic, auditable decisions over unchecked LLM judgment: tool calls are rate-limited and audit-logged, and when the two judges disagree the case goes to a Supreme Court tie-break and then, if still unresolved, to human review (`PENDING_HUMAN_REVIEW`). See the [Deterministic Guardrails Roadmap](docs/deterministic_guardrails_roadmap.md).
 
 The project also examines a second question: **how much of an AI system's decision-making can be made deterministic and auditable instead of probabilistic?** Later phases add a rule-based confidence layer (fuzzy scoring and a belief rule base) and a drift-detection layer over quality metrics. The direction is consistent throughout: use an explicit, inspectable mechanism wherever one can do the job, and use the LLM only where symbolic reasoning cannot replace it.
+
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
 ---
 
@@ -84,6 +86,8 @@ The project also examines a second question: **how much of an AI system's decisi
 - The primary agent is still mocked (`worker.py` hardcodes the proposed action) — Prompt Guard, RAG retrieval, the Double Judge, the Supreme Court cascade, and the refund itself all run for real: an approved claim is executed through the MCP server's `execute_refund` tool, behind the Phase 1.B boundary. `validate_fraud_score` is still a stub (fixed `0.12`). Replacing the mock is [Phase 1.E](#phase-1e--front-desk--back-office-asymmetric-agentic-workflow-designed-not-yet-implemented).
 - Not TLS-terminated between internal services, and no credential rotation or secret manager (tokens are read from environment and files) — Phase 1.B closed the authentication/authorization/rate-limiting/audit gap; these two remain open, and are expected to be addressed by the GCP deployment (Secret Manager, managed TLS).
 
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
+
 ---
 
 ## Tech Stack
@@ -100,6 +104,8 @@ The project also examines a second question: **how much of an AI system's decisi
 | **LLM Evaluation & Tracing** | Runtime Double LLM-as-a-Judge and Prompt Guard (implemented); Promptfoo and Langfuse (next); Ragas (later). See [LLM Evaluation & Observability](#llm-evaluation--observability) |
 | **Testing** | Pytest, pytest-asyncio, pytest-cov, Locust |
 | **Infrastructure** | Docker, Docker Compose (local); Google Cloud — Cloud Run, Cloud SQL for PostgreSQL, Artifact Registry (in progress); AWS (secondary) |
+
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
 ---
 
@@ -118,6 +124,8 @@ The project also examines a second question: **how much of an AI system's decisi
 | **Phase 4** | Read-only operations dashboard | Done |
 | **Phase 5** | Offline comparison: Keras MLP vs. rule base | Designed, not yet implemented |
 | **Phase 6** | Cloud deployment: Google Cloud Platform (Cloud Run, Cloud SQL for PostgreSQL, Artifact Registry, Vertex AI) as primary; AWS as secondary | In progress (GCP); AWS track designed, not yet implemented |
+
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
 ---
 
@@ -139,6 +147,8 @@ The runtime guardrails decide each claim. This section covers how their quality 
 - **TruLens** covers tracing plus the RAG triad, which Langfuse and Ragas already cover separately, without adding a second dashboard.
 
 Details: [LLMOps & Observability](docs/testing/llmops_observability.md).
+
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
 ---
 
@@ -163,7 +173,9 @@ Details: [LLMOps & Observability](docs/testing/llmops_observability.md).
 ### Operations and Agent Context
 - **[Runbook](RUNBOOK.md):** Local setup, operations, and running the test suites step by step.
 - **[Refund Policy](docs/policies/refund_policy.md):** The business policy the RAG pipeline indexes and the judges receive as context.
-- **[CLAUDE.md](CLAUDE.md)** (mirrored in [AGENTS.md](AGENTS.md) and [GEMINI.md](GEMINI.md)), **[PENDING.md](PENDING.md)**, **[LASTCONTEXT.md](LASTCONTEXT.md):** The coding agents' contract, the prioritized roadmap, and the session handoff log. See [AI-Assisted Development](#ai-assisted-development).
+- **[CLAUDE.md](CLAUDE.md)** (mirrored in [AGENTS.md](AGENTS.md) and [GEMINI.md](GEMINI.md)), **[PENDING.md](PENDING.md)**, **[LASTCONTEXT.md](LASTCONTEXT.md)**, **[Work Log](docs/worklog/):** The coding agents' contract, the prioritized roadmap, the current-state handoff, and the history of past sessions. See [AI-Assisted Development](#ai-assisted-development).
+
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
 ---
 
@@ -231,6 +243,8 @@ The LLM never touches the database or internal APIs. It reasons about the reques
 
 Before calling a transactional tool, the agent retrieves the relevant business rules by similarity search over `pgvector`. Implemented as [Phase 1.D](#phase-1d--rag-over-business-rules-pgvector-provider-agnostic-embeddings-done), below: the Worker embeds the incoming claim, retrieves the nearest policy chunk from `knowledge_base`, and injects it into the Double Judge's context. Retrieval is best-effort — a failure logs a warning and processing continues without retrieved context, it never blocks a transaction.
 
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
+
 ---
 
 ## Phase 1.B — MCP Security Boundary (Done)
@@ -276,6 +290,8 @@ An injected instruction can still influence which of the *allowed* tools the age
 | Runaway agent loops issuing repeated tool calls | Credential rotation and secret management |
 | Prompt injection through retrieved documents | Model-provider-side attacks |
 
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
+
 ---
 
 ## Phase 1.C — Containerized Local Deployment (Done — deployment and load validated)
@@ -292,6 +308,8 @@ Phase 1 ran as four processes started by hand in separate terminals (Postgres, R
 4. **Load validation (done):** re-ran the Locust concurrency suite (100 simulated concurrent claimants, spawn rate 10, 1 minute, `LLM_PROVIDER=mock` override on the worker for the primary agent) against the containerized stack instead of bare `localhost`. Results in [System Performance & Telemetry](#system-performance--telemetry) below — zero failures, and P95 latency stayed flat (87ms) instead of climbing over the run the way the pre-fix Gateway did. Drained a sample of the resulting backlog through the real worker, not the full ~2600 — Judge 2, the Supreme Court cascade, and Prompt Guard all hardcode their provider (Groq/Gemini) independently of `LLM_PROVIDER`, so even a mock override still makes real API calls per message, and draining thousands sequentially would burn real quota for no additional signal. Confirmed clean, correct routing under real processing on the sample drained: retries, Supreme Court escalation, and final `COMPLETED`/`PENDING_HUMAN_REVIEW` outcomes, with no deadlocks and no stuck `PROCESSING` rows.
 
 This phase seals the local environment that Phase 1.B secures and Phase 1.D (below) and the cloud deployment in [Phase 6](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary) build on.
+
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
 ---
 
@@ -324,6 +342,8 @@ SELECT content FROM knowledge_base ORDER BY embedding <=> :claim_vector LIMIT 1;
 
 One correction made while building this: the original design mislabeled `<->` as pgvector's cosine-distance operator. It is actually **L2/Euclidean distance** — `<=>` is cosine distance. All references (docs, migration, repository) were fixed to use `<=>` and `.cosine_distance()` before writing any query code, since building "cosine similarity search" on the wrong operator would have silently ranked results by the wrong metric.
 
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
+
 ---
 
 ## Phase 1.E — Front-Desk / Back-Office Asymmetric Agentic Workflow (Designed, not yet implemented)
@@ -347,6 +367,8 @@ Rather than one LLM that both interprets the user and decides the outcome, this 
 3. Define the objective-verdict contract the Back-Office exposes back to the Front-Desk (status + reason code, not the judges' raw text) — this is what the Front-Desk phrases into a human-readable reply.
 4. Does not require Phase 2 to be complete first — the mocked path already flows through the Double Judge today regardless of what proposes the action — but pairs naturally with Phase 2 once both are real, since a rule base evaluating real, varied Front-Desk intents is more meaningful than one hardcoded action.
 
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
+
 ---
 
 ## Phase 1.F — Dynamic LLM Provider Selection (Designed, not yet implemented)
@@ -369,6 +391,8 @@ These aren't mutually exclusive, and which one gets built first is an implementa
 3. Add the two provider dropdowns to the dashboard's ingestion panel.
 4. The global admin-config lever is a separate, later increment — not required to ship items 1-3.
 5. Does not touch the MCP tool-call provider boundary (Phase 1.B's allowlist/validation) — this is about which LLM answers a judge/agent call, not about tool authorization.
+
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
 ---
 
@@ -398,6 +422,8 @@ The judge stays useful for open-ended checks (tone, completeness, groundedness).
 
 It also has a cost effect: the rule base runs with zero inference cost, and cases it resolves with high confidence can skip judge escalation paths (see [Cost per Transaction](#cost-per-transaction)).
 
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
+
 ---
 
 ## Phase 3 — Quality Drift Detection (Designed, not yet implemented)
@@ -414,6 +440,8 @@ The detector is pluggable (`DRIFT_DETECTOR`), with EWMA as the default:
 | **Kalman filter** | Tracking a latent quality state with an explicit uncertainty band | Linear-Gaussian state and measurement model | Process noise Q, measurement noise R |
 
 See the ADR on drift detection for why EWMA is the default.
+
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
 ---
 
@@ -441,6 +469,8 @@ The auditability from Phases 1.B and 1.D currently lives in logs and tables. Pha
 ![Closer look at the Judge 1 / Judge 2 / Supreme Court reasoning trail](assets/dashboard-judges-debate-1.png)
 *Closer look at the decision inspector: independent Judge 1 (Gemini), Judge 2 (Groq), and Supreme Court verdicts, plus the Phase 2 belief-rule-base placeholder.*
 
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
+
 ---
 
 ## Phase 5 — Offline Comparison: MLP vs. Rule Base (Designed, not yet implemented)
@@ -451,6 +481,8 @@ An offline experiment that tests the project's core argument instead of assertin
 - **Evaluation:** precision, recall, and F1 on the same labeled cases used to validate the rules.
 - **Tracking:** MLflow records hyperparameters, metrics, and the model artifact per run, so each prediction is attributable to a specific model version.
 - **Constraint:** the MLP never participates in the approval path. Its predictions are logged next to the rule-base verdict for comparison only, and surfaced as a panel in the Phase 4 dashboard.
+
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
 ---
 
@@ -480,6 +512,8 @@ The project already runs on the Gemini model family (Judge 1, Supreme Court, and
 
 This phase depends on Phase 1.C (containerization) and Phase 1.D (pgvector + a working, provider-agnostic embeddings pipeline) — both complete.
 
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
+
 ---
 
 ## Cost per Transaction
@@ -503,6 +537,8 @@ Pricing (fetched 2026-09-21, spot-check against the live pricing pages before re
 
 Method: `src/agents/token_usage.py`'s `extract_usage()` logs a structured `llm_token_usage` line (stage, provider, input/output/total tokens) at every real LLM call site; read back from `docker compose logs worker` for this transaction and priced by hand against the table above. Not yet wired into a running cost dashboard or averaged across the promptfoo regression suite.
 
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
+
 ---
 
 ## System Performance & Telemetry
@@ -516,6 +552,8 @@ Measured 2026-09-21 against the full `docker compose` stack (Locust: 100 users, 
 | Ingestion throughput (local containerized stack) | 45.5 req/s average over the run (~49 req/s steady-state), 2630 requests, 0 failures |
 | End-to-end processing time | Pipeline alone (LLMs mocked): 90 ms service time P50 with one worker — see [Processing Throughput](#processing-throughput). With real providers it is dominated by LLM latency: a single real transaction observed completing within a few seconds outside load |
 
+
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
 ### Processing Throughput
 
@@ -541,6 +579,8 @@ The measurement found three problems, all fixed on the same branch:
 2. **The RabbitMQ healthcheck kept the broker busy even when idle.** Each `rabbitmq-diagnostics` check boots an Erlang VM and takes about 5 s, and it ran every 5 s, so one was almost always running: the idle broker spiked to ~150% CPU, against ~0.5% after the fix. Now it polls every 2 s while the broker starts (`start_interval`) and every 60 s after. The check only gates first boot, so readiness detection is unchanged. Measured the same way, one worker went from 6.0 to 8.8 claims/s with no code change.
 3. **The first version of `--prefill` stopped the workers** instead of pausing them. Restarting a worker re-imports LangChain, at about 100% CPU for several seconds per worker, inside the measured window. That understated throughput more with every worker added. It now uses `docker pause`.
 
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
+
 ### Correctness Under Faults
 
 Measured 2026-09-23 with `tests/performance/chaos_idempotency.py` against the full `docker compose` stack plus `docker-compose.chaos.yml` (every LLM role on `LLM_PROVIDER=mock`, so each claim is approved and reaches `execute_refund`; MCP rate limit lifted; Recovery Sweeper every 10s). 2,000 submissions = 1,800 unique claims + 200 duplicates (same `request_id`, sent after the original). While the backlog drains: `docker kill` the worker at 20% and 70% processed, `docker restart` RabbitMQ at 45%. Then every invariant is checked in PostgreSQL.
@@ -560,6 +600,8 @@ The run found two real bugs, both fixed on the same branch:
 2. **Worker crash on broker restart.** `ack()` on the closed channel raised, the error handler's `nack()` raised again, and the process exited; its first reconnect failed while the broker was still down. Fixed in `src/worker/amqp.py`: an unsettled message on a dead channel is logged and skipped (the broker redelivers it, and the `request_id` idempotency absorbs the replay), and the first connect waits for the broker with capped backoff.
 
 Idempotency was exercised for real, not just by duplicates: the second kill landed after `execute_refund` succeeded but before the transaction's final commit. The Recovery Sweeper requeued that zombie row, `execute_refund` returned `already_executed` with the same `refund_id`, and the ledger kept a single refund. Double refunds were 0 in every run, before and after the fixes — that guarantee comes from the `UNIQUE(request_id)` constraints, not from the broker.
+
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
 ---
 
@@ -615,6 +657,8 @@ ruff check src/
 mypy src/ --strict
 ```
 
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
+
 ---
 
 ## Project Structure
@@ -669,7 +713,7 @@ mcp-transactional-agent/
     docker/                   gateway.Dockerfile, worker.Dockerfile, mcp_server.Dockerfile,
                                dashboard.Dockerfile
     scripts/                  ingest_knowledge_base.py, seed_orders.py
-    docs/                     policies/, architecture/, postmortems/, testing/
+    docs/                     policies/, architecture/, postmortems/, testing/, worklog/
     alembic/
     alembic.ini
     .claude/                  Claude Code skills and hooks
@@ -683,9 +727,11 @@ mcp-transactional-agent/
     docker-compose.scale.yml  Override: lets --scale worker=N run
     CLAUDE.md                 Agent contract (mirrored in AGENTS.md, GEMINI.md)
     PENDING.md                Prioritized roadmap
-    LASTCONTEXT.md            Session handoff log
+    LASTCONTEXT.md            Current state for the next session (history in docs/worklog/)
     RUNBOOK.md                Local setup and operations
 ```
+
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
 ---
 
@@ -699,7 +745,8 @@ This project is built with AI coding agents: Claude Code is the primary agent, a
 |---|---|
 | `CLAUDE.md` (mirrored in `AGENTS.md` and `GEMINI.md`) | Architecture rules, layer boundaries, mandatory Red-Green-Refactor TDD, git conventions, and the actions that need human sign-off (Section 8). The three files are kept identical, so every agent gets the same rules. |
 | `PENDING.md` | The prioritized roadmap. The agent reads it to pick the next task and checks items off as they land. The safety hook refuses to delete or empty it. |
-| `LASTCONTEXT.md` | A session handoff log: the decisions made and who made them, what changed, the validation results, the state left behind (e.g. "stack still in chaos mode"), and the next step. A new session starts by reading it instead of re-deriving context. |
+| `LASTCONTEXT.md` | The current state, kept short: where things stand, the decisions in force, what is waiting on the user, the next steps, the state the environment was left in (e.g. "stack still in chaos mode"), and gotchas that still apply. A new session starts by reading it instead of re-deriving context. |
+| `docs/worklog/` | The history: each past session's decisions, changes, and validation, moved out of `LASTCONTEXT.md` once superseded. |
 | `RUNBOOK.md`, `docs/postmortems/`, `docs/architecture/microservices_debugging_protocol.md` | Operational knowledge the agent must follow. For example, isolate the transport plane from the application plane before blaming Docker networking. |
 
 ### What the agent does, end to end
@@ -726,6 +773,8 @@ Skills live in `.claude/skills/`, mirrored in `.agents/skills/`. They are proced
 - **`debug-worker`:** root-causes lost, duplicated, or stuck messages without breaking the ACK/NACK or idempotency contract.
 - **`tests`, `commit`, `ship`:** local validation, then a Conventional Commit, then push, only if everything passes.
 - **`push-dev`, `trash`:** a no-validation push for work-in-progress branches, and discarding a failed attempt.
+
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
 ---
 
@@ -772,6 +821,8 @@ python -m src.worker.worker              # terminal 3
 uvicorn src.api.main:app --reload --port 8000  # terminal 4
 ```
 
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
+
 ---
 
 ## Environment Variables
@@ -809,6 +860,8 @@ uvicorn src.api.main:app --reload --port 8000  # terminal 4
 | `DRIFT_DETECTOR` | No (3) | `ewma`, `cusum`, `page_hinkley`, or `kalman` (default: `ewma`) |
 | `EWMA_LAMBDA` | No (3) | EWMA smoothing factor (default: 0.2) |
 | `DRIFT_ALERT_SIGMA` | No (3) | Control-limit width in standard deviations (default: 3.0) |
+
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
 ---
 
@@ -864,6 +917,8 @@ The problem is separating sustained quality shifts from request-level noise, whi
 
 A trained drift classifier was rejected: it would need its own training data and maintenance, and would be another opaque component to monitor.
 
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
+
 ---
 
 ## Research Directions
@@ -875,6 +930,8 @@ Beyond the phases above, the following are candidate directions, not planned wor
 - **Conformal prediction:** calibrated error bounds (α) to decide when to delegate to a human.
 - **Search-based reasoning:** tree search with explicit value functions for multi-step decisions.
 - **Rule-based reward models:** alignment signals from code evaluators instead of learned preference models.
+
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
 ---
 
@@ -892,14 +949,20 @@ Beyond the phases above, the following are candidate directions, not planned wor
 - The worker keeps a database transaction open from the retrieval query through the judges and the refund call. With real LLMs that means one connection sitting "idle in transaction" for seconds per claim. It is one connection per worker, so it's harmless at this scale, but it doesn't scale well.
 - The MCP server runs as one Python process, at about 29 ms of CPU per claim, which caps it near 34 claims/s. Past that point it needs replicas, which the audit-table rate limiter already supports.
 
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
+
 ---
 
 ## Author
 
 Agustin Diaz-Cano, MS Candidate
 
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
+
 ---
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>

@@ -67,7 +67,7 @@ Decision changed 2026-09-22: **Google Cloud is now the primary deployment target
 - [ ] Serverless topology: AWS API Gateway + SQS + Lambda + serverless PostgreSQL (Neon with pgvector).
 
 ### Reliability, Evidence & Load Validation (2026-09-22 → 2026-09-23)
-Why it's here: the pipeline approved refunds it never executed, the judges evaluated without facts, and load numbers only measured ingestion. Details in `LASTCONTEXT.md`.
+Why it's here: the pipeline approved refunds it never executed, the judges evaluated without facts, and load numbers only measured ingestion. Details in `docs/worklog/2026-09-22_to_2026-09-23.md`.
 - [x] **Real refund execution** (PR #39): after APPROVE, the worker calls `execute_refund` through the MCP boundary, idempotent by `request_id` (`refunds` ledger, `UNIQUE(request_id)`); `EXECUTION_FAILED` + `nack(requeue=False)` after retries.
 - [x] **Orders + read tools** (PR #40): `orders` table (migration `c4d2a7e81f35`, sample data via `scripts/seed_orders.py`), MCP `get_order` / `get_refund_history`.
 - [x] **CI with a coverage gate** (PR #41): GitHub Actions runs ruff, `mypy --strict`, and pytest against real Postgres/RabbitMQ, fails under 80% coverage.
