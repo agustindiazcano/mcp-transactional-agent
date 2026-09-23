@@ -129,7 +129,7 @@ def test_vertex_defaults_match_the_gemini_models_the_stack_already_uses():
     assert defaults.VERTEX_EMBEDDING_MODEL == "gemini-embedding-001"
     # The Gemini 3.5 models are served only from Vertex's global endpoint.
     assert defaults.VERTEX_LOCATION == "global"
-    # Embeddings are served regionally too, and ~4x faster there than on global.
+    # Embeddings are served regionally too: ~1 s there vs ~12 s on global.
     assert defaults.VERTEX_EMBEDDING_LOCATION == "us-central1"
 
 

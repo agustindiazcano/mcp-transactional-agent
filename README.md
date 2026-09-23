@@ -71,7 +71,7 @@ The project also examines a second question: **how much of an AI system's decisi
 | **Load test** | Locust, 100 concurrent users against the full containerized stack: **2,630 requests, 0 failures, P95 87 ms** ([numbers](#system-performance--telemetry)). |
 | **Processing throughput** | Full pipeline per claim (guard, RAG, Double Judge, refund through the MCP boundary; LLMs mocked): **9.2 claims/s with 1 worker → 19.6 with 8**, on a 4-core laptop ([numbers](#processing-throughput)). |
 | **Security** | MCP boundary with token authn, per-tool authz, server-side argument validation, rate limiting, and a fail-closed audit log. Prompt injection is handled structurally: tool access comes only from the authenticated identity, so injected text can't extend it (integration-tested), and a Prompt Guard model screens jailbreak attempts first ([Phase 1.B](#phase-1b--mcp-security-boundary-done)). |
-| **Cloud** | **Google Cloud is the primary deployment target — in progress** (Cloud Run, Cloud SQL for PostgreSQL + pgvector, Artifact Registry, with **Vertex AI** as the inference provider being exercised). AWS is kept as a secondary target ([Phase 6](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary)). |
+| **Cloud** | **Google Cloud is the primary deployment target — in progress** (Cloud Run, Cloud SQL for PostgreSQL + pgvector, Artifact Registry, with **Vertex AI** as the inference provider — validated end-to-end locally: real claims judged on Vertex through the containerized stack). AWS is kept as a secondary target ([Phase 6](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary)). |
 
 **What this is**
 
@@ -99,7 +99,7 @@ The project also examines a second question: **how much of an AI system's decisi
 | **State & Persistence** | PostgreSQL, pgvector, SQLAlchemy (async), Alembic |
 | **AI & Orchestration** | Custom async orchestration (FastAPI → RabbitMQ → worker; Prompt Guard, Double Judge, self-correction loop, and Supreme Court cascade are built in-house, not a framework agent loop), Model Context Protocol (MCP). LangChain is used only as a thin provider-adapter layer (`langchain-core` chat/embeddings interfaces) behind `src/agents/llm_factory.py` — no LangChain chains or agents. |
 | **RAG Ingestion (Phase 1.D)** | Provider-agnostic embeddings (Gemini `gemini-embedding-001`, truncated to 768 dims, by default), `pgvector` |
-| **LLM Providers** | Gemini AI Studio, Google Vertex AI (being exercised for the GCP deployment), Groq, OpenAI (GPT-4o), AWS Bedrock (secondary) |
+| **LLM Providers** | Gemini AI Studio, Google Vertex AI (validated locally for the GCP deployment, ADC auth), Groq, OpenAI (GPT-4o), AWS Bedrock (secondary) |
 | **Frontend** | Streamlit + pandas (Ops Dashboard, Phase 4) |
 | **LLM Evaluation & Tracing** | Runtime Double LLM-as-a-Judge and Prompt Guard (implemented); Promptfoo and Langfuse (next); Ragas (later). See [LLM Evaluation & Observability](#llm-evaluation--observability) |
 | **Testing** | Pytest, pytest-asyncio, pytest-cov, Locust |
@@ -203,7 +203,7 @@ Details: [LLMOps & Observability](docs/testing/llmops_observability.md).
 | Provider | Role in this project |
 |---|---|
 | **OpenAI (GPT-4o)** | Primary agent: tool calling and multi-step reasoning. |
-| **Google Vertex AI** | Inference provider for the GCP deployment (Phase 6, in progress): same Gemini model family, authenticated via service account / ADC instead of an API key, and billed/governed inside the GCP project. The factory branch exists (`provider="vertex"`); validating it against real credentials is in progress. |
+| **Google Vertex AI** | Inference provider for the GCP deployment (Phase 6, in progress): same Gemini model family, authenticated via service account / ADC instead of an API key, and billed/governed inside the GCP project. `LLM_PROVIDER=vertex` runs Judge 1 and the Supreme Court on Vertex (`gemini-3.5-flash-lite`, `global` location) and RAG embeddings on Vertex (`us-central1`); validated end-to-end with real claims. |
 | **Gemini AI Studio** | Primary agent (using `gemini-3.5-flash-lite`) and Judge 1. |
 | **AWS Bedrock (Claude 3.5 Sonnet / Llama 3)** | Secondary cloud target: AWS-native inference without data leaving the account. |
 | **Groq** | Judge 2 (`openai/gpt-oss-20b`): ultra-low latency and deterministic auditing at temperature 0.0 — a different model family from Judge 1 (Gemini), so their errors are less correlated. Also hosts the Prompt Guard classifier (`meta-llama/llama-prompt-guard-2-22m`). |
@@ -499,7 +499,8 @@ The project already runs on the Gemini model family (Judge 1, Supreme Court, and
 - **Container images:** the existing `docker/*.Dockerfile` images (gateway, worker, mcp_server, dashboard) pushed to **Artifact Registry**.
 - **Compute:** each service on **Cloud Run** — gateway, MCP server, and dashboard as HTTP services; worker and Recovery Sweeper as always-on/min-instance services (they consume from the queue instead of serving requests). The HTTP/SSE MCP transport ([ADR](#why-httpsse-for-mcp-transport-not-stdio)) is what makes the worker and MCP server deployable as separate Cloud Run services.
 - **Database:** **Cloud SQL for PostgreSQL** with the `pgvector` extension enabled; Alembic migrations run as a one-shot job, mirroring the local `migrate` service.
-- **Inference:** **Vertex AI** via the factory's existing `provider="vertex"` branch, authenticated by the Cloud Run service account (ADC) — no API key in the environment. Validating this branch against real credentials is the current in-progress step.
+- **Inference (validated locally):** **Vertex AI** through `langchain-google-genai`'s Vertex mode, authenticated by ADC — the Cloud Run service account in the cloud, the developer's `gcloud auth application-default login` locally (mounted read-only into the worker by `docker-compose.gcp.yml`). No API key in the environment. Chat runs on the `global` location (the Gemini 3.5 models aren't served regionally) and embeddings on `us-central1` (~1 s instead of ~12 s on `global`). Vertex embeddings are identical to AI Studio's (cosine 1.0), so moving to Vertex needed no re-ingestion. A real claim through the containerized stack completes in 6.6 s, including one run where the Supreme Court on Vertex broke a Judge 1/Judge 2 split.
+- **Model Garden (next):** Claude on Vertex (`claude-sonnet-5`, `claude-haiku-4-5`) as candidate judges in the same GCP project, and a cost/latency benchmark across candidate models to decide which model fills which judge role. Not started.
 - **Secrets and TLS:** MCP client tokens and provider keys move from `.env`/files to **Secret Manager**; Cloud Run terminates TLS, closing two of the [Known Limitations](#known-limitations).
 - **Messaging:** open decision — keep RabbitMQ (self-hosted on a small VM) to preserve the per-message ACK/NACK contract unchanged, or move to Pub/Sub and re-validate the idempotency/retry contract against it.
 - **Re-test of load:** repeat the Phase 1.C Locust validation against the Cloud Run deployment and compare throughput/latency against the local baseline.
@@ -534,6 +535,21 @@ Measured 2026-09-21 against a single real transaction through the full `docker c
 | **Total (this transaction)** | | **~758** | **322** | **~$0.0004** |
 
 Pricing (fetched 2026-09-21, spot-check against the live pricing pages before relying on it — these change): Gemini `gemini-3.5-flash-lite` $0.30/$2.50 per 1M input/output tokens and `gemini-embedding-001` $0.15 per 1M input tokens ([ai.google.dev/gemini-api/docs/pricing](https://ai.google.dev/gemini-api/docs/pricing)); Groq `openai/gpt-oss-20b` $0.075/$0.30 and `llama-prompt-guard-2-22m` $0.03/$0.03 per 1M input/output tokens (third-party aggregators — Groq's own pricing page is JS-rendered and didn't yield a table via automated fetch, but independent sources converged on the same figures).
+
+### On Vertex AI (2026-09-23)
+
+Two real claims through the containerized stack with `LLM_PROVIDER=vertex` (Judge 1, Supreme Court, and embeddings on Vertex; Judge 2 and the Prompt Guard on Groq). Token counts are from the worker's `llm_token_usage` log lines; embedding tokens are estimated as above.
+
+| Stage | Model | Happy path (tokens in / out) | Escalation (tokens in / out) |
+|---|---|---|---|
+| Prompt Guard | Groq `llama-prompt-guard-2-22m` | 43 / 0 | 32 / 0 |
+| Retrieval (embedding, **estimated**) | Vertex `gemini-embedding-001` | ~36 / — | ~25 / — |
+| Judge 1 | Vertex `gemini-3.5-flash-lite` | 603 / 68 | 644 / 80 |
+| Judge 2 | Groq `openai/gpt-oss-20b` | 603 / 947 | 638 / 335 (REJECT) |
+| Supreme Court | Vertex `gemini-3.5-flash-lite` | not triggered | 644 / 66 (APPROVE) |
+| **End-to-end latency** | | 18 s (embeddings on `global`) | **6.6 s** (embeddings on `us-central1`) |
+
+The judges' input is about twice the 2026-09-21 figure (~600 vs ~320 tokens) because the prompt now fences untrusted claim text and carries the retrieved policy excerpt. Judge 2's output varies the most (947 vs 335 tokens), since GPT-OSS 20B reasons before it answers. These are token counts only: cost on Vertex will be filled in by the model benchmark (next branch), priced against the Vertex pricing page on the run date rather than assumed equal to AI Studio's.
 
 Method: `src/agents/token_usage.py`'s `extract_usage()` logs a structured `llm_token_usage` line (stage, provider, input/output/total tokens) at every real LLM call site; read back from `docker compose logs worker` for this transaction and priced by hand against the table above. Not yet wired into a running cost dashboard or averaged across the promptfoo regression suite.
 
@@ -809,6 +825,12 @@ API at `http://localhost:8000`, interactive docs at `http://localhost:8000/docs`
 ![All eight containers running after `docker compose up --build`](assets/docker-containers-up.png)
 *All eight services up: `postgres`, `rabbitmq`, `worker`, `dashboard`, `sweeper`, `migrate` (one-shot, exited 0), `mcp_server`, and `gateway`.*
 
+**With Vertex AI instead of API keys** (`LLM_PROVIDER=vertex` and `VERTEX_PROJECT` in `.env`): log in once with `gcloud auth application-default login`, then add the override that mounts those credentials read-only into the worker:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gcp.yml up -d --build
+```
+
 ### Local development (without rebuilding containers)
 
 To iterate on Python code without rebuilding images each time, start only the infrastructure in Docker and run the services directly:
@@ -836,6 +858,10 @@ uvicorn src.api.main:app --reload --port 8000  # terminal 4
 | `OPENAI_API_KEY` | Conditional | Required when `LLM_PROVIDER=openai` |
 | `GEMINI_API_KEY` | Conditional | Required for Gemini AI Studio |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Conditional | Required for Vertex AI when running outside GCP (on Cloud Run, the attached service account / ADC is used instead) |
+| `VERTEX_PROJECT` | Conditional | GCP project for `LLM_PROVIDER=vertex` (empty: the project ADC resolves; set it explicitly inside containers) |
+| `VERTEX_LOCATION` | No | Vertex location for chat (default `global`; the Gemini 3.5 models aren't served regionally) |
+| `VERTEX_EMBEDDING_LOCATION` | No | Vertex location for embeddings (default `us-central1`: ~1 s per embedding vs ~12 s on `global`, measured locally) |
+| `VERTEX_MODEL` / `VERTEX_EMBEDDING_MODEL` | No | Defaults `gemini-3.5-flash-lite` / `gemini-embedding-001` |
 | `GROQ_API_KEY` | Conditional | Required when `LLM_PROVIDER=groq` |
 | `AWS_ACCESS_KEY_ID` | Conditional | Required when `LLM_PROVIDER=bedrock` |
 | `AWS_SECRET_ACCESS_KEY` | Conditional | Required when `LLM_PROVIDER=bedrock` |
