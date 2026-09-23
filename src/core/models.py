@@ -1,8 +1,9 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Index, String, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, Index, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -48,6 +49,31 @@ class Transaction(Base):
         nullable=False,
     )
     judge_trail: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+
+
+class Refund(Base):
+    """A refund actually executed by the MCP `execute_refund` tool.
+
+    `request_id` is the idempotency key: its UNIQUE constraint is what makes
+    a retried or redelivered tool call return the existing refund instead of
+    recording a second one (see src/core/repositories/refund_repository.py).
+    Deliberately no foreign key to `transactions`: the MCP server owns this
+    ledger and must not depend on the worker's table to record a refund.
+    """
+
+    __tablename__ = "refunds"
+    __table_args__ = (UniqueConstraint("request_id", name="uq_refunds_request_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(String, nullable=False)
+    transaction_id: Mapped[str] = mapped_column(String, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
 
 
 class McpAuditLog(Base):

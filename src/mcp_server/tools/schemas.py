@@ -8,21 +8,10 @@ extra-fields-silently-ignored) per-parameter schema. This is what makes
 regardless of what the LLM produced (CLAUDE.md Section 5a-i, item 3).
 """
 
-from enum import Enum
-
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.core.config import settings
-
-
-class Currency(str, Enum):
-    """Currencies accepted by financial tools. Restricting to an enum (rather
-    than a free-form string) is itself part of the argument-validation gate.
-    """
-
-    USD = "USD"
-    EUR = "EUR"
-    GBP = "GBP"
+from src.core.currency import Currency
 
 
 class ExecuteRefundArgs(BaseModel):
@@ -31,6 +20,9 @@ class ExecuteRefundArgs(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # Idempotency key: the tool records at most one refund per request_id,
+    # so a retried or redelivered call can never refund twice.
+    request_id: str = Field(min_length=1)
     transaction_id: str = Field(min_length=1)
     amount: float = Field(gt=0, le=settings.REFUND_MAX_AMOUNT)
     currency: Currency = Currency.USD

@@ -22,7 +22,7 @@ The project also examines a second question: **how much of an AI system's decisi
 |---|---|
 | **Runs locally** | `docker compose up --build` brings up **8 containers**: `postgres` (pgvector), `rabbitmq`, `migrate` (one-shot Alembic), `mcp_server`, `worker`, `sweeper`, `gateway`, `dashboard`. |
 | **UI to try it** | Streamlit Ops Dashboard at `http://localhost:8501` — submit a claim, watch it move through the pipeline, and inspect the Judge 1 / Judge 2 / Supreme Court reasoning trail per transaction ([Phase 4](#phase-4--operations-dashboard-done)). |
-| **Tests** | **124 passing** — 94 unit + 30 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks) — **81% line coverage** over `src/` (`pytest --cov=src`). |
+| **Tests** | **152 passing** — 117 unit + 35 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks) — **83% line coverage** over `src/` (`pytest --cov=src`). |
 | **Load test** | Locust, 100 concurrent users against the full containerized stack: **2,630 requests, 0 failures, P95 87 ms** ([numbers](#system-performance--telemetry)). |
 | **Security** | MCP boundary with token authn, per-tool authz, server-side argument validation, rate limiting, and a fail-closed audit log. Prompt injection is handled structurally: tool access comes only from the authenticated identity, so injected text can't extend it (integration-tested), and a Prompt Guard model screens jailbreak attempts first ([Phase 1.B](#phase-1b--mcp-security-boundary-done)). |
 | **Cloud** | **Google Cloud is the primary deployment target — in progress** (Cloud Run, Cloud SQL for PostgreSQL + pgvector, Artifact Registry, with **Vertex AI** as the inference provider being exercised). AWS is kept as a secondary target ([Phase 6](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary)). |
@@ -37,7 +37,7 @@ The project also examines a second question: **how much of an AI system's decisi
 
 - Not deployed to the cloud yet. The Google Cloud deployment is in progress; there is no CI/CD pipeline, no SLOs, and no production incident runbook yet.
 - Local load testing complete: the Locust suite validated high-concurrency event ingestion against the containerized stack. Distributed cloud load testing is pending the GCP deployment (cold starts, real network latency, and managed-service limits are not measured yet).
-- The primary agent is still mocked (`worker.py` hardcodes the proposed action) — Prompt Guard, RAG retrieval, the Double Judge, the Supreme Court cascade, and the MCP tools all run for real. Replacing the mock is [Phase 1.E](#phase-1e--front-desk--back-office-asymmetric-agentic-workflow-designed-not-yet-implemented).
+- The primary agent is still mocked (`worker.py` hardcodes the proposed action) — Prompt Guard, RAG retrieval, the Double Judge, the Supreme Court cascade, and the refund itself all run for real: an approved claim is executed through the MCP server's `execute_refund` tool, behind the Phase 1.B boundary. `validate_fraud_score` is still a stub (fixed `0.12`). Replacing the mock is [Phase 1.E](#phase-1e--front-desk--back-office-asymmetric-agentic-workflow-designed-not-yet-implemented).
 - Not TLS-terminated between internal services, and no credential rotation or secret manager (tokens are read from environment and files) — Phase 1.B closed the authentication/authorization/rate-limiting/audit gap; these two remain open, and are expected to be addressed by the GCP deployment (Secret Manager, managed TLS).
 
 ---
@@ -108,8 +108,9 @@ The project also examines a second question: **how much of an AI system's decisi
 8. **Cascade Architecture (Supreme Court):** If the base judges disagree or repeatedly reject, the transaction escalates to a Supreme Court Judge (Gemini 3.5 Flash) for a final tie-breaking decision before falling back to `PENDING_HUMAN_REVIEW`.
 9. **Provider routing:** Abstract Factory for swapping LLM providers per component, with explicit temperature control.
 10. **Concurrency control:** Pessimistic row locking (`SELECT ... FOR UPDATE`) plus a `UniqueConstraint` on `request_id` prevent two workers from processing the same transaction; a background Recovery Sweeper (`FOR UPDATE SKIP LOCKED`) detects `PROCESSING` rows abandoned by a crashed worker and re-queues them.
+11. **Deterministic execution:** once the judges approve, deterministic worker code (`src/worker/refund_executor.py`), never an LLM, calls the MCP `execute_refund` tool through the Phase 1.B security boundary. The tool records the refund in a `refunds` ledger (migration `b3e1f0c9a2d4`) at most once per `request_id`, so a retry, a redelivered message, or a Recovery Sweeper requeue can never refund twice. A successful call marks the transaction `COMPLETED`; an approved claim with no `order_id`/`amount` has nothing to execute and goes to `PENDING_HUMAN_REVIEW`; a call that still fails after `MCP_TOOL_MAX_RETRIES` attempts marks it `EXECUTION_FAILED`. The tool's result is stored in the trail as `judge_trail["execution"]`.
 
-**Completed in this build sequence:** pessimistic locking and integrity constraints (step 10), the Recovery Sweeper (step 10), the Prompt Guard pre-execution shield (step 5), and the Supreme Court cascade judge (step 8).
+**Completed in this build sequence:** pessimistic locking and integrity constraints (step 10), the Recovery Sweeper (step 10), the Prompt Guard pre-execution shield (step 5), the Supreme Court cascade judge (step 8), and real, idempotent refund execution via MCP (step 11).
 
 ### 1. Provider-Agnostic LLM Routing
 
@@ -138,11 +139,18 @@ The ingestion gateway publishes each request to RabbitMQ and returns `202 Accept
 | Retries | Up to `MAX_LLM_RETRIES` (default 3) with exponential backoff on rate limits and timeouts. |
 | Exhausted retries | Message moves to the dead-letter queue; no partial effect is committed. |
 | Double Judge rejection | If either Gemini or Groq rejects, the transaction is persisted as `PENDING_HUMAN_REVIEW`; no tool is executed. |
+| Refund execution | Only after approval, only from deterministic worker code. `request_id` is the `execute_refund` tool's idempotency key (UNIQUE constraint on `refunds.request_id` plus `INSERT ... ON CONFLICT DO NOTHING`): a replay returns the existing refund with `status: "already_executed"` instead of refunding again. |
+| Execution failure | Each attempt opens a fresh MCP session bounded by `MCP_TOOL_TIMEOUT_SECONDS`, with exponential backoff (`MCP_TOOL_BACKOFF_BASE_SECONDS`) for up to `MCP_TOOL_MAX_RETRIES` attempts. When all attempts fail, the transaction is persisted as `EXECUTION_FAILED` and the message is NACKed with `requeue=False`. The row, not the queue, is what records the failure for an operator. |
 | Stale lock recovery | If a worker crashes mid-flight, the `PROCESSING` row is detected by the Recovery Sweeper (`FOR UPDATE SKIP LOCKED`) and re-enqueued within `SWEEPER_STALE_THRESHOLD_SECONDS` (default 5 min). |
 
 ### 3. MCP Server
 
 The LLM never touches the database or internal APIs. It reasons about the request and asks the MCP server to run a tool (`execute_refund`, `validate_fraud_score`). The server is a separate process, so a malformed or hallucinated tool call can only reach what the server exposes. Securing that boundary is [Phase 1.B](#phase-1b--mcp-security-boundary-done), below.
+
+- **`execute_refund(request_id, transaction_id, amount, currency)`** is real: it writes to the `refunds` ledger through `src/core/repositories/refund_repository.py` and returns a JSON result (`status` is `executed` or `already_executed`, plus `refund_id`, `amount`, and `currency`). It is idempotent by `request_id`.
+- **`validate_fraud_score(user_id)`** is still a stub that returns a fixed `0.12`.
+- **Who calls the write tool:** only the worker, and only after the judges approve (build sequence step 11). The LLM proposes; it never pushes the button.
+- **MCP SDK 2.2.0 caveat:** a `tools/call` response arrives over the SSE stream, not in the POST's HTTP response. When the security boundary rejects a call with a 4xx, the client never gets a response and `call_tool` would wait forever. `src/worker/refund_executor.py` therefore opens a new session per attempt with `read_timeout_seconds=MCP_TOOL_TIMEOUT_SECONDS`, which turns the hang into a bounded, retryable failure.
 
 ### 4. Retrieval over Business Rules
 
@@ -173,7 +181,7 @@ The project's central claim is that the MCP server is the only path from the LLM
 |---|---|
 | Client authentication | Done — SHA-256 hash + constant-time compare, `src/mcp_server/security/client_registry.py` |
 | Per-tool authorization | Done — per-`client_id` allowlist checked on every `tools/call`, `src/mcp_server/security/middleware.py` |
-| Server-side argument validation | Done — `ExecuteRefundArgs`/`ValidateFraudScoreArgs` in `src/mcp_server/tools/schemas.py`, `extra="forbid"` |
+| Server-side argument validation | Done — `ExecuteRefundArgs`/`ValidateFraudScoreArgs` in `src/mcp_server/tools/schemas.py`, `extra="forbid"`; `execute_refund` also requires a non-empty `request_id` (its idempotency key) |
 | Rate limiting | Done — sliding-window COUNT over `mcp_audit_logs`, `src/mcp_server/security/rate_limiter.py`, `MCP_RATE_LIMIT_PER_MIN` |
 | Audit log | Done — `mcp_audit_logs` table (migration `70b40799328f`, index adjusted in `5f889de3a5a3`), `src/mcp_server/security/audit.py` |
 
@@ -351,7 +359,7 @@ The auditability from Phases 1.B and 1.D currently lives in logs and tables. Pha
 
 - **Stack:** Streamlit + pandas, not the originally designed React/TS/Vite/TanStack/Recharts/Tailwind stack — a single-page, read-only internal tool doesn't need a full SPA toolchain, and this gets the same observability with far less surface area to maintain.
 - **Screens:** a health strip (Gateway/PostgreSQL/MCP Server, each checked server-side); an ingestion panel (submit a claim, see the `202 Accepted` + `request_id` immediately); a transaction monitor (`st.fragment`, 2s refresh) with live throughput/P95-latency stats computed from the table itself; each row expands into a decision inspector showing the real Judge 1 (Gemini) / Judge 2 (Groq) / Supreme Court reasoning trail.
-- **Real lifecycle values used for status coloring:** `PROCESSING`, `COMPLETED`, `PENDING_HUMAN_REVIEW`, `BLOCKED_MALICIOUS_PROMPT` — there is no separate `PENDING` or `REJECTED` status; a judge reject routes to `PENDING_HUMAN_REVIEW`.
+- **Real lifecycle values used for status coloring:** `PROCESSING`, `COMPLETED`, `PENDING_HUMAN_REVIEW`, `BLOCKED_MALICIOUS_PROMPT`, `EXECUTION_FAILED` (approved, but the MCP `execute_refund` call failed after every retry) — there is no separate `PENDING` or `REJECTED` status; a judge reject routes to `PENDING_HUMAN_REVIEW`.
 - **Quality Trend screen: deferred.** It depended on Phase 3's drift detector output, which doesn't exist yet (Phase 3 is still experimental/roadmap) — no data source to show, so it isn't built.
 - **Belief Rule Base panel: placeholder.** Phase 2's `confidence/rule_base.py` is still unimplemented, so each row's expander shows a static "Phase 2 not yet implemented" note instead of a fabricated belief degree.
 - **In scope:** read-only `GET` endpoints under `src/api/routers/` (`/api/v1/transactions`, `/api/v1/system-health`) — the dashboard is an ordinary API consumer, same as designed.
@@ -449,10 +457,10 @@ Measured 2026-09-21 against the full `docker compose` stack (Locust: 100 users, 
 ## Testing
 
 ### Unit and Integration
-Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-22): **124 passed, 0 failed, 81% line coverage over `src/`**.
+Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-22): **152 passed, 0 failed, 83% line coverage over `src/`**.
 
-- **Unit (94 tests, no network required for most):** provider factory, judge parsing and cascade routing, Prompt Guard, token-usage extraction, chunking, retrieval service, system-health service, recovery sweeper, worker concurrency, MCP security (client registry, PII masking, argument schemas), and the dashboard's API client, stats, and theme. Two repository tests in `tests/unit/` need a live PostgreSQL.
-- **Integration (30 tests, real PostgreSQL + RabbitMQ):** API gateway, PostgreSQL persistence, knowledge-base vector search, MCP server over HTTP (401/403/422/429 responses plus audit rows), rate limiter, worker idempotency and judge-reject routing, and the dashboard's read-only transaction/system-health routers.
+- **Unit (117 tests, no network required for most):** provider factory, judge parsing and cascade routing, Prompt Guard, token-usage extraction, chunking, retrieval service, system-health service, recovery sweeper, worker concurrency and execution routing (`COMPLETED` / `EXECUTION_FAILED` / not executable), the MCP refund executor (retries, backoff, timeouts, tool errors), the gateway's claim schema, MCP security (client registry, PII masking, argument schemas), and the dashboard's API client, stats, and theme. Two repository tests in `tests/unit/` need a live PostgreSQL.
+- **Integration (35 tests, real PostgreSQL + RabbitMQ):** API gateway, PostgreSQL persistence, knowledge-base vector search, MCP server over HTTP (401/403/422/429 responses plus audit rows), the `execute_refund` tool and `refunds` ledger (including idempotent replays), rate limiter, worker idempotency and judge-reject routing, and the dashboard's read-only transaction/system-health routers.
 - **Load (Locust):** 100 concurrent users against the full `docker compose` stack — see [System Performance & Telemetry](#system-performance--telemetry).
 
 See the [Test Coverage Report](docs/testing/tdd_coverage.md).
@@ -509,10 +517,12 @@ agentic-mcp-engine/
             dependencies.py   Shared FastAPI DI (e.g. get_db_session)
         core/                 Shared domain logic
             config.py         pydantic-settings configuration
+            currency.py       Currency enum shared by the gateway and the MCP tools
             database.py       Async connection and session
             models.py         SQLAlchemy models
             services/         chunking.py, retrieval_service.py, system_health_service.py
-            repositories/     knowledge_base_repository.py, transaction_repository.py
+            repositories/     knowledge_base_repository.py, transaction_repository.py,
+                               refund_repository.py
         agents/               LLM orchestration and provider factory
             llm_factory.py, judge.py, prompt_guard.py, token_usage.py
         mcp_server/           MCP server (HTTP/SSE)
@@ -521,7 +531,8 @@ agentic-mcp-engine/
             security/         [Phase 1.B, done] client_registry.py, middleware.py,
                                rate_limiter.py, audit.py
         worker/               RabbitMQ consumer, orchestration, MCP client
-            worker.py, recovery_sweeper.py
+            worker.py, recovery_sweeper.py,
+            refund_executor.py  Executes approved refunds via MCP (retries, timeouts)
         ui/                   [Phase 4, done] Streamlit Ops Dashboard
             app.py            Layout: health strip, ingestion panel, transaction monitor
             api_client.py     The dashboard's ONLY data source — the gateway's HTTP API
@@ -656,6 +667,9 @@ uvicorn src.api.main:app --reload --port 8000  # terminal 4
 | `MCP_CLIENT_TOKEN` | Yes (1.B) | Worker side: this worker's bearer token for the MCP server |
 | `MCP_RATE_LIMIT_PER_MIN` | No (1.B) | Default calls per minute per client and tool (default: 30) |
 | `REFUND_MAX_AMOUNT` | No (1.B) | Upper bound enforced by `execute_refund` validation (default: 10000) |
+| `MCP_TOOL_TIMEOUT_SECONDS` | No | Worker side: read timeout per MCP tool-call attempt; bounds the MCP SDK's hang when the security boundary rejects a call with a 4xx (default: 10) |
+| `MCP_TOOL_MAX_RETRIES` | No | Worker side: attempts at `execute_refund` before the transaction is marked `EXECUTION_FAILED` (default: 3) |
+| `MCP_TOOL_BACKOFF_BASE_SECONDS` | No | Worker side: base delay of the exponential backoff between tool-call attempts (default: 1.0) |
 | `EXPERT_SYSTEM_CONFIDENCE_THRESHOLD` | No (2) | Minimum belief degree for auto-approval (default: 0.85) |
 | `DRIFT_DETECTOR` | No (3) | `ewma`, `cusum`, `page_hinkley`, or `kalman` (default: `ewma`) |
 | `EWMA_LAMBDA` | No (3) | EWMA smoothing factor (default: 0.2) |
@@ -735,6 +749,8 @@ Beyond the phases above, the following are candidate directions, not planned wor
 - No TLS between internal services; no credential rotation or secret manager (tokens are read from environment and files).
 - No multi-tenancy; one set of business rules per deployment.
 - A database superuser can still modify the audit table; the log is protected against the MCP service, not against a compromised host.
+- `validate_fraud_score` is still a stub (fixed `0.12`), and there is no `orders` table yet, so neither the judges nor the refund tool can check a refund against the original purchase amount.
+- No dead-letter exchange is configured: a message NACKed after `EXECUTION_FAILED` is dropped from the queue. The transaction row keeps the status and the error for an operator. A 4xx from the MCP boundary (e.g. a 422) is also retried like any other failure, even though it can't succeed. The retries are bounded, but they use up rate-limit quota.
 - No offline prompt-regression suite yet (promptfoo is planned, not implemented — see `PENDING.md` Step 3); the only evaluation today is the runtime Double Judge.
 - Performance and cost figures are local, single-run measurements (see tables above) — not yet re-measured on cloud infrastructure or averaged across many transactions.
 

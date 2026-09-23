@@ -52,6 +52,9 @@ All external API calls (LLM endpoints, MCP tool calls) must implement exponentia
 ### Interface Segregation and Factory Pattern
 LLM instantiation must be abstracted behind a factory. The system must switch between Gemini, Vertex AI, Groq, OpenAI, or AWS Bedrock by changing the `LLM_PROVIDER` environment variable only, without any modification to business logic. `src/agents/llm_factory.py`'s `get_llm(provider=...)` already satisfies this at the code level; Phase 1.F (Section 5a-v) extends it past a static env var to per-request/per-judge selection and a hot-swappable global default.
 
+### Only Deterministic Code Executes Write Tools
+No LLM ever calls a side-effecting MCP tool. Agents and judges propose and evaluate; the worker's deterministic code (`src/worker/refund_executor.py`) is the only caller of `execute_refund`, and only after the Double Judge approves. Every write tool must be idempotent by `request_id` (for `execute_refund`: the UNIQUE constraint on `refunds.request_id`), so a worker retry, a redelivered message, or a Recovery Sweeper requeue can never repeat a side effect.
+
 ### No Direct DB Access from the LLM Layer
 The agent layer must never import or reference any SQLAlchemy model, repository, or database connection. All data access must flow through MCP tool calls.
 
@@ -69,6 +72,8 @@ The worker (MCP client) and `mcp_server.py` (MCP server) communicate over **HTTP
 
 This was an explicit choice over the MCP SDK's `stdio` transport. `stdio` requires the client to spawn the server as a child process, which would collapse the worker and the MCP server into a single process — simpler and slightly lower latency, but it removes the independent-services boundary this project is built to demonstrate (each service scales, deploys, and fails independently; the MCP server can be shared by more than one worker). If a future phase needs `stdio`'s lower overhead for a specific tool, add it as an additional transport behind the same tool interface — do not silently replace HTTP/SSE project-wide.
 
+Known MCP SDK 2.2.0 behavior: a `tools/call` response arrives over the SSE stream, not in the POST's HTTP response. So when the Phase 1.B middleware rejects a call with a 4xx, the client never receives a response and `call_tool` waits forever. Every worker-side tool call must therefore open a fresh session per attempt with `ClientSession(read_timeout_seconds=MCP_TOOL_TIMEOUT_SECONDS)` and retry with exponential backoff, as `src/worker/refund_executor.py` does. Never reuse a session across retries.
+
 ### When Two Containers Fail to Communicate: Isolate Transport From Application
 Follow [`docs/architecture/microservices_debugging_protocol.md`](docs/architecture/microservices_debugging_protocol.md) before proposing a networking/Docker-level fix for a cross-container failure. Rule of thumb: write the smallest possible script that exercises only the suspect connection (e.g. `sse_client(...)` + `.initialize()`, nothing else) and run it with `docker exec` inside the actual failing container. If it passes, the bug is in the application's control flow or exception handling around that connection, not the transport — stop suspecting Docker/DNS/networking and start reading the code path that uses the connection, especially any `async with` block wrapping a task group. The Phase 1.C MCP postmortem (`docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md`) is the canonical example: an unguarded `get_llm(provider="groq", ...)` call three layers into the application code, not a transport bug at all, despite every symptom looking like one.
 
@@ -82,12 +87,18 @@ When asked to build Phase 1 features, follow this logical sequence (all steps be
 1. Infrastructure and Domain: Define SQLAlchemy models in `models.py` and the DB connection in `database.py`.
 2. Ingestion Layer: Build FastAPI endpoints in `main.py` to validate requests via Pydantic and push them to RabbitMQ, returning HTTP 202 Accepted.
 3. MCP Server: Implement `mcp_server.py` exposing isolated tools such as `get_user_history` and `execute_refund`.
-4. Worker Layer: Implement `worker.py` to consume RabbitMQ messages, verify idempotency, orchestrate the LLM call through the MCP server, and commit the final transaction.
+4. Worker Layer: Implement `worker.py` to consume RabbitMQ messages, verify idempotency, orchestrate the LLM call, and commit the final transaction. The primary agent's proposal is still mocked (Phase 1.E replaces it); the refund execution in step 10 is real.
 5. Pre-Execution Shield: A Prompt Guard model (`llama-prompt-guard-2-22m`) intercepts malicious prompts and jailbreak attempts before they reach the primary agent, failing fast.
 6. Guardrails: Intercept the LLM decision with a concurrent dual-judge evaluation (Asymmetric Double LLM-as-a-Judge using Gemini and GPT-OSS 20B via Groq) before persisting the final status to PostgreSQL.
 7. Self-Correction Loop: If the base judges reject on a formatting or logic error, route the feedback back to the primary agent for self-correction up to `MAX_LLM_RETRIES`.
 8. Cascade Architecture (Supreme Court): If the base judges disagree or repeatedly reject, escalate to a Supreme Court Judge (Gemini 3.5 Flash) for a tie-breaking decision before falling back to `PENDING_HUMAN_REVIEW`.
 9. Concurrency Control: Pessimistic row locking (`SELECT ... FOR UPDATE`) plus a `UniqueConstraint` on `request_id` prevent double-processing; a background Recovery Sweeper (`FOR UPDATE SKIP LOCKED`) reclaims and re-queues `PROCESSING` rows abandoned by a crashed worker.
+10. Deterministic Execution (done, branch `feat/real-refund-execution`): after an APPROVE, `worker.py` calls the MCP `execute_refund` tool through `src/worker/refund_executor.py`, with `request_id` as the idempotency key. The tool writes to the `refunds` ledger (migration `b3e1f0c9a2d4`, `src/core/repositories/refund_repository.py`, `INSERT ... ON CONFLICT DO NOTHING`) and returns a dict whose `status` is `executed` or `already_executed`. `ClaimRequest` carries optional `order_id`, `amount`, and `currency` (`src/core/currency.py`, shared with the MCP schemas), validated at the gateway with the same limits as the MCP boundary. Outcomes:
+    - Refund executed: `COMPLETED`.
+    - Approved but no `order_id`/`amount`: nothing to execute, so `PENDING_HUMAN_REVIEW`.
+    - Execution still failing after `MCP_TOOL_MAX_RETRIES`: `EXECUTION_FAILED`, and the message is NACKed with `requeue=False`.
+
+    The result is stored in the trail as `judge_trail["execution"]`. `validate_fraud_score` is still a stub (fixed `0.12`).
 
 ## 5a-i. Development Phases — Phase 1.B (MCP Security Boundary, Done)
 
@@ -95,7 +106,7 @@ All five items below are implemented in `src/mcp_server/security/` (`client_regi
 
 1. Authentication: each client (worker type) gets its own bearer token; the server stores only its SHA-256 hash, compares in constant time, and derives `client_id` from the token — never from a caller-supplied header.
 2. Per-tool authorization: a server-side allowlist maps `client_id` to permitted tools. Tool listing is filtered by identity; calls to non-allowed tools are rejected and audited as denied.
-3. Argument validation: every tool takes a Pydantic model with explicit business limits (e.g., `REFUND_MAX_AMOUNT`), a restricted currency enum, and rejection of unknown fields — enforced server-side regardless of what the LLM produced.
+3. Argument validation: every tool takes a Pydantic model with explicit business limits (e.g., `REFUND_MAX_AMOUNT`), a restricted currency enum, and rejection of unknown fields — enforced server-side regardless of what the LLM produced. `execute_refund` also requires a non-empty `request_id`, its idempotency key.
 4. Rate limiting: per `client_id` and per tool, computed from the audit table over a sliding window (`MCP_RATE_LIMIT_PER_MIN`), so the limit holds across MCP replicas without adding Redis.
 5. Audit log: every invocation (including denied and rate-limited) writes a row with timestamp, `client_id`, tool, arguments (PII masked), decision, and result. See the fail-closed directive in Section 4.
 
@@ -229,6 +240,7 @@ agentic-mcp-engine/
             main.py
         core/                # Shared domain logic
             config.py
+            currency.py      # Currency enum shared by the gateway and the MCP tools
             database.py
             models.py
             services/
@@ -241,6 +253,7 @@ agentic-mcp-engine/
         worker/              # RabbitMQ consumer, MCP client
             worker.py
             recovery_sweeper.py
+            refund_executor.py  # deterministic execute_refund caller (retries, timeouts)
         ui/                  # Phase 4: Streamlit Ops Dashboard (done)
             app.py
             api_client.py    # the dashboard's ONLY data source (gateway HTTP API)
@@ -309,6 +322,9 @@ When refusing an action under this section, always state the correct alternative
 | `MCP_CLIENT_TOKEN` | Phase 1.B, worker side: this worker's bearer token for the MCP server |
 | `MCP_RATE_LIMIT_PER_MIN` | Phase 1.B: default calls per minute per client and tool (default: 30) |
 | `REFUND_MAX_AMOUNT` | Phase 1.B: upper bound enforced by `execute_refund` validation (default: 10000) |
+| `MCP_TOOL_TIMEOUT_SECONDS` | Worker side: read timeout per MCP tool-call attempt; bounds the MCP SDK's hang when the security boundary rejects a call with a 4xx (default: 10) |
+| `MCP_TOOL_MAX_RETRIES` | Worker side: attempts at `execute_refund` before the transaction is marked `EXECUTION_FAILED` (default: 3) |
+| `MCP_TOOL_BACKOFF_BASE_SECONDS` | Worker side: base delay of the exponential backoff between tool-call attempts (default: 1.0) |
 | `EXPERT_SYSTEM_CONFIDENCE_THRESHOLD` | Phase 2: minimum belief degree required for rule-base auto-approval (default: 0.85) |
 | `DRIFT_DETECTOR` | Phase 3: active detector — `ewma`, `cusum`, `page_hinkley`, or `kalman` (default: `ewma`) |
 | `EWMA_LAMBDA` | Phase 3: EWMA smoothing factor (default: 0.2) |

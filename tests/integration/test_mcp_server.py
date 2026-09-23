@@ -9,7 +9,7 @@ from sqlalchemy import select, text
 
 from src.core.config import settings
 from src.core.database import get_engine, get_session_maker
-from src.core.models import Base, McpAuditLog
+from src.core.models import Base, McpAuditLog, Refund
 from src.mcp_server.security.client_registry import ClientRegistry
 
 # We need to make sure the app can be imported
@@ -51,6 +51,7 @@ async def db_engine():
     # why -- only clear this file's own rows.
     async with engine.begin() as conn:
         await conn.execute(text("TRUNCATE TABLE mcp_audit_logs RESTART IDENTITY CASCADE"))
+        await conn.execute(text("TRUNCATE TABLE refunds RESTART IDENTITY CASCADE"))
     await engine.dispose()
 
 
@@ -122,6 +123,7 @@ async def test_tool_call_over_refund_limit_is_blocked_and_audited(async_mcp_clie
         "params": {
             "name": "execute_refund",
             "arguments": {
+                "request_id": "req-over-limit",
                 "transaction_id": "txn-over-limit",
                 "amount": over_limit_amount,
                 "currency": "USD",
@@ -177,7 +179,12 @@ async def test_tool_call_without_allowlisted_tool_is_denied_and_audited(db_engin
         "method": "tools/call",
         "params": {
             "name": "execute_refund",
-            "arguments": {"transaction_id": "txn-1", "amount": 10.0, "currency": "USD"},
+            "arguments": {
+                "request_id": "req-1",
+                "transaction_id": "txn-1",
+                "amount": 10.0,
+                "currency": "USD",
+            },
         },
     }
 
@@ -207,7 +214,12 @@ def _refund_call_payload(transaction_id: str) -> dict:
         "method": "tools/call",
         "params": {
             "name": "execute_refund",
-            "arguments": {"transaction_id": transaction_id, "amount": 10.0, "currency": "USD"},
+            "arguments": {
+                "request_id": f"req-{transaction_id}",
+                "transaction_id": transaction_id,
+                "amount": 10.0,
+                "currency": "USD",
+            },
         },
     }
 
@@ -311,3 +323,57 @@ async def test_rate_limit_is_scoped_per_client_at_http_layer(db_engine):
         )
 
     assert other_client_response.status_code != 429
+
+
+@pytest.mark.asyncio
+async def test_execute_refund_records_refund_and_returns_structured_result(db_engine):
+    """The tool is no longer a stub: it writes a row to `refunds` and returns
+    a JSON-serializable dict the worker can persist to the judge trail."""
+    from src.mcp_server.mcp_server import execute_refund
+
+    session_maker = get_session_maker(db_engine)
+    create_app(registry=_test_registry(), session_maker=session_maker)
+
+    result = await execute_refund(
+        request_id="req-tool-1", transaction_id="ord-1", amount=42.5, currency="EUR"
+    )
+
+    assert result["status"] == "executed"
+    assert result["request_id"] == "req-tool-1"
+    assert result["transaction_id"] == "ord-1"
+    assert result["amount"] == 42.5
+    assert result["currency"] == "EUR"
+    assert isinstance(result["refund_id"], int)
+    json.dumps(result)
+
+    async with session_maker() as session:
+        rows = (
+            await session.execute(select(Refund).where(Refund.request_id == "req-tool-1"))
+        ).scalars().all()
+    assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_execute_refund_is_idempotent_by_request_id(db_engine):
+    """A retried call with the same request_id never refunds twice."""
+    from src.mcp_server.mcp_server import execute_refund
+
+    session_maker = get_session_maker(db_engine)
+    create_app(registry=_test_registry(), session_maker=session_maker)
+
+    first = await execute_refund(
+        request_id="req-tool-2", transaction_id="ord-2", amount=10.0, currency="USD"
+    )
+    second = await execute_refund(
+        request_id="req-tool-2", transaction_id="ord-2", amount=10.0, currency="USD"
+    )
+
+    assert first["status"] == "executed"
+    assert second["status"] == "already_executed"
+    assert second["refund_id"] == first["refund_id"]
+
+    async with session_maker() as session:
+        rows = (
+            await session.execute(select(Refund).where(Refund.request_id == "req-tool-2"))
+        ).scalars().all()
+    assert len(rows) == 1

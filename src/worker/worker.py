@@ -2,8 +2,6 @@ import json
 import logging
 from typing import Any
 
-from mcp import ClientSession
-from mcp.client.sse import sse_client
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,8 +10,14 @@ from src.agents.judge import evaluate_decision
 from src.agents.llm_factory import get_embeddings, get_llm
 from src.agents.prompt_guard import GuardResult, scan_for_injection
 from src.core.config import settings
+from src.core.currency import Currency
 from src.core.models import Transaction
 from src.core.services.retrieval_service import retrieve_relevant_policy
+from src.worker.refund_executor import (
+    McpCallPolicy,
+    RefundExecutionError,
+    execute_refund_via_mcp,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -94,45 +98,65 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
         # Instantiate LLM
         _ = get_llm()
 
-        # ── Step 3: MCP + Self-Correction Loop ──────────────────────────────
-        # Authenticated as this worker's client_id via the Phase 1.B security
-        # boundary (src/mcp_server/security/middleware.py) -- the httpx client
-        # sse_client() builds applies this header to both the initial /sse
-        # handshake and every subsequent /messages/ POST on this connection.
-        mcp_headers = {"Authorization": f"Bearer {settings.MCP_CLIENT_TOKEN}"}
-        async with sse_client(settings.MCP_SERVER_URL, headers=mcp_headers) as streams, \
-                   ClientSession(streams[0], streams[1]) as mcp_session:
-            await mcp_session.initialize()
+        # ── Step 3: Self-Correction Loop ────────────────────────────────────
+        retries = 0
+        max_retries = settings.MAX_LLM_RETRIES
+        judge_result: dict[str, Any] = {}
 
-            retries = 0
-            max_retries = settings.MAX_LLM_RETRIES
-            judge_result: dict[str, Any] = {}
+        judge_context: dict[str, Any] = {"request_id": request_id}
+        if retrieved_policy:
+            judge_context["retrieved_policy"] = retrieved_policy
 
-            judge_context: dict[str, Any] = {"request_id": request_id}
-            if retrieved_policy:
-                judge_context["retrieved_policy"] = retrieved_policy
+        while retries < max_retries:
+            # In the real system this invokes the LangChain agent loop.
+            mock_primary_action = "execute_refund"
+            mock_primary_args = body
 
-            while retries < max_retries:
-                # In the real system this invokes the LangChain agent loop.
-                mock_primary_action = "execute_refund"
-                mock_primary_args = body
+            judge_result = await evaluate_decision(
+                action_name=mock_primary_action,
+                action_args=mock_primary_args,
+                context=judge_context,
+            )
 
-                judge_result = await evaluate_decision(
-                    action_name=mock_primary_action,
-                    action_args=mock_primary_args,
-                    context=judge_context,
+            if judge_result.get("verdict") == "APPROVE":
+                break
+            else:
+                retries += 1
+                logger.warning(
+                    f"⚠️  Judge rejected (attempt {retries}/{max_retries}). "
+                    f"Reason: {judge_result.get('reason')}"
                 )
 
-                if judge_result.get("verdict") == "APPROVE":
-                    break
-                else:
-                    retries += 1
-                    logger.warning(
-                        f"⚠️  Judge rejected (attempt {retries}/{max_retries}). "
-                        f"Reason: {judge_result.get('reason')}"
-                    )
+        # ── Step 4: Deterministic execution via MCP ─────────────────────────
+        # The LLM never pushes the button: only this code calls execute_refund,
+        # and only after the judges approve. The call goes through the Phase
+        # 1.B security boundary, with request_id as the tool's idempotency key.
+        approved = judge_result.get("verdict") == "APPROVE"
+        execution: dict[str, Any] | None = None
+        final_status = "PENDING_HUMAN_REVIEW"
+        order_id = body.get("order_id")
+        amount = body.get("amount")
 
-        # ── Step 4: Pessimistic lock → final status write ───────────────────
+        if approved and not (order_id and amount):
+            execution = {
+                "status": "not_executable",
+                "reason": "Claim approved but has no order_id/amount to refund.",
+            }
+        elif approved:
+            try:
+                execution = await execute_refund_via_mcp(
+                    request_id=request_id,
+                    transaction_id=order_id,
+                    amount=amount,
+                    currency=body.get("currency") or Currency.USD.value,
+                    policy=McpCallPolicy.from_settings(),
+                )
+                final_status = "COMPLETED"
+            except RefundExecutionError as e:
+                execution = {"status": "failed", "error": str(e)}
+                final_status = "EXECUTION_FAILED"
+
+        # ── Step 5: Pessimistic lock → final status write ───────────────────
         res = await db_session.execute(
             select(Transaction)
             .where(Transaction.request_id == request_id)
@@ -144,16 +168,27 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
         trail: dict[str, Any] | None = judge_result.get("trail")
         if guard_result is not None:
             trail = {**(trail or {}), "prompt_guard": guard_result.to_trail()}
+        if execution is not None:
+            trail = {**(trail or {}), "execution": execution}
         locked_txn.judge_trail = trail
+        locked_txn.status = final_status
 
-        if judge_result.get("verdict") == "APPROVE":
-            locked_txn.status = "COMPLETED"
+        if final_status == "COMPLETED":
             logger.info(
-                f"✅ Transaction {request_id} APPROVED. "
+                f"✅ Transaction {request_id} APPROVED and refund executed. "
                 f"Reason: {judge_result.get('reason')}"
             )
+        elif final_status == "EXECUTION_FAILED":
+            logger.error(
+                f"💥 Transaction {request_id} APPROVED but refund execution failed: "
+                f"{execution}"
+            )
+        elif approved:
+            logger.warning(
+                f"❌ Transaction {request_id} → PENDING_HUMAN_REVIEW: approved "
+                "but not executable (missing order_id/amount)."
+            )
         else:
-            locked_txn.status = "PENDING_HUMAN_REVIEW"
             logger.warning(
                 f"❌ Transaction {request_id} → PENDING_HUMAN_REVIEW "
                 f"after {max_retries} attempts. Final reason: {judge_result.get('reason')}"
@@ -161,6 +196,12 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
 
         await db_session.commit()
         logger.info(f"Transaction {request_id} committed to DB with status: {locked_txn.status}")
+
+        if final_status == "EXECUTION_FAILED":
+            # Retries are exhausted inside the executor; requeueing would only
+            # loop. The row already records the failure for an operator.
+            await message.nack(requeue=False)
+            return
 
         await message.ack()
 
