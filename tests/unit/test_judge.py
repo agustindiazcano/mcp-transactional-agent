@@ -327,3 +327,47 @@ async def test_mock_mode_approves_end_to_end_without_network(
     assert result["trail"]["judge1"]["verdict"] == "APPROVE"
     assert result["trail"]["judge2"]["verdict"] == "APPROVE"
     assert result["trail"]["supreme_court"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("configured", "judge1"), [("gemini", "gemini"), ("vertex", "vertex")])
+async def test_approval_reason_names_the_providers_actually_used(
+    monkeypatch: pytest.MonkeyPatch, configured: str, judge1: str
+) -> None:
+    """The reason is persisted and shown on the dashboard, so it must name the
+    providers that really judged, not a hardcoded 'Gemini and Groq'."""
+    monkeypatch.setattr(settings, "LLM_PROVIDER", configured)
+    mock_llm = AsyncMock()
+    mock_llm.ainvoke.return_value = AIMessage(
+        content=json.dumps({"verdict": "APPROVE", "reason": "ok"})
+    )
+
+    with patch("src.agents.judge.get_llm", return_value=mock_llm):
+        result = await evaluate_decision("execute_refund", {"amount": 1.0}, {})
+
+    assert result["reason"] == f"Approved by both judges (judge1: {judge1}, judge2: groq)."
+
+
+@pytest.mark.asyncio
+async def test_supreme_court_failure_fallback_names_providers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the Supreme Court itself fails, the fallback reason lists each
+    rejecting base judge by role and provider."""
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "vertex")
+    rejecting = AsyncMock()
+    rejecting.ainvoke.return_value = AIMessage(
+        content=json.dumps({"verdict": "REJECT", "reason": "too high"})
+    )
+
+    with patch("src.agents.judge.get_llm", return_value=rejecting),          patch("src.agents.judge._run_single_judge", wraps=_run_single_judge) as spy:
+        async def fail_on_supreme(provider: str, temperature: float, messages: list[object],
+                                  stage: str) -> dict[str, object]:
+            if stage == "supreme_court":
+                raise RuntimeError("down")
+            return await _run_single_judge(provider, temperature, messages, stage)
+        spy.side_effect = fail_on_supreme
+        result = await evaluate_decision("execute_refund", {"amount": 1.0}, {})
+
+    assert result["verdict"] == "REJECT"
+    assert result["reason"] == "Judge 1 (vertex): too high | Judge 2 (groq): too high"

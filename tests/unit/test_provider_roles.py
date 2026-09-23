@@ -23,7 +23,7 @@ def test_mock_mode_is_case_and_whitespace_insensitive(monkeypatch: pytest.Monkey
     assert provider_for_role("judge2") == "mock"
 
 
-@pytest.mark.parametrize("configured", ["gemini", "groq", "openai", "vertex", "bedrock"])
+@pytest.mark.parametrize("configured", ["gemini", "groq", "openai", "bedrock"])
 def test_real_provider_keeps_the_fixed_role_pairing(
     monkeypatch: pytest.MonkeyPatch, configured: str
 ) -> None:
@@ -34,6 +34,18 @@ def test_real_provider_keeps_the_fixed_role_pairing(
     assert provider_for_role("judge1") == "gemini"
     assert provider_for_role("judge2") == "groq"
     assert provider_for_role("supreme_court") == "gemini"
+    assert provider_for_role("prompt_guard") == "groq"
+
+
+def test_vertex_mode_moves_the_gemini_roles_to_vertex(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On GCP the Gemini roles run on Vertex AI (same model family, service-account
+    auth). Judge 2 and the guard stay on Groq, so the Double Judge keeps two
+    model families."""
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "vertex")
+
+    assert provider_for_role("judge1") == "vertex"
+    assert provider_for_role("supreme_court") == "vertex"
+    assert provider_for_role("judge2") == "groq"
     assert provider_for_role("prompt_guard") == "groq"
 
 

@@ -64,5 +64,5 @@ strict = true
 # Optional LLM providers, not declared dependencies: imported inside
 # try/except in src/agents/llm_factory.py and absent in CI.
 [[tool.mypy.overrides]]
-module = ["langchain_openai", "langchain_google_vertexai", "langchain_aws"]
+module = ["langchain_openai", "langchain_aws"]
 ignore_missing_imports = true

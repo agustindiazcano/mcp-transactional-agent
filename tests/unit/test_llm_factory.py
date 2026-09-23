@@ -86,21 +86,51 @@ def test_get_llm_groq():
         assert call_kwargs["temperature"] == 0.7
 
 
-def test_get_llm_vertex():
-    """Test that the factory returns a Vertex model when LLM_PROVIDER=vertex."""
-    mock_settings = Settings(LLM_PROVIDER="vertex")
-    with patch("src.agents.llm_factory.settings", mock_settings), \
-         patch("src.agents.llm_factory.ChatVertexAI") as MockVertex:
+def test_get_llm_vertex_uses_configured_model_project_and_location():
+    """Vertex runs through langchain-google-genai's Vertex mode (ChatVertexAI is
+    deprecated). It authenticates with ADC / the Cloud Run service account, so
+    the factory passes no API key -- only the model, project, and region, all
+    from settings rather than hardcoded."""
+    mock_settings = Settings(
+        LLM_PROVIDER="vertex",
+        VERTEX_MODEL="gemini-test-model",
+        VERTEX_PROJECT="demo-project",
+        VERTEX_LOCATION="europe-west1",
+    )
+    with patch("src.agents.llm_factory.settings", mock_settings),          patch("src.agents.llm_factory.ChatGoogleGenerativeAI") as MockVertex:
         mock_instance = MagicMock(spec=BaseChatModel)
         MockVertex.return_value = mock_instance
-        
-        llm = get_llm()
-        
+
+        llm = get_llm(temperature=0.0)
+
         assert llm is mock_instance
         MockVertex.assert_called_once_with(
-            model_name="gemini-1.5-pro",
-            temperature=0.7
+            model="gemini-test-model",
+            vertexai=True,
+            project="demo-project",
+            location="europe-west1",
+            temperature=0.0,
         )
+
+
+def test_get_llm_vertex_without_project_lets_adc_resolve_it():
+    """An empty VERTEX_PROJECT means 'use the project ADC resolves', not ''."""
+    mock_settings = Settings(LLM_PROVIDER="vertex", VERTEX_PROJECT="")
+    with patch("src.agents.llm_factory.settings", mock_settings),          patch("src.agents.llm_factory.ChatGoogleGenerativeAI") as MockVertex:
+        get_llm()
+
+        assert MockVertex.call_args.kwargs["project"] is None
+
+
+def test_vertex_defaults_match_the_gemini_models_the_stack_already_uses():
+    defaults = Settings()
+
+    assert defaults.VERTEX_MODEL == "gemini-3.5-flash-lite"
+    assert defaults.VERTEX_EMBEDDING_MODEL == "gemini-embedding-001"
+    # The Gemini 3.5 models are served only from Vertex's global endpoint.
+    assert defaults.VERTEX_LOCATION == "global"
+    # Embeddings are served regionally too: ~1 s there vs ~12 s on global.
+    assert defaults.VERTEX_EMBEDDING_LOCATION == "us-central1"
 
 
 def test_get_llm_bedrock():
@@ -171,3 +201,47 @@ def test_get_embeddings_unknown_provider_raises():
     with patch("src.agents.llm_factory.settings", mock_settings), \
          pytest.raises(ValueError, match="No embeddings provider configured"):
             get_embeddings()
+
+
+def test_get_embeddings_vertex_uses_vertex_client_at_768_dims():
+    """LLM_PROVIDER=vertex must use the Vertex backend, not AI Studio (which
+    needs GEMINI_API_KEY): on Cloud Run only ADC is available. The vector size
+    must stay 768 to match knowledge_base.embedding."""
+    from src.agents.llm_factory import get_embeddings
+
+    mock_settings = Settings(
+        LLM_PROVIDER="vertex",
+        VERTEX_PROJECT="demo-project",
+        VERTEX_LOCATION="global",
+        VERTEX_EMBEDDING_LOCATION="europe-west1",
+        VERTEX_EMBEDDING_MODEL="gemini-embedding-test",
+    )
+    with patch("src.agents.llm_factory.settings", mock_settings),          patch("src.agents.llm_factory.GoogleGenerativeAIEmbeddings") as MockVertexEmb:
+        mock_instance = MagicMock()
+        MockVertexEmb.return_value = mock_instance
+
+        embeddings = get_embeddings()
+
+        assert embeddings is mock_instance
+        MockVertexEmb.assert_called_once_with(
+            model="gemini-embedding-test",
+            vertexai=True,
+            project="demo-project",
+            location="europe-west1",
+            output_dimensionality=768,
+        )
+
+
+@pytest.mark.parametrize(
+    ("override", "configured", "expected"),
+    [(None, " Vertex ", "vertex"), ("GROQ", "vertex", "groq"), (None, "mock", "mock")],
+)
+def test_resolve_provider_normalizes_the_override_or_the_setting(
+    override: str | None, configured: str, expected: str
+) -> None:
+    """One normalization rule for every factory, so the provider a caller
+    logs is exactly the one the factory built."""
+    from src.agents.llm_factory import resolve_provider
+
+    with patch("src.agents.llm_factory.settings", Settings(LLM_PROVIDER=configured)):
+        assert resolve_provider(override) == expected

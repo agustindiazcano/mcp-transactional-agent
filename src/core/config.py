@@ -21,6 +21,16 @@ class Settings(BaseSettings):
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""
 
+    # Vertex AI (Phase 6, GCP). Auth is ADC / the Cloud Run service account,
+    # never an API key. An empty VERTEX_PROJECT lets ADC resolve the project.
+    # "global": the Gemini 3.5 models aren't served from regional endpoints.
+    VERTEX_PROJECT: str = ""
+    VERTEX_LOCATION: str = "global"
+    # Embeddings are also served regionally: ~1 s here vs ~12 s on global.
+    VERTEX_EMBEDDING_LOCATION: str = "us-central1"
+    VERTEX_MODEL: str = "gemini-3.5-flash-lite"
+    VERTEX_EMBEDDING_MODEL: str = "gemini-embedding-001"
+
     # Prompt Guard: Groq returns a malicious-probability score in [0, 1];
     # inputs scoring at or above this are blocked as BLOCKED_MALICIOUS_PROMPT.
     PROMPT_GUARD_THRESHOLD: float = 0.5

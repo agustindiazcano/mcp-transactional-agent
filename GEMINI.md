@@ -19,7 +19,7 @@ The project is organized around Phase 1 (core transactional engine, production-r
 - API Gateway: FastAPI, Uvicorn, Pydantic (data validation).
 - Message Broker: RabbitMQ, aio-pika (async task consumption).
 - Database and Idempotency: PostgreSQL (with pgvector extension, Phase 1.D), SQLAlchemy (async ORM), Alembic.
-- AI Core: custom async orchestration (the pipeline, retries, Double Judge, and Supreme Court cascade are hand-written — no LangChain chains/agents); LangChain (`langchain-core`) only as a thin provider-adapter layer behind `llm_factory.py`. Providers: Google GenAI (Gemini), Google Vertex AI (primary cloud provider, Phase 6, in progress), Groq API, OpenAI, AWS Bedrock (secondary).
+- AI Core: custom async orchestration (the pipeline, retries, Double Judge, and Supreme Court cascade are hand-written — no LangChain chains/agents); LangChain (`langchain-core`) only as a thin provider-adapter layer behind `llm_factory.py`. Providers: Google GenAI (Gemini), Google Vertex AI (primary cloud provider, Phase 6 — validated end-to-end locally via ADC), Groq API, OpenAI, AWS Bedrock (secondary).
 - Agent Sandbox: Model Context Protocol (MCP) Python SDK, over HTTP/SSE transport (see Section 4).
 - LLMOps (Testing and Guardrails): Promptfoo (shift-left testing), Langfuse (telemetry), Asymmetric Double LLM-as-a-Judge pattern for runtime output evaluation (Gemini + GPT-OSS 20B via Groq), plus a Prompt Guard pre-execution filter and a Supreme Court cascade judge for disagreement escalation.
 - Load Testing: Locust (concurrency/chaos validation, Phase 1.C).
@@ -196,13 +196,14 @@ The detector is pluggable via `DRIFT_DETECTOR`, over the time series of judge/Tr
 Decision (2026-09-22): Google Cloud Platform is the primary deployment target and Vertex AI the primary cloud inference provider; AWS is a secondary target. Rationale: the stack already runs on the Gemini model family (Judge 1, Supreme Court, `gemini-embedding-001`), so Vertex AI gives the same models with service-account auth and in-project governance, and the Phase 1.C containers map almost 1:1 onto Cloud Run. Dependencies (Phase 1.C containerization, Phase 1.D provider-agnostic embeddings) are both complete.
 
 **Primary — Google Cloud (in progress):**
-1. Vertex AI provider: validate `get_llm(provider="vertex")` against real credentials (ADC / Cloud Run service account, not an API key). Known gaps before it can run in a container: `langchain-google-vertexai` is not yet declared in `pyproject.toml`, and the branch hardcodes `model_name="gemini-1.5-pro"`. Changing providers must stay behind the factory (Section 4) — no business-logic changes.
+1. Vertex AI provider (done, branch `feat/vertex-provider`): runs through `langchain-google-genai`'s Vertex mode (`vertexai=True`; `langchain-google-vertexai`'s `ChatVertexAI` is deprecated and not a dependency). `get_llm("vertex")` and `get_embeddings("vertex")` read `VERTEX_MODEL`/`VERTEX_EMBEDDING_MODEL`/`VERTEX_PROJECT` and authenticate via ADC (no API key). Two locations: chat on `VERTEX_LOCATION=global` (the Gemini 3.5 models 404 on regional endpoints), embeddings on `VERTEX_EMBEDDING_LOCATION=us-central1` (~1 s vs ~12 s on `global`). Embeddings stay at 768 dims and are identical to AI Studio's (cosine 1.0), so the existing `knowledge_base` rows need no re-ingestion. `LLM_PROVIDER=vertex` moves the Gemini roles (Judge 1, Supreme Court) to Vertex; Judge 2 and the Prompt Guard stay on Groq. Locally, `docker-compose.gcp.yml` mounts the host ADC file read-only into the worker only. Validated with real claims through the containerized stack: happy path `COMPLETED` in 6.6 s, and an escalation where the Supreme Court on Vertex broke a Judge 1/Judge 2 split. Changing providers must stay behind the factory (Section 4) — no business-logic changes.
 2. Artifact Registry: push the existing `docker/*.Dockerfile` images (gateway, worker, mcp_server, dashboard).
 3. Cloud Run: gateway, MCP server, dashboard as HTTP services; worker and Recovery Sweeper as min-instance consumers. Keep the worker and MCP server as separate services over HTTP/SSE (Section 4) — do not collapse them.
 4. Cloud SQL for PostgreSQL with `pgvector`; Alembic runs as a one-shot job, mirroring the local `migrate` service. Section 8's migration-confirmation rule applies to the cloud database too.
 5. Secret Manager for MCP client tokens and provider keys; Cloud Run-managed TLS.
 6. Messaging: open decision — self-hosted RabbitMQ (ACK/NACK contract unchanged) vs. Pub/Sub (idempotency/retry contract must be re-validated first). Do not switch brokers without confirming with the user.
 7. Re-test of load: repeat the Phase 1.C Locust validation against Cloud Run and compare against the local baseline.
+8. Model Garden and cost benchmark (next branch, `feat/vertex-model-garden`, not started): Claude on Vertex (`claude-sonnet-5`, `claude-haiku-4-5`) as candidate judges through the official `anthropic[vertex]` SDK (`AnthropicVertex`, ADC) behind the factory; a verdict-stability check (the same claims N times per model — `claude-sonnet-5` rejects `temperature` with a 400 and the Gemini 3.5 models are thinking models, so determinism is measured, not assumed from `temperature=0`); and `scripts/cost_benchmark.py`, which runs the same claim set through each candidate and prints a Markdown table of latency, tokens, and cost at prices fetched on the run date. The asymmetric-judge rule (Section 10) still applies: Judge 1 and Judge 2 must come from different model families.
 
 **Secondary — AWS (roadmap):**
 1. IAM and Bedrock: least-privilege IAM policies scoped to the foundation models actually invoked, plus VPC PrivateLink endpoints so inference traffic stays in the VPC.
@@ -321,6 +322,11 @@ When refusing an action under this section, always state the correct alternative
 | `OPENAI_API_KEY` | OpenAI API key (when LLM_PROVIDER=openai) |
 | `GEMINI_API_KEY` | Google GenAI API key |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP credentials for Vertex AI when running outside GCP (on Cloud Run, the attached service account / ADC is used instead) |
+| `VERTEX_PROJECT` | Phase 6: GCP project for Vertex AI (empty: the project ADC resolves) |
+| `VERTEX_LOCATION` | Phase 6: Vertex AI location (default: `global`; the Gemini 3.5 models aren't served from regional endpoints) |
+| `VERTEX_EMBEDDING_LOCATION` | Phase 6: Vertex location for embeddings (default: `us-central1`; ~1 s per embedding vs ~12 s on `global`, measured locally) |
+| `VERTEX_MODEL` | Phase 6: Vertex chat model for the Gemini roles (default: `gemini-3.5-flash-lite`) |
+| `VERTEX_EMBEDDING_MODEL` | Phase 6: Vertex embeddings model, requested at 768 dims (default: `gemini-embedding-001`) |
 | `GROQ_API_KEY` | Groq API key |
 | `AWS_ACCESS_KEY_ID` | AWS key (when LLM_PROVIDER=bedrock) |
 | `AWS_SECRET_ACCESS_KEY` | AWS secret (when LLM_PROVIDER=bedrock) |

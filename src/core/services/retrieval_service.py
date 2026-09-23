@@ -50,9 +50,14 @@ async def retrieve_relevant_policy(
     session: AsyncSession,
     embeddings_client: Embeddings,
     claim_text: str,
+    *,
+    provider: str,
 ) -> str | None:
     """Embed `claim_text` and return the single most similar policy chunk's
     content, or None if `claim_text` is blank or the knowledge base is empty.
+
+    `provider` is the one `embeddings_client` was built for; it's only used
+    to label the token-usage log line.
     """
     if not claim_text.strip():
         return None
@@ -66,7 +71,7 @@ async def retrieve_relevant_policy(
     usage_logger.info(
         "llm_token_usage",
         stage="retrieval_embedding",
-        provider="gemini",
+        provider=provider,
         input_tokens=estimated_tokens,
         output_tokens=0,
         total_tokens=estimated_tokens,

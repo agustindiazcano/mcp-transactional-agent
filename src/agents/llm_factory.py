@@ -8,9 +8,9 @@ from pydantic import SecretStr
 
 from src.core.config import settings
 
-# Optional imports for various cloud providers. OpenAI, Vertex AI and Bedrock
-# aren't declared dependencies; pyproject's [tool.mypy] overrides let mypy
-# pass whether or not they're installed (they aren't in CI).
+# Optional imports for various cloud providers. OpenAI and Bedrock aren't
+# declared dependencies; pyproject's [tool.mypy] overrides let mypy pass
+# whether or not they're installed (they aren't in CI).
 try:
     from langchain_google_genai import (
         ChatGoogleGenerativeAI,
@@ -24,11 +24,6 @@ try:
     from langchain_openai import ChatOpenAI
 except ImportError:
     ChatOpenAI: Any = None  # type: ignore
-
-try:
-    from langchain_google_vertexai import ChatVertexAI
-except ImportError:
-    ChatVertexAI: Any = None  # type: ignore
 
 try:
     from langchain_aws import ChatBedrock
@@ -46,6 +41,15 @@ except ImportError:
 PROMPT_GUARD_MODEL = "meta-llama/llama-prompt-guard-2-22m"
 
 
+def resolve_provider(provider: str | None = None) -> str:
+    """Normalize ``provider``, or LLM_PROVIDER when it's None.
+
+    Both factories use this, so a caller that logs the resolved name logs
+    exactly the provider the factory built.
+    """
+    return (provider if provider is not None else settings.LLM_PROVIDER).lower().strip()
+
+
 def get_llm(provider: str | None = None, temperature: float = 0.7, model_name: str | None = None) -> BaseChatModel:
     """
     Factory function to instantiate the active LLM based on environment configuration.
@@ -55,9 +59,7 @@ def get_llm(provider: str | None = None, temperature: float = 0.7, model_name: s
         temperature: Set the determinism of the model (default 0.7 for agents, 0.0 for judges)
         model_name: Optional override for the specific model to use.
     """
-    if provider is None:
-        provider = settings.LLM_PROVIDER
-    provider = provider.lower().strip()
+    provider = resolve_provider(provider)
 
     if provider == "mock":
         if model_name == PROMPT_GUARD_MODEL:
@@ -78,12 +80,17 @@ def get_llm(provider: str | None = None, temperature: float = 0.7, model_name: s
         ))
         
     elif provider == "vertex":
-        if ChatVertexAI is None:
-            raise ImportError("langchain-google-vertexai is not installed")
-        # Ensure credentials are provided in the environment or ADC
-        return cast(BaseChatModel, ChatVertexAI(
-            model_name="gemini-1.5-pro",
-            temperature=temperature
+        if ChatGoogleGenerativeAI is None:
+            raise ImportError("langchain-google-genai is not installed")
+        # langchain-google-genai's Vertex backend (ChatVertexAI is deprecated).
+        # Credentials come from ADC (the Cloud Run service account, or
+        # GOOGLE_APPLICATION_CREDENTIALS locally) -- no API key.
+        return cast(BaseChatModel, ChatGoogleGenerativeAI(
+            model=settings.VERTEX_MODEL,
+            vertexai=True,
+            project=settings.VERTEX_PROJECT or None,
+            location=settings.VERTEX_LOCATION,
+            temperature=temperature,
         ))
         
     elif provider == "gemini":
@@ -155,18 +162,27 @@ def get_embeddings(provider: str | None = None) -> Embeddings:
     embeddings path is Phase 6 work, not implemented here.
 
     Args:
-        provider: Override the default provider from settings. Currently
-            supports 'gemini' (also used for 'vertex', same embedding model)
-            and 'mock'.
+        provider: Override the default provider from settings. Supports
+            'gemini' (AI Studio, API key), 'vertex' (Vertex AI, ADC; same
+            embedding model family) and 'mock'.
     """
-    if provider is None:
-        provider = settings.LLM_PROVIDER
-    provider = provider.lower().strip()
+    provider = resolve_provider(provider)
 
     if provider == "mock":
         return _DeterministicHashEmbeddings(dim=768)
 
-    if provider in ("gemini", "vertex"):
+    if provider == "vertex":
+        if GoogleGenerativeAIEmbeddings is None:
+            raise ImportError("langchain-google-genai is not installed")
+        return cast(Embeddings, GoogleGenerativeAIEmbeddings(
+            model=settings.VERTEX_EMBEDDING_MODEL,
+            vertexai=True,
+            project=settings.VERTEX_PROJECT or None,
+            location=settings.VERTEX_EMBEDDING_LOCATION,
+            output_dimensionality=768,
+        ))
+
+    if provider == "gemini":
         if GoogleGenerativeAIEmbeddings is None:
             raise ImportError("langchain-google-genai is not installed")
         return cast(Embeddings, GoogleGenerativeAIEmbeddings(
