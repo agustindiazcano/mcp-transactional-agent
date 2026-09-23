@@ -41,6 +41,7 @@ Why it's here, and why it's numbered 1.E not 4.B: this replaces `worker.py`'s cu
 
 ### Step 6 — Dynamic LLM Provider Selection (Phase 1.F)
 Why it's here: `src/agents/llm_factory.py`'s `get_llm(provider=...)` already implements the Factory pattern — the abstraction is real — but every call site hardcodes its provider (`judge.py`: Judge 1/Supreme Court always `"gemini"`, Judge 2 always `"groq"`). The only lever today is the global `LLM_PROVIDER` env var, which needs a `.env` edit and a container restart to change, and can't mix providers per judge or per request.
+- [x] Mock mode for every role: `src/agents/provider_roles.py`'s `provider_for_role()` holds the role → provider pairing, and `LLM_PROVIDER=mock` routes Judge 1, Judge 2, the Supreme Court, and the Prompt Guard to the mock (prerequisite for the chaos/idempotency load test).
 - [ ] Per-request override: optional `judge_1_provider`/`judge_2_provider` fields on `ClaimRequest`, validated against `get_llm()`'s existing provider allowlist; two `st.selectbox` dropdowns in the dashboard's ingestion panel; `evaluate_decision()` accepts explicit providers, falling back to today's hardcoded pairing when unset.
 - [ ] Global hot-swappable default: an admin surface (e.g. `PUT /config/providers`) backed by `pydantic-settings` and/or a config table — a "vendor is down, reroute now" lever with no restart. Later increment, not required alongside the per-request override.
 

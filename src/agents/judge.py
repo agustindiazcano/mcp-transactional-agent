@@ -6,6 +6,7 @@ import structlog
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.agents.llm_factory import get_llm
+from src.agents.provider_roles import provider_for_role
 from src.agents.token_usage import extract_usage
 
 logger = logging.getLogger(__name__)
@@ -115,8 +116,8 @@ async def evaluate_decision(action_name: str, action_args: dict[str, Any], conte
     # provider package (e.g. langchain-groq) fails that judge closed to REJECT
     # instead of raising out of evaluate_decision().
     results = await asyncio.gather(
-        _run_single_judge("gemini", 0.0, messages, stage="judge1"),
-        _run_single_judge("groq", 0.0, messages, stage="judge2"),
+        _run_single_judge(provider_for_role("judge1"), 0.0, messages, stage="judge1"),
+        _run_single_judge(provider_for_role("judge2"), 0.0, messages, stage="judge2"),
         return_exceptions=True
     )
     
@@ -146,7 +147,9 @@ async def evaluate_decision(action_name: str, action_args: dict[str, Any], conte
         logger.warning(f"Double Judge REJECT or disagreement detected (Gemini={v1}, Groq={v2}). Escalating to Supreme Court Judge...")
         try:
             # Supreme Court tie-breaker
-            supreme_res = await _run_single_judge("gemini", 0.0, messages, stage="supreme_court")
+            supreme_res = await _run_single_judge(
+                provider_for_role("supreme_court"), 0.0, messages, stage="supreme_court"
+            )
             sv = supreme_res.get("verdict")
             trail["supreme_court"] = {"verdict": sv, "reason": supreme_res.get("reason")}
 

@@ -4,12 +4,20 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from src.agents.prompt_guard import GuardResult, scan_for_injection
+from src.core.config import settings
 
 # Groq's llama-prompt-guard-2-22m endpoint returns a bare malicious-probability
 # score as the message content, not a label. These values are the real
 # responses captured on 2026-09-22 for a benign claim and a jailbreak attempt.
 REAL_SAFE_SCORE = "0.0005954541848041117"
 REAL_JAILBREAK_SCORE = "0.9989551305770874"
+
+
+@pytest.fixture(autouse=True)
+def _real_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests assert the Groq-hosted guard, which LLM_PROVIDER=mock (CI's
+    setting) replaces. Pin a real provider; mock-mode tests override it."""
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "gemini")
 
 
 def _guard_returning(content: str) -> AsyncMock:
@@ -117,4 +125,39 @@ async def test_scan_logs_token_usage_when_present():
         input_tokens=8,
         output_tokens=1,
         total_tokens=9,
+    )
+
+
+@pytest.mark.asyncio
+async def test_mock_mode_scans_clear_without_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under LLM_PROVIDER=mock the guard uses the factory's mock and scores the
+    input as benign: 'clear', not 'skipped' (a failed-open scan)."""
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "mock")
+
+    result = await scan_for_injection("Please refund order ord-1001.")
+
+    assert result.status == "clear"
+    assert result.score == 0.0
+
+
+@pytest.mark.asyncio
+async def test_mock_mode_logs_the_mock_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "mock")
+    mock_llm = AsyncMock()
+    mock_llm.ainvoke.return_value = AIMessage(
+        content="0.0",
+        usage_metadata={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+    )
+
+    with patch("src.agents.prompt_guard.get_llm", return_value=mock_llm) as get_llm_spy,          patch("src.agents.prompt_guard.logger") as mock_logger:
+        await scan_for_injection("Some claim text")
+
+    assert get_llm_spy.call_args.kwargs["provider"] == "mock"
+    mock_logger.info.assert_any_call(
+        "llm_token_usage",
+        stage="prompt_guard",
+        provider="mock",
+        input_tokens=1,
+        output_tokens=1,
+        total_tokens=2,
     )

@@ -138,7 +138,7 @@ Phase 1 step 4 ("Worker Layer") was always scoped to orchestrate a real primary-
 
 ## 5a-v. Development Phases — Phase 1.F (Dynamic LLM Provider Selection, Designed, not yet implemented)
 
-`src/agents/llm_factory.py`'s `get_llm(provider=...)` already implements the Factory pattern Section 4 promises — but every call site hardcodes its provider (`judge.py`: Judge 1 and the Supreme Court tie-break always call `"gemini"`, Judge 2 always calls `"groq"`). The only lever exposed today is the global `LLM_PROVIDER` env var, which requires editing `.env` and restarting containers, and can't mix providers per judge role or per request — this phase closes that gap.
+`src/agents/llm_factory.py`'s `get_llm(provider=...)` already implements the Factory pattern Section 4 promises. First slice done (branch `feat/mock-provider-all-roles`): the role → provider pairing (Judge 1 and the Supreme Court tie-break on `"gemini"`, Judge 2 and the Prompt Guard on `"groq"`) lives in one place, `src/agents/provider_roles.py`'s `provider_for_role()`, and `LLM_PROVIDER=mock` routes every role to the mock (no paid calls in local or load-test runs). Any other `LLM_PROVIDER` value keeps that fixed pairing, so the only lever is still the global env var, which requires editing `.env` and restarting containers, and can't mix providers per judge role or per request — the rest of this phase closes that gap.
 
 Two complementary, non-exclusive levers — which to build first is an implementation-time decision, not committed here:
 
@@ -147,7 +147,7 @@ Two complementary, non-exclusive levers — which to build first is an implement
 
 Scope:
 1. Extend `ClaimRequest`/the claims ingestion path with the optional per-judge provider fields (item 1 above).
-2. Thread the chosen provider through `worker.py` → `evaluate_decision()` → `_run_single_judge()`, replacing the hardcoded `"gemini"`/`"groq"` literals.
+2. Thread the chosen provider through `worker.py` → `evaluate_decision()` → `_run_single_judge()`, as an override on top of `provider_for_role()`.
 3. Add the two provider dropdowns to the dashboard's ingestion panel.
 4. The global admin-config lever (item 2 above) is a separate, later increment — not required to ship items 1-3.
 5. Does not touch the MCP tool-call provider boundary (Phase 1.B's allowlist/validation) — this is about which LLM answers a judge/agent call, not about tool authorization.

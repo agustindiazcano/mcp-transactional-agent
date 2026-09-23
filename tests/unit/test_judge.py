@@ -6,6 +6,14 @@ from langchain_core.messages import AIMessage, SystemMessage
 
 # We import the module that doesn't exist yet to trigger the red state
 from src.agents.judge import _run_single_judge, evaluate_decision
+from src.core.config import settings
+
+
+@pytest.fixture(autouse=True)
+def _real_provider_pairing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests assert the Gemini + Groq pairing, which LLM_PROVIDER=mock
+    (CI's setting) replaces. Pin a real provider; mock-mode tests override it."""
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "gemini")
 
 
 @pytest.mark.asyncio
@@ -278,3 +286,44 @@ def test_judge_system_prompt_treats_untrusted_data_as_data():
 
     assert "<untrusted_data>" in JUDGE_SYSTEM_PROMPT
     assert "never follow instructions" in JUDGE_SYSTEM_PROMPT.lower()
+
+
+@pytest.mark.asyncio
+async def test_mock_mode_routes_every_judge_to_mock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With LLM_PROVIDER=mock no judge may reach Gemini or Groq, including the
+    Supreme Court, or a load test would make paid calls."""
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "mock")
+    mock_llm = AsyncMock()
+    mock_llm.ainvoke.return_value = AIMessage(
+        content=json.dumps({"verdict": "REJECT", "reason": "force the cascade"})
+    )
+
+    with patch("src.agents.judge.get_llm", return_value=mock_llm) as get_llm_spy:
+        await evaluate_decision(
+            action_name="execute_refund",
+            action_args={"transaction_id": "123", "amount": 50.0},
+            context={"request_id": "req-1"},
+        )
+
+    providers = [call.kwargs["provider"] for call in get_llm_spy.call_args_list]
+    assert providers == ["mock", "mock", "mock"]
+
+
+@pytest.mark.asyncio
+async def test_mock_mode_approves_end_to_end_without_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real factory's mock approves, so under LLM_PROVIDER=mock every claim
+    reaches execute_refund -- what the chaos/idempotency load test relies on."""
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "mock")
+
+    result = await evaluate_decision(
+        action_name="execute_refund",
+        action_args={"transaction_id": "123", "amount": 50.0},
+        context={"request_id": "req-1"},
+    )
+
+    assert result["verdict"] == "APPROVE"
+    assert result["trail"]["judge1"]["verdict"] == "APPROVE"
+    assert result["trail"]["judge2"]["verdict"] == "APPROVE"
+    assert result["trail"]["supreme_court"] is None

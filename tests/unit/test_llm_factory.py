@@ -18,6 +18,18 @@ def test_get_llm_mock():
         assert llm.responses == ['{"verdict": "APPROVE", "reason": "Mocked for local dev"}']
 
 
+def test_get_llm_mock_prompt_guard_returns_benign_score():
+    """The Prompt Guard parses a bare float score, not the judges' JSON, so its
+    mock must answer with a benign score or the guard would fail open as
+    'skipped' on every claim."""
+    from src.agents.llm_factory import PROMPT_GUARD_MODEL
+
+    llm = get_llm(provider="mock", temperature=0.0, model_name=PROMPT_GUARD_MODEL)
+
+    assert isinstance(llm, FakeListChatModel)
+    assert llm.responses == ["0.0"]
+
+
 def test_get_llm_gemini():
     """Test that the factory returns a Gemini model when LLM_PROVIDER=gemini."""
     mock_settings = Settings(LLM_PROVIDER="gemini", GEMINI_API_KEY="test_key")
