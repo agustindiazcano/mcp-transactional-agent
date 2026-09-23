@@ -22,7 +22,7 @@ The project also examines a second question: **how much of an AI system's decisi
 |---|---|
 | **Runs locally** | `docker compose up --build` brings up **8 containers**: `postgres` (pgvector), `rabbitmq`, `migrate` (one-shot Alembic), `mcp_server`, `worker`, `sweeper`, `gateway`, `dashboard`. |
 | **UI to try it** | Streamlit Ops Dashboard at `http://localhost:8501` — submit a claim, watch it move through the pipeline, and inspect the Judge 1 / Judge 2 / Supreme Court reasoning trail per transaction ([Phase 4](#phase-4--operations-dashboard-done)). |
-| **Tests** | **199 passing** — 151 unit + 48 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks, on an isolated `_test` database) — **83% line coverage** over `src/` (`pytest --cov=src`). |
+| **Tests** | **221 passing** — 172 unit + 49 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks, on an isolated `_test` database) — **83% line coverage** over `src/` (`pytest --cov=src`). |
 | **Load test** | Locust, 100 concurrent users against the full containerized stack: **2,630 requests, 0 failures, P95 87 ms** ([numbers](#system-performance--telemetry)). |
 | **Security** | MCP boundary with token authn, per-tool authz, server-side argument validation, rate limiting, and a fail-closed audit log. Prompt injection is handled structurally: tool access comes only from the authenticated identity, so injected text can't extend it (integration-tested), and a Prompt Guard model screens jailbreak attempts first ([Phase 1.B](#phase-1b--mcp-security-boundary-done)). |
 | **Cloud** | **Google Cloud is the primary deployment target — in progress** (Cloud Run, Cloud SQL for PostgreSQL + pgvector, Artifact Registry, with **Vertex AI** as the inference provider being exercised). AWS is kept as a secondary target ([Phase 6](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary)). |
@@ -455,17 +455,39 @@ Measured 2026-09-21 against the full `docker compose` stack (Locust: 100 users, 
 | Ingestion throughput (local containerized stack) | 45.5 req/s average over the run (~49 req/s steady-state), 2630 requests, 0 failures |
 | End-to-end processing time (LLM-dependent) | Not precisely benchmarked; a single real transaction (Prompt Guard → RAG retrieval → primary agent → Double Judge → Supreme Court cascade) observed completing within a few seconds outside load |
 
+
+### Correctness Under Faults
+
+Measured 2026-09-23 with `tests/performance/chaos_idempotency.py` against the full `docker compose` stack plus `docker-compose.chaos.yml` (every LLM role on `LLM_PROVIDER=mock`, so each claim is approved and reaches `execute_refund`; MCP rate limit lifted; Recovery Sweeper every 10s). 2,000 submissions = 1,800 unique claims + 200 duplicates (same `request_id`, sent after the original). While the backlog drains: `docker kill` the worker at 20% and 70% processed, `docker restart` RabbitMQ at 45%. Then every invariant is checked in PostgreSQL.
+
+| Invariant | Before the fixes | After the fixes |
+|---|---|---|
+| Accepted claims (HTTP 202) | 2,000 / 2,000 | 2,000 / 2,000 |
+| Unique claims reaching a final state | 815 / 1,800 | **1,800 / 1,800** |
+| Lost claims (202 but never processed) | **985** | **0** |
+| Double refunds (refund rows beyond one per `request_id`) | 0 | **0** |
+| Stuck in `PROCESSING` after drain | 0 | 0 |
+| `COMPLETED` without a refund, or refund without `COMPLETED` | 0 | 0 |
+| Worker survives the broker restart | No (process died; Docker's bounded restart revived it) | Yes (logged, kept consuming) |
+
+The run found two real bugs, both fixed on the same branch:
+1. **Lost messages.** The queue was durable, but the gateway published *transient* messages into it, and RabbitMQ drops transient messages on restart — every claim still queued was lost after its 202. Fixed with `delivery_mode=PERSISTENT`, plus a fixed `hostname` for the broker container (RabbitMQ stores data under its node name, so a recreated container with a new random hostname would orphan its durable data).
+2. **Worker crash on broker restart.** `ack()` on the closed channel raised, the error handler's `nack()` raised again, and the process exited; its first reconnect failed while the broker was still down. Fixed in `src/worker/amqp.py`: an unsettled message on a dead channel is logged and skipped (the broker redelivers it, and the `request_id` idempotency absorbs the replay), and the first connect waits for the broker with capped backoff.
+
+Idempotency was exercised for real, not just by duplicates: the second kill landed after `execute_refund` succeeded but before the transaction's final commit. The Recovery Sweeper requeued that zombie row, `execute_refund` returned `already_executed` with the same `refund_id`, and the ledger kept a single refund. Double refunds were 0 in every run, before and after the fixes — that guarantee comes from the `UNIQUE(request_id)` constraints, not from the broker.
+
 ---
 
 ## Testing
 
 ### Unit and Integration
-Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-23): **199 passed, 0 failed, 83% line coverage over `src/`**.
+Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-23): **221 passed, 0 failed, 84% line coverage over `src/`**.
 
-- **Unit (135 tests, no database required):** provider factory, judge parsing and cascade routing, Prompt Guard, token-usage extraction, chunking, retrieval service, system-health service, recovery sweeper, worker concurrency and execution routing (`COMPLETED` / `EXECUTION_FAILED` / not executable), the MCP refund executor (retries, backoff, timeouts, tool errors), the gateway's claim schema, MCP security (client registry and the shipped allowlist, PII masking, argument schemas), the sample-order seed data, the dashboard's API client, stats, and theme, and the test-database guard.
-- **Integration (48 tests, real PostgreSQL + RabbitMQ):** API gateway, PostgreSQL persistence, the transaction and order repositories (including per-user refund history), the `get_order` / `get_refund_history` read tools, knowledge-base vector search, MCP server over HTTP (401/403/422/429 responses plus audit rows), the `execute_refund` tool and `refunds` ledger (including idempotent replays), rate limiter, worker idempotency and judge-reject routing, and the dashboard's read-only transaction/system-health routers.
+- **Unit (172 tests, no database required):** provider factory, judge parsing and cascade routing, Prompt Guard, token-usage extraction, chunking, retrieval service, system-health service, recovery sweeper, worker concurrency and execution routing (`COMPLETED` / `EXECUTION_FAILED` / not executable), the MCP refund executor (retries, backoff, timeouts, tool errors), the gateway's claim schema, MCP security (client registry and the shipped allowlist, PII masking, argument schemas), the sample-order seed data, the dashboard's API client, stats, and theme, and the test-database guard.
+- **Integration (49 tests, real PostgreSQL + RabbitMQ):** API gateway, PostgreSQL persistence, the transaction and order repositories (including per-user refund history), the `get_order` / `get_refund_history` read tools, knowledge-base vector search, MCP server over HTTP (401/403/422/429 responses plus audit rows), the `execute_refund` tool and `refunds` ledger (including idempotent replays), rate limiter, worker idempotency and judge-reject routing, and the dashboard's read-only transaction/system-health routers.
 - **Isolated test database:** the suite never touches the dev database. `tests/conftest.py` points `DATABASE_URL` at `TEST_DATABASE_URL` (default: the dev database's name plus `_test`, on the same server) before any test runs, and refuses to start if that name doesn't end in `_test` or matches the dev database. `tests/integration/conftest.py` creates it if missing and runs `alembic upgrade head` once per session, so tests run against the schema the migrations produce, never `Base.metadata.create_all()`. Integration fixtures still `TRUNCATE` their tables, which is now safe: before this, a full run emptied the dev database's `transactions`, `refunds`, `mcp_audit_logs`, and `knowledge_base` (RAG) tables.
 - **Load (Locust):** 100 concurrent users against the full `docker compose` stack — see [System Performance & Telemetry](#system-performance--telemetry).
+- **Chaos / idempotency (`tests/performance/chaos_idempotency.py`):** 2,000 claims with 10% duplicates while the worker is killed twice and RabbitMQ restarted once, then checked in SQL — see [Correctness Under Faults](#correctness-under-faults).
 
 - **CI (GitHub Actions, `.github/workflows/ci.yml`):** every push runs `ruff`, `mypy --strict`, and the full suite against real PostgreSQL (pgvector) and RabbitMQ service containers, and fails if line coverage drops below 80%. `ruff` and `mypy` are pinned in the `dev` extras, since their default rule sets change between releases and CI must behave exactly like a local run.
 
@@ -758,6 +780,7 @@ Beyond the phases above, the following are candidate directions, not planned wor
 - A database superuser can still modify the audit table; the log is protected against the MCP service, not against a compromised host.
 - `validate_fraud_score` is still a stub (fixed `0.12`). The `orders` table and the `get_order` / `get_refund_history` read tools exist, but the worker doesn't fetch them yet, so a refund is still not checked against the original purchase amount.
 - No dead-letter exchange is configured: a message NACKed after `EXECUTION_FAILED` is dropped from the queue. The transaction row keeps the status and the error for an operator. A 4xx from the MCP boundary (e.g. a 422) is also retried like any other failure, even though it can't succeed. The retries are bounded, but they use up rate-limit quota.
+- A redelivered message whose row is still `PROCESSING` (its worker died mid-claim) is discarded as a duplicate, and recovery waits for the Recovery Sweeper's stale threshold (5 min by default). Nothing is lost, but that claim is delayed.
 - No offline prompt-regression suite yet (promptfoo is planned, not implemented — see `PENDING.md` Step 3); the only evaluation today is the runtime Double Judge.
 - Performance and cost figures are local, single-run measurements (see tables above) — not yet re-measured on cloud infrastructure or averaged across many transactions.
 
