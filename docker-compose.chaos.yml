@@ -1,0 +1,30 @@
+# Override for the chaos/idempotency load test (tests/performance/chaos_idempotency.py):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.chaos.yml up -d
+#
+# - LLM_PROVIDER=mock routes every LLM role to the mock: no paid calls, no
+#   provider rate limits, and every claim is approved and reaches execute_refund.
+# - The MCP rate limit (30 calls/min per tool by default) would turn a
+#   2,000-claim run into mass EXECUTION_FAILED, so it is lifted for the run.
+# - The Recovery Sweeper polls every 10s instead of 5 min, so zombies left by a
+#   killed worker are recovered within the run. The stale threshold stays well
+#   above the time one claim takes under the mock.
+#
+# `environment:` here overrides `.env`, which is left untouched. Go back to the
+# normal stack with `docker compose up -d` (no override file).
+services:
+  worker:
+    environment:
+      LLM_PROVIDER: mock
+  mcp_server:
+    environment:
+      LLM_PROVIDER: mock
+      MCP_RATE_LIMIT_PER_MIN: "1000000"
+  sweeper:
+    environment:
+      LLM_PROVIDER: mock
+      SWEEPER_INTERVAL_SECONDS: "10"
+      SWEEPER_STALE_THRESHOLD_SECONDS: "60"
+  gateway:
+    environment:
+      LLM_PROVIDER: mock
