@@ -405,7 +405,7 @@ It overlaps the Phase 2 rule base, so it may make more sense to build it there.
 **What today's Locust numbers measure:** they hit `POST /api/v1/claims`, which answers 202 once the claim is published to RabbitMQ. The P95 of 87 ms is **ingestion**, not processing: it excludes the judges, RAG, and the refund. Raising users against the same endpoint mostly measures the laptop (Locust tends to saturate before FastAPI). The number gets bigger, not more solid.
 
 **Plan, in order of value:**
-1. **CI in GitHub Actions with a coverage gate.** README and CLAUDE.md say CI runs on every PR, but **there is no `.github/workflows`**, and a technical reviewer will notice. The workflow:
+1. ✅ **Done (`chore/ci-github-actions`, see below).** **CI in GitHub Actions with a coverage gate.** README and CLAUDE.md say CI runs on every PR, but **there is no `.github/workflows`**, and a technical reviewer will notice. The workflow:
    - runs ruff, mypy `--strict`, and pytest, with Postgres (`pgvector/pgvector:pg16`) and RabbitMQ as services;
    - fails if coverage drops below 80% (`--cov-fail-under=80`).
 
@@ -444,7 +444,57 @@ Branch starts from `feat/orders-read-tools`, so it carries all three earlier bra
 - **README:** a real CI status badge replaces the static "124 passing" / "81%" badges, which were outdated. Coverage badge updated to 83%. The "no CI/CD pipeline" line is corrected, and a CI bullet is added in Testing.
 
 ## Validation
-It was simulated before pushing, in a clean copy of the repo: no `.env`, a fresh venv, `pip install -e ".[dev]"`, and none of the optional providers. `ruff` passed, `mypy` passed, and **183 passed with 83.63% coverage** (gate 80%). The only difference from CI is Python 3.12 locally versus 3.11 in CI. The first real run on GitHub confirms it.
+It was simulated before pushing, in a clean copy of the repo: no `.env`, a fresh venv, `pip install -e ".[dev]"`, and none of the optional providers. `ruff` passed, `mypy` passed, and **183 passed with 83.63% coverage** (gate 80%). The only difference from CI is Python 3.12 locally versus 3.11 in CI.
+
+**Confirmed on GitHub:** the first real run ([35815458128](https://github.com/agustindiazcano/mcp-transactional-agent/actions/runs/35815458128), commit `ff6a287`, Python 3.11) passed both jobs: "Lint and types" ✅ and "Tests and coverage" ✅.
 
 ## Suggested next step (manual, in GitHub)
 Settings → Branches → a protection rule on `main` requiring the "Lint and types" and "Tests and coverage" checks. That way a red PR can't be merged. It needs the GitHub UI, since there is no `gh` CLI.
+
+---
+
+# Status and Next Steps (2026-09-23)
+
+## Branch status
+- `chore/ci-github-actions` (`ff6a287`) is pushed and CI is green. It contains the whole chain: `bcd7704` (dashboard fields + misplaced test), `001e4e3` (isolated `_test` DB), `602e54f` + `5872964` (orders + read tools + plan), and `ff6a287` (CI).
+- `feat/orders-read-tools` is also pushed. `feat/read-tools-and-evidence` and `chore/isolated-test-database` are local only, but their commits travel inside the pushed branches.
+- **No PR open.** A single PR from `chore/ci-github-actions` to `main` merges everything: https://github.com/agustindiazcano/mcp-transactional-agent/compare/main...chore/ci-github-actions
+- The README's CI badge points at `main`'s workflow, so it shows real status only after that merge.
+
+## Manual, for the user (GitHub UI; no `gh` CLI)
+1. Open and merge the PR above.
+2. Settings → Branches → a protection rule on `main` requiring the "Lint and types" and "Tests and coverage" checks.
+
+## Next, in order
+
+**1. Make every LLM call respect `LLM_PROVIDER=mock` (prerequisite for the load tests).**
+Today only part of the pipeline honors the setting:
+- **Hardcoded:** `judge.py` calls `_run_single_judge("gemini", ...)` for Judge 1 (line 118) and the Supreme Court (line 149), and `"groq"` for Judge 2 (line 119). `prompt_guard.py` calls `get_llm(provider="groq", ...)` (line 55).
+- **Already honor it:** `get_embeddings()` (defaults to `settings.LLM_PROVIDER`, with a hash-based mock) and the worker's `get_llm()` (worker.py:99).
+- **Minor:** `retrieval_service.py` logs `provider="gemini"` in its usage line regardless of the real provider.
+
+Proposal: when `LLM_PROVIDER=mock`, every role (Judge 1, Judge 2, Supreme Court, Prompt Guard) uses the mock. Otherwise today's pairing (Gemini + Groq, Groq guard) stays exactly as is. This is the smallest slice of Phase 1.F (per-role provider selection) and should be built so 1.F extends it rather than replacing it. The mock chat model always answers `APPROVE`, so every claim reaches `execute_refund`, which is what the idempotency test needs. The Prompt Guard mock must return a benign score. Tests first.
+
+**2. Chaos/idempotency test under load (the headline result for the CV).**
+- A script (e.g. `tests/performance/chaos_idempotency.py`) sends N claims (about 2,000), each with `order_id`/`amount` from the seeded orders, and about 10% deliberate duplicates (same `request_id`).
+- The stack runs with `LLM_PROVIDER=mock`. During the run: `docker kill` the worker twice (restart policy brings it back) and restart RabbitMQ once.
+- Checks at the end, in SQL against the DB:
+  - `refunds` has exactly one row per distinct approved `request_id` (0 double refunds);
+  - every submitted `request_id` reaches a final state (0 lost);
+  - nothing is left stuck in `PROCESSING` after the Recovery Sweeper window.
+- Report: N, the duplicate %, injected faults, the counts above, total drain time. Target sentence: "2,000 claims, 10% duplicates, worker killed mid-run twice → 0 double refunds, 0 lost messages."
+- Risk to check first: with a single RabbitMQ node and no persistence settings verified, a broker restart could drop unacked/non-durable messages. If it does, that is a real finding to fix (durable queue + persistent messages), not something to hide.
+
+**3. Processing throughput:** with mocks, claims/second and end-to-end latency (`created_at` → `updated_at`) with 1, 2, and 4 workers (`docker compose up --scale worker=N`).
+
+**4. Stepped ingestion load:** Locust 100 → 250 → 500 → 1000 users with `--processes`. Report the max RPS with P95 under a threshold, plus the hardware.
+
+**5. Part B of 🟠 2:** evidence in the worker plus the deterministic amount/currency/owner check (details in "Pending Work and Plan" above). **Part C:** a real `validate_fraud_score` (after B, or in Phase 2).
+
+**Smaller items still open:**
+- Don't retry 4xx errors from the MCP boundary.
+- Add a dead-letter queue for `EXECUTION_FAILED`.
+- Fix the LangSmith `403` warnings.
+- Gemini `temperature=0` determinism.
+- Declare `langchain-google-vertexai` (Phase 6).
+- The known Phase 1.B limitations.
