@@ -1,0 +1,73 @@
+# Runs the "before opening a PR" checklist (CLAUDE.md Section 11) on every
+# push, so a branch's commits and its PR show a pass/fail check.
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-types:
+    name: Lint and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests
+      - run: mypy src
+
+  tests:
+    name: Tests and coverage
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: agentic_engine
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      rabbitmq:
+        image: rabbitmq:3
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_port_connectivity"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 10
+    env:
+      # Throwaway CI credentials, matching the local docker-compose defaults.
+      # The suite never uses this database directly: tests/conftest.py
+      # redirects to agentic_engine_test, creates it and migrates it.
+      DATABASE_URL: postgresql+asyncpg://postgres:password@localhost:5432/agentic_engine
+      RABBITMQ_URL: amqp://guest:guest@localhost:5672/
+      LLM_PROVIDER: mock
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -e ".[dev]"
+      - name: Unit and integration tests, coverage gate
+        run: pytest tests --cov=src --cov-report=term-missing --cov-fail-under=80

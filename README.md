@@ -1,6 +1,6 @@
 # Agentic MCP Engine and RAG Gateway
 
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg) ![Tests: 124 passing](https://img.shields.io/badge/tests-124%20passing-brightgreen.svg) ![Coverage: 81%](https://img.shields.io/badge/coverage-81%25-green.svg) ![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg) ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg) [![CI](https://github.com/agustindiazcano/mcp-transactional-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/agustindiazcano/mcp-transactional-agent/actions/workflows/ci.yml) ![Coverage: 83%](https://img.shields.io/badge/coverage-83%25-green.svg) ![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg) ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 
 ## Summary
 
@@ -35,7 +35,7 @@ The project also examines a second question: **how much of an AI system's decisi
 
 **What this is not (yet)**
 
-- Not deployed to the cloud yet. The Google Cloud deployment is in progress; there is no CI/CD pipeline, no SLOs, and no production incident runbook yet.
+- Not deployed to the cloud yet. The Google Cloud deployment is in progress; CI runs on every push (see [Testing](#testing)) but there is no CD pipeline, no SLOs, and no production incident runbook yet.
 - Local load testing complete: the Locust suite validated high-concurrency event ingestion against the containerized stack. Distributed cloud load testing is pending the GCP deployment (cold starts, real network latency, and managed-service limits are not measured yet).
 - The primary agent is still mocked (`worker.py` hardcodes the proposed action) — Prompt Guard, RAG retrieval, the Double Judge, the Supreme Court cascade, and the refund itself all run for real: an approved claim is executed through the MCP server's `execute_refund` tool, behind the Phase 1.B boundary. `validate_fraud_score` is still a stub (fixed `0.12`). Replacing the mock is [Phase 1.E](#phase-1e--front-desk--back-office-asymmetric-agentic-workflow-designed-not-yet-implemented).
 - Not TLS-terminated between internal services, and no credential rotation or secret manager (tokens are read from environment and files) — Phase 1.B closed the authentication/authorization/rate-limiting/audit gap; these two remain open, and are expected to be addressed by the GCP deployment (Secret Manager, managed TLS).
@@ -466,6 +466,8 @@ Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-23): *
 - **Integration (48 tests, real PostgreSQL + RabbitMQ):** API gateway, PostgreSQL persistence, the transaction and order repositories (including per-user refund history), the `get_order` / `get_refund_history` read tools, knowledge-base vector search, MCP server over HTTP (401/403/422/429 responses plus audit rows), the `execute_refund` tool and `refunds` ledger (including idempotent replays), rate limiter, worker idempotency and judge-reject routing, and the dashboard's read-only transaction/system-health routers.
 - **Isolated test database:** the suite never touches the dev database. `tests/conftest.py` points `DATABASE_URL` at `TEST_DATABASE_URL` (default: the dev database's name plus `_test`, on the same server) before any test runs, and refuses to start if that name doesn't end in `_test` or matches the dev database. `tests/integration/conftest.py` creates it if missing and runs `alembic upgrade head` once per session, so tests run against the schema the migrations produce, never `Base.metadata.create_all()`. Integration fixtures still `TRUNCATE` their tables, which is now safe: before this, a full run emptied the dev database's `transactions`, `refunds`, `mcp_audit_logs`, and `knowledge_base` (RAG) tables.
 - **Load (Locust):** 100 concurrent users against the full `docker compose` stack — see [System Performance & Telemetry](#system-performance--telemetry).
+
+- **CI (GitHub Actions, `.github/workflows/ci.yml`):** every push runs `ruff`, `mypy --strict`, and the full suite against real PostgreSQL (pgvector) and RabbitMQ service containers, and fails if line coverage drops below 80%. `ruff` and `mypy` are pinned in the `dev` extras, since their default rule sets change between releases and CI must behave exactly like a local run.
 
 See the [Test Coverage Report](docs/testing/tdd_coverage.md).
 

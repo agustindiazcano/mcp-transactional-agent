@@ -162,7 +162,7 @@ async def evaluate_decision(action_name: str, action_args: dict[str, Any], conte
                     "reason": f"Supreme Court Final Rejection: {supreme_res.get('reason')} (Base judges: {v1}/{v2})",
                     "trail": trail,
                 }
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- deliberate fail-closed: any failure ends in REJECT, logged
             logger.error(f"Supreme Court failed or API key missing, falling back to base judges: {e}")
             reasons = []
             if v1 == "REJECT":
