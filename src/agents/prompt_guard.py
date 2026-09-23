@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+from typing import Any, Literal
+
 import structlog
 from langchain_core.messages import HumanMessage
 
@@ -7,12 +10,41 @@ from src.core.config import settings
 
 logger = structlog.get_logger(__name__)
 
-async def check_for_injection(user_input: str) -> bool:
+GuardStatus = Literal["clear", "blocked", "skipped"]
+
+
+@dataclass(frozen=True)
+class GuardResult:
+    """Outcome of one Prompt Guard scan.
+
+    'skipped' means the guard could not score the input (provider down,
+    unparseable response) and the pipeline failed open -- distinct from
+    'clear', so the transaction's trail never presents an unscanned input
+    as a clean one.
+    """
+
+    status: GuardStatus
+    score: float | None = None
+    reason: str | None = None
+
+    @property
+    def is_injection(self) -> bool:
+        """True only when the guard actually scored the input as malicious."""
+        return self.status == "blocked"
+
+    def to_trail(self) -> dict[str, Any]:
+        """Serialize for Transaction.judge_trail's 'prompt_guard' entry."""
+        return {"status": self.status, "score": self.score, "reason": self.reason}
+
+
+async def scan_for_injection(user_input: str) -> GuardResult:
     """
     Evaluates the user's input for Prompt Injections or Jailbreak attempts
     using Llama Prompt Guard 2 22M via Groq.
-    
-    Returns True if an injection is detected (unsafe), False otherwise.
+
+    Returns 'blocked' when the malicious-probability score is at or above
+    PROMPT_GUARD_THRESHOLD, 'clear' below it, and 'skipped' when the guard
+    could not produce a score (fail open).
     """
     try:
         # Deliberately hardcoded, not gated by LLM_PROVIDER: this is a static,
@@ -20,15 +52,15 @@ async def check_for_injection(user_input: str) -> bool:
         # provider configured for the heavy reasoning agent (segregation of
         # duties, not an oversight — see PENDING.md).
         guard_model = get_llm(
-            provider="groq", 
-            temperature=0.0, 
+            provider="groq",
+            temperature=0.0,
             model_name="meta-llama/llama-prompt-guard-2-22m"
         )
-        
+
         # Prompt Guard is fine-tuned to classify text simply by receiving it
         # No system prompt is strictly necessary, it just outputs classification
         messages = [HumanMessage(content=user_input)]
-        
+
         logger.info("Scanning input for prompt injection...", length=len(user_input))
         response = await guard_model.ainvoke(messages)
 
@@ -46,18 +78,20 @@ async def check_for_injection(user_input: str) -> bool:
                 "Prompt guard returned a non-numeric response, failing open.",
                 raw_output=output_text,
             )
-            return False
+            return GuardResult(
+                status="skipped", reason=f"Non-numeric guard response: {output_text[:100]!r}"
+            )
 
         threshold = settings.PROMPT_GUARD_THRESHOLD
         if score >= threshold:
             logger.warning("Prompt injection DETECTED!", score=score, threshold=threshold)
-            return True
+            return GuardResult(status="blocked", score=score)
 
         logger.info("Input scan clear. No injection detected.", score=score, threshold=threshold)
-        return False
+        return GuardResult(status="clear", score=score)
 
     except Exception as e:  # noqa: BLE001 -- deliberate fail-open, error is logged
         logger.error("Failed to run prompt guard, failing open (safe) to prevent block.", error=str(e))
         # Fail-open if the guard service goes down, so we don't break the whole app.
         # Real production systems might fail-closed depending on risk tolerance.
-        return False
+        return GuardResult(status="skipped", reason=f"{type(e).__name__}: {e}")

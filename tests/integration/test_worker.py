@@ -5,6 +5,7 @@ import pytest_asyncio
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.agents.prompt_guard import GuardResult
 from src.core.config import settings
 from src.core.database import get_engine, get_session_maker
 from src.core.models import Base, Transaction
@@ -106,7 +107,10 @@ async def test_worker_persists_judge_trail(db_session: AsyncSession):
         "supreme_court": None,
     }
 
+    clear_guard = GuardResult(status="clear", score=0.001)
+
     with patch("src.worker.worker.get_llm") as _, \
+         patch("src.worker.worker.scan_for_injection", return_value=clear_guard), \
          patch("src.worker.worker.sse_client", new=mock_sse_client), \
          patch("src.worker.worker.ClientSession", new=mock_client_session), \
          patch(
@@ -118,7 +122,10 @@ async def test_worker_persists_judge_trail(db_session: AsyncSession):
         result = await db_session.execute(select(Transaction).where(Transaction.request_id == request_id))
         txn = result.scalar_one_or_none()
         assert txn is not None
-        assert txn.judge_trail == fake_trail
+        assert txn.judge_trail == {
+            **fake_trail,
+            "prompt_guard": {"status": "clear", "score": 0.001, "reason": None},
+        }
 
 @pytest.mark.asyncio
 async def test_worker_judge_reject(db_session: AsyncSession):
