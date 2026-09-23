@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.config import settings
 from src.core.database import get_engine, get_session_maker
-from src.core.models import Base
 from src.core.repositories import knowledge_base_repository
 
 DIM = 768
@@ -26,12 +25,6 @@ def _unit_vector(hot_index: int) -> list[float]:
     return vec
 
 
-async def _create_schema(engine) -> None:
-    async with engine.begin() as conn:
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        await conn.run_sync(Base.metadata.create_all)
-
-
 async def _clear_knowledge_base(engine) -> None:
     """Clear only the rows this test file inserts. Never Base.metadata.drop_all():
     that drops every table on Base (including transactions, shared with the
@@ -44,7 +37,6 @@ async def _clear_knowledge_base(engine) -> None:
 @pytest_asyncio.fixture
 async def db_engine():
     engine = get_engine(settings.DATABASE_URL)
-    await _create_schema(engine)
     yield engine
     await _clear_knowledge_base(engine)
     await engine.dispose()
@@ -120,7 +112,6 @@ async def test_teardown_clears_rows_without_dropping_the_table_schema() -> None:
     transactions) and silently desyncs the dev DB from alembic_version.
     Teardown must only clear this file's own rows, never the schema."""
     engine = get_engine(settings.DATABASE_URL)
-    await _create_schema(engine)
 
     session_maker = get_session_maker(engine)
     async with session_maker() as session:

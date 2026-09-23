@@ -4,6 +4,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:password@localhost:5432/agentic_engine"
+    # Test suite only (tests/support/database.py): the database pytest runs
+    # against. Empty means "<DATABASE_URL's db name>_test" on the same server.
+    # Must end in _test -- the suite refuses to start otherwise.
+    TEST_DATABASE_URL: str = ""
     
     # RabbitMQ
     RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672/"

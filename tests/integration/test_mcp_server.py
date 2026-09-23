@@ -9,7 +9,7 @@ from sqlalchemy import select, text
 
 from src.core.config import settings
 from src.core.database import get_engine, get_session_maker
-from src.core.models import Base, McpAuditLog, Refund
+from src.core.models import McpAuditLog, Refund
 from src.mcp_server.security.client_registry import ClientRegistry
 
 # We need to make sure the app can be imported
@@ -44,8 +44,6 @@ def _test_registry() -> ClientRegistry:
 @pytest_asyncio.fixture
 async def db_engine():
     engine = get_engine(settings.DATABASE_URL)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
     yield engine
     # Never Base.metadata.drop_all(): see test_worker.py/test_database.py for
     # why -- only clear this file's own rows.

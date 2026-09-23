@@ -303,6 +303,7 @@ When refusing an action under this section, always state the correct alternative
 | Variable | Description |
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
+| `TEST_DATABASE_URL` | Test suite only: database pytest runs against (default: `DATABASE_URL`'s database name + `_test`, same server). Must end in `_test` — the suite refuses to start otherwise, so tests never truncate the dev DB |
 | `RABBITMQ_URL` | RabbitMQ AMQP connection string |
 | `LLM_PROVIDER` | Active LLM provider: `gemini`, `vertex`, `groq`, `openai`, `bedrock`, or `mock` |
 | `OPENAI_API_KEY` | OpenAI API key (when LLM_PROVIDER=openai) |

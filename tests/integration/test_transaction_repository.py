@@ -1,10 +1,8 @@
 """Integration tests for src.core.repositories.transaction_repository.
 
-Needs a real PostgreSQL at the schema Alembic produced. Deliberately no
-Base.metadata.create_all(): the schema is owned by migrations, and create_all
-against the dev DB is what once created a stray `refunds` table ahead of its
-migration. Only this file's own `repo-test-%` rows are cleared -- never a
-TRUNCATE of `transactions`, which would wipe the dev DB's real rows.
+Runs on the isolated test database (tests/conftest.py), migrated by Alembic
+in tests/integration/conftest.py. Clears only this file's own `repo-test-%`
+rows rather than truncating, so it doesn't disturb other tests' data.
 """
 from collections.abc import AsyncGenerator
 

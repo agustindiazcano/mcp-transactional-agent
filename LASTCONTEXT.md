@@ -305,3 +305,34 @@ Branch created from an up-to-date `main` (`39c857c`, pull confirmed nothing new)
 
 ## New finding: the integration suite wipes the dev DB
 Most integration fixtures `TRUNCATE` whole tables on the DB in `DATABASE_URL`, which is the dev DB: `transactions` (`test_database.py`, `test_transactions_router.py`, `test_worker.py`), `refunds` (`test_refund_repository.py`, `test_mcp_server.py`), `mcp_audit_logs` (`test_mcp_server.py`, `test_rate_limiter.py`), and **`knowledge_base`** (`test_knowledge_base_repository.py`). After a full integration run, the RAG table is empty until `ingest_knowledge_base.py` runs again. Recommended fix (separate `chore/` branch): a dedicated test database (`TEST_DATABASE_URL`, migrated with Alembic), and scoped deletes instead of truncates.
+
+---
+
+# Update — Branch `chore/isolated-test-database`: The Test Suite No Longer Touches the Dev DB (2026-09-22)
+
+`feat/read-tools-and-evidence` was committed (`bcd7704`) without a PR, per the user. This branch starts from it, not from `main`, because the moved `tests/integration/test_transaction_repository.py` only exists there. Merge order: `feat/read-tools-and-evidence` first, then this one. Not pushed, no PR.
+
+## What changed
+- **`tests/support/database.py`:**
+  - `resolve_test_database_url()` picks the test database: `TEST_DATABASE_URL`, or the dev database's name plus `_test` on the same server. It **fails closed**: a name that doesn't end in `_test`, or that matches the dev database, raises `UnsafeTestDatabaseError`.
+  - `ensure_database_exists()` creates it through the `postgres` maintenance DB.
+  - `migrate_to_head()` runs `alembic upgrade head` in-process. It is built without `alembic.ini`, so `fileConfig()` doesn't reconfigure logging mid-session.
+- **`tests/conftest.py`:** at import time, before any test runs, points `settings.DATABASE_URL` and `os.environ["DATABASE_URL"]` (read by `alembic/env.py`) at the test database. On an unsafe URL it aborts the whole run with `pytest.exit`.
+- **`tests/integration/conftest.py`:** a session-scoped autouse fixture creates and migrates the test database once.
+- **Integration fixtures:** `Base.metadata.create_all()` removed from all 8. The schema now comes from the migrations, so a model change without its migration fails the suite instead of being hidden. `test_database.py` **hardcoded the dev DB's URL**, which would have bypassed any redirection; it now uses `settings.DATABASE_URL`. The `TRUNCATE`s stay: they are harmless on a throwaway database.
+- **`src/core/config.py`:** new `TEST_DATABASE_URL` (default empty = derived). Documented in `.env.example`, README (Testing section, env table), and CLAUDE.md / GEMINI.md / AGENTS.md §9. `.env` itself was not touched.
+- **CLAUDE.md §8 note:** the suite now runs `alembic upgrade head` automatically, but only against the guarded `_test` database, never against dev or cloud.
+
+## Validation
+- Tests first: 5 guard tests in `tests/unit/test_support_database.py` (red, then green).
+- **159/159 pass** (122 unit + 37 integration), 82% line coverage over `src/` (down from 83% because of the new, UI-only lines in `src/ui/app.py`).
+- **Dev DB untouched:** row counts were taken before and after a full run (`transactions` 1, `refunds` 1, `mcp_audit_logs` 2, `knowledge_base` 4) and are identical. Before this change, the same run emptied all four.
+- **Guard checked:** `TEST_DATABASE_URL` pointed at `agentic_engine` aborts before any test runs.
+- The test database `agentic_engine_test` now exists on the local server at head (`b3e1f0c9a2d4`).
+- `ruff` and `mypy --strict` show only the two known pre-existing errors.
+
+## Side effect found and fixed
+The dev `knowledge_base` was **empty** (0 rows), most likely left that way by earlier integration runs. That means RAG context had been silently missing from the judges' prompts, because retrieval fails open. Re-ingested with `python -m scripts.ingest_knowledge_base` (4 chunks, real Gemini embeddings).
+
+## Next
+Back to 🟠 2 on `feat/read-tools-and-evidence` (rebased on this or after merge): the `orders` migration, `scripts/seed_orders.py`, and the `get_order` / `get_refund_history` MCP tools, following the decisions recorded above.

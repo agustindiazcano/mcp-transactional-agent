@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.agents.prompt_guard import GuardResult
 from src.core.config import settings
 from src.core.database import get_engine, get_session_maker
-from src.core.models import Base, Transaction
+from src.core.models import Transaction
 from src.worker.worker import process_message
 
 EXECUTED = {
@@ -24,8 +24,6 @@ EXECUTED = {
 @pytest_asyncio.fixture
 async def db_engine():
     engine = get_engine(settings.DATABASE_URL)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
     yield engine
     # Never Base.metadata.drop_all(): that drops every table on Base (including
     # tables other test files/the live app depend on), silently desyncing the
