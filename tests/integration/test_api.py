@@ -1,6 +1,7 @@
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
+import aio_pika
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -79,3 +80,19 @@ async def test_create_claim_reuses_connection_across_multiple_requests(
     mock_connect_robust.assert_called_once()
     mock_connect_robust.return_value.channel.assert_called_once()
     assert mock_channel.default_exchange.publish.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_create_claim_publishes_a_persistent_message(
+    async_client: tuple[AsyncClient, AsyncMock, AsyncMock],
+) -> None:
+    """A 202 promises the claim will be processed. The queue is durable, but a
+    transient message in it is still dropped when RabbitMQ restarts, so the
+    message itself must be persistent (found by the chaos/idempotency test)."""
+    client, _, mock_channel = async_client
+
+    response = await client.post("/api/v1/claims", json=CLAIM_PAYLOAD)
+
+    assert response.status_code == 202
+    published_message = mock_channel.default_exchange.publish.call_args[0][0]
+    assert published_message.delivery_mode == aio_pika.DeliveryMode.PERSISTENT

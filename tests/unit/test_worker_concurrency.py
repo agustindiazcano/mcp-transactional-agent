@@ -334,3 +334,64 @@ async def test_skipped_guard_is_recorded_alongside_judge_trail() -> None:
         },
         "execution": EXECUTED,
     }
+
+
+# ── Broker restart mid-message (found by the chaos/idempotency test) ─────────
+
+
+@pytest.mark.asyncio
+async def test_ack_on_a_closed_channel_does_not_crash_or_nack() -> None:
+    """RabbitMQ restarted while this message was in flight: the ack can't be
+    sent. The broker redelivers it and idempotency absorbs the replay, so the
+    worker must log and move on, not raise out of process_message."""
+    from aiormq.exceptions import ChannelInvalidStateError
+
+    message = _make_message(BODY)
+    message.ack = AsyncMock(side_effect=ChannelInvalidStateError())
+    db_session = _make_db_session()
+
+    with _pipeline():
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    message.nack.assert_not_awaited()
+    assert _locked_row(db_session).status == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_nack_on_a_closed_channel_does_not_crash() -> None:
+    from aiormq.exceptions import ChannelInvalidStateError
+
+    message = _make_message(BODY)
+    message.nack = AsyncMock(side_effect=ChannelInvalidStateError())
+    db_session = _make_db_session()
+
+    with _pipeline(executor_error=RefundExecutionError("mcp down")):
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    message.nack.assert_awaited_once_with(requeue=False)
+
+
+@pytest.mark.asyncio
+async def test_handle_delivery_survives_a_channel_closed_on_settle() -> None:
+    """message.process() settles an unsettled message on exit; with the channel
+    gone, that raises too. The consume loop must survive it."""
+    from aiormq.exceptions import ChannelInvalidStateError
+
+    from src.worker.worker import handle_delivery
+
+    message = _make_message(BODY)
+    process_ctx = MagicMock()
+    process_ctx.__aenter__ = AsyncMock()
+    process_ctx.__aexit__ = AsyncMock(side_effect=ChannelInvalidStateError())
+    message.process = MagicMock(return_value=process_ctx)
+    session_ctx = MagicMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=_make_db_session())
+    session_ctx.__aexit__ = AsyncMock(return_value=False)
+    session_maker = MagicMock(return_value=session_ctx)
+
+    with _pipeline():
+        await handle_delivery(message, session_maker)
+
+    message.process.assert_called_once_with(ignore_processed=True)

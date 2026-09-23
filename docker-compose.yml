@@ -21,6 +21,10 @@ services:
   rabbitmq:
     image: rabbitmq:3-management
     container_name: agentic_mq
+    # RabbitMQ keeps its data under its node name (rabbit@<hostname>). Without a
+    # fixed hostname, every container recreate gets a new random one, and the
+    # durable queue and its persistent messages in rabbitmq_data are orphaned.
+    hostname: rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
@@ -91,7 +95,9 @@ services:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
       MCP_SERVER_URL: http://mcp_server:8080/sse
     command: ["python", "-m", "src.worker.worker"]
-    restart: on-failure:5
+    # Long-running consumer: it now waits for RabbitMQ itself (src/worker/amqp.py),
+    # so a crash is a bug, not a boot race; always bring it back, never give up.
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -114,7 +120,9 @@ services:
       DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/agentic_engine
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
     command: ["python", "-m", "src.worker.recovery_sweeper"]
-    restart: on-failure:5
+    # Long-running consumer: it now waits for RabbitMQ itself (src/worker/amqp.py),
+    # so a crash is a bug, not a boot race; always bring it back, never give up.
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy

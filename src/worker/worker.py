@@ -13,6 +13,7 @@ from src.core.config import settings
 from src.core.currency import Currency
 from src.core.models import Transaction
 from src.core.services.retrieval_service import retrieve_relevant_policy
+from src.worker.amqp import CHANNEL_GONE_ERRORS, connect_with_retry, safe_ack, safe_nack
 from src.worker.refund_executor import (
     McpCallPolicy,
     RefundExecutionError,
@@ -36,7 +37,7 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
 
         if not request_id:
             logger.warning("Message missing request_id")
-            await message.ack()
+            await safe_ack(message)
             return
 
         # ── Step 1: Atomic INSERT claim ─────────────────────────────────────
@@ -55,7 +56,7 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                 f"Race condition evadida: request_id={request_id} already owned "
                 "by another worker. Discarding."
             )
-            await message.ack()
+            await safe_ack(message)
             return
 
         # ── Step 2: Pre-Execution Shield (Prompt Guard) ─────────────────────
@@ -75,7 +76,7 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                 locked_txn.judge_trail = {"prompt_guard": guard_result.to_trail()}
                 await db_session.commit()
                 logger.warning(f"🚫 Transaction {request_id} blocked: malicious prompt detected.")
-                await message.ack()
+                await safe_ack(message)
                 return
 
         # ── Step 2.5: Retrieval (Phase 1.D RAG, provider-agnostic) ──────────
@@ -200,28 +201,42 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
         if final_status == "EXECUTION_FAILED":
             # Retries are exhausted inside the executor; requeueing would only
             # loop. The row already records the failure for an operator.
-            await message.nack(requeue=False)
+            await safe_nack(message, requeue=False)
             return
 
-        await message.ack()
+        await safe_ack(message)
 
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error processing message: {e}")
-        await message.nack(requeue=False)
+        await safe_nack(message, requeue=False)
 
 
 import asyncio
 
-import aio_pika
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from src.core.database import get_engine, get_session_maker
+
+
+async def handle_delivery(message: Any, session_maker: async_sessionmaker[AsyncSession]) -> None:
+    """Process one delivery, surviving a channel that closed under it.
+
+    message.process() settles a still-unsettled message on exit. If RabbitMQ
+    restarted mid-message, that settle raises too; the broker redelivers the
+    message and idempotency absorbs it, so the consume loop just moves on.
+    """
+    try:
+        async with message.process(ignore_processed=True), session_maker() as db_session:
+            await process_message(message, db_session)
+    except CHANNEL_GONE_ERRORS as exc:
+        logger.warning(f"Channel closed while settling a message ({exc!r}); it will be redelivered.")
 
 
 async def start_worker() -> None:
     """
     Connect to RabbitMQ and start consuming messages from agent_tasks_queue.
     """
-    connection = await aio_pika.connect_robust(settings.RABBITMQ_URL)
+    connection = await connect_with_retry(settings.RABBITMQ_URL)
 
     async with connection:
         channel = await connection.channel()
@@ -243,9 +258,7 @@ async def start_worker() -> None:
         
         async with queue.iterator() as queue_iter:
             async for message in queue_iter:
-                async with message.process(ignore_processed=True), \
-                           session_maker() as db_session:
-                        await process_message(message, db_session)
+                await handle_delivery(message, session_maker)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

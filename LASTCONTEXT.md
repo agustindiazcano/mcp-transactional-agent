@@ -526,3 +526,62 @@ PR #41 (`chore/ci-github-actions`) is merged into `main` (`a977f5a`). This branc
 
 ## Next
 Check that RabbitMQ is durable (queue and persistent messages), then run the chaos/idempotency test.
+
+---
+
+# Update — Branch `test/chaos-idempotency`: Chaos/Idempotency Test and Two Bugs It Found (2026-09-23)
+
+PR #42 (mock provider for every role) is merged into `main` (`c5a2c88`). This branch starts from it.
+
+## The test
+- **`tests/performance/chaos_idempotency.py`:**
+  - Submits 2,000 claims (1,800 unique + 200 duplicates, each sent after its original) with bounded concurrency. The gateway retries on 5xx with the same `request_id`.
+  - As the backlog drains, it kills the worker at 20% and 70% processed, and restarts RabbitMQ at 45%.
+  - It then checks in SQL: 0 double refunds, 0 lost, 0 stuck in `PROCESSING`, and every `COMPLETED` row matches exactly one refund.
+  - Rows are tagged with a per-run prefix (`chaos-...`) and kept in the dev DB.
+- **`docker-compose.chaos.yml`** (override, `.env` untouched):
+  - `LLM_PROVIDER=mock` for every service;
+  - MCP rate limit lifted (it is 30/min per tool by default and would fail the run);
+  - sweeper every 10s with a 60s stale threshold.
+- **Unit tests** cover the submission plan and the verdict (`tests/unit/test_chaos_idempotency.py`). They were written right after the script, not before it.
+
+## Results
+| | Before the fixes | After the fixes |
+|---|---|---|
+| Unique claims reaching a final state | 815 / 1,800 | **1,800 / 1,800** |
+| Lost (202 but never processed) | **985** | **0** |
+| Double refunds | 0 | 0 |
+| Worker survives the broker restart | No, Docker revived it | Yes |
+
+The second kill in the final run landed between `execute_refund` and the final commit (`...-01267`). The sweeper requeued it, the tool answered `already_executed` with the same `refund_id` (3911), and a single refund was recorded.
+
+## Bug 1: lost messages
+The queue was durable, but the gateway published **transient** messages, and RabbitMQ drops them on restart.
+- **Fix:** `delivery_mode=PERSISTENT` in `src/api/main.py`, with a red-first test in `tests/integration/test_api.py`.
+- **Also:** `hostname: rabbitmq` in compose. RabbitMQ stores its data under `rabbit@<hostname>`, and the hostname was random per container, so recreating the container orphaned the durable data. The broker's node name is now `rabbit@rabbitmq`.
+
+## Bug 2: the worker crashes on a broker restart
+`ack()` on the closed channel raised, the `except`'s `nack()` raised again, and the process died. Its first `connect_robust()` then failed while the broker was down. Only `restart: on-failure:5` saved it, and a longer outage would have left the worker dead for good. This was approved by the user (ACK/NACK, CLAUDE.md §8).
+- **`src/worker/amqp.py`:**
+  - `safe_ack`/`safe_nack` log and move on when the channel is gone. The broker redelivers, and idempotency absorbs it.
+  - `connect_with_retry` uses capped backoff and is used by the worker and the sweeper.
+- **`worker.py`:** every `ack`/`nack` now goes through `safe_ack`/`safe_nack`. The new `handle_delivery()` also covers `message.process()` re-settling on exit.
+- **Compose:** `worker` and `sweeper` use `restart: unless-stopped`.
+- Tests first: `tests/unit/test_worker_amqp.py` (7) and 3 new tests in `test_worker_concurrency.py`.
+
+## Validation
+- **221/221 pass** (172 unit + 49 integration) with the local `.env` and with `LLM_PROVIDER=mock`. Coverage is 84%.
+- `ruff` and `mypy --strict` are clean.
+- Docs: README (a new "Correctness Under Faults" section, Testing, Known Limitations) and CLAUDE.md / GEMINI.md / AGENTS.md (§5a-ii items 3 and 5, and the §7 layout).
+
+## Found along the way
+- A redelivered message whose row is still `PROCESSING` is discarded as a duplicate, and its recovery waits for the sweeper (5 min by default). Nothing is lost, but the claim is delayed. Added to the README's Known Limitations.
+- RabbitMQ had fired a `system_memory_high_watermark` alarm hours earlier, which blocks publishers. It had cleared, and it did not affect the runs.
+- Processing under mock runs at about 5 claims/s with one worker.
+
+## State left behind
+- **The stack is still running with `docker-compose.chaos.yml`** (mock and the rate limit lifted). Go back to normal with `docker compose up -d`.
+- The dev DB holds the chaos rows (prefixes `chaos-smoke-`, `chaos-before-`, `chaos-after-`, `chaos-final-`).
+
+## Next
+Processing throughput with 1, 2, and 4 workers (`--scale worker=N`). The chaos script can be reused without faults.

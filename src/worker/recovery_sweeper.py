@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.config import settings
 from src.core.database import get_engine, get_session_maker
 from src.core.models import Transaction
+from src.worker.amqp import connect_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +100,7 @@ async def start_sweeper() -> None:
 
     engine = get_engine(settings.DATABASE_URL)
     session_maker = get_session_maker(engine)
-    connection = await aio_pika.connect_robust(settings.RABBITMQ_URL)
+    connection = await connect_with_retry(settings.RABBITMQ_URL)
 
     async with connection:
         channel = await connection.channel()
