@@ -425,3 +425,26 @@ It overlaps the Phase 2 rule base, so it may make more sense to build it there.
 
 ## Branches (merge in this order)
 `feat/read-tools-and-evidence` (`bcd7704`) → `chore/isolated-test-database` (`001e4e3`) → `feat/orders-read-tools` (`602e54f`, plus this note). Each branch contains the one before it, so pushing `feat/orders-read-tools` carries all the commits.
+
+---
+
+# Update — Branch `chore/ci-github-actions`: CI with a Coverage Gate (2026-09-23)
+
+Branch starts from `feat/orders-read-tools`, so it carries all three earlier branches.
+
+## What changed
+- **`.github/workflows/ci.yml`:** runs on every push, and can also be triggered by hand. A PR shows the checks of its head commit.
+  - Job **Lint and types:** `ruff check src tests` and `mypy src`.
+  - Job **Tests and coverage:** `pytest tests --cov=src --cov-fail-under=80`, against `pgvector/pgvector:pg16` and `rabbitmq:3` service containers. `DATABASE_URL` points at the service, and `tests/conftest.py` redirects to `agentic_engine_test` and migrates it. `LLM_PROVIDER=mock`, and no API keys or secrets are used.
+  - Python 3.11, the same version as the Dockerfiles, with a pip cache.
+- **The two pre-existing errors are fixed, so CI starts green:**
+  - BLE001 in `judge.py`: the Supreme Court catch-all is deliberate (any failure ends in REJECT). It now carries `# noqa: BLE001 -- <reason>`, the convention the rest of the code already uses.
+  - Unused `type: ignore` in `llm_factory.py`: this error **depended on the environment**. `langchain-google-vertexai` and `langchain-openai` are installed in the local venv but are not declared dependencies, so in CI the same `ignore` would have been necessary, and `langchain_openai` would have failed with `import-not-found`. Fixed in `pyproject.toml`: `[[tool.mypy.overrides]]` with `ignore_missing_imports` for those three optional modules, and plain imports.
+- **`pyproject.toml`:** pins `ruff==0.16.8` and `mypy==2.3.1` in `dev`. The repo had no ruff config, so it used ruff's defaults, which in 0.16 are **413 rules** and change between releases. Without the pin, CI would have linted with a different version than local. Also adds `[tool.mypy] strict = true`.
+- **README:** a real CI status badge replaces the static "124 passing" / "81%" badges, which were outdated. Coverage badge updated to 83%. The "no CI/CD pipeline" line is corrected, and a CI bullet is added in Testing.
+
+## Validation
+It was simulated before pushing, in a clean copy of the repo: no `.env`, a fresh venv, `pip install -e ".[dev]"`, and none of the optional providers. `ruff` passed, `mypy` passed, and **183 passed with 83.63% coverage** (gate 80%). The only difference from CI is Python 3.12 locally versus 3.11 in CI. The first real run on GitHub confirms it.
+
+## Suggested next step (manual, in GitHub)
+Settings → Branches → a protection rule on `main` requiring the "Lint and types" and "Tests and coverage" checks. That way a red PR can't be merged. It needs the GitHub UI, since there is no `gh` CLI.

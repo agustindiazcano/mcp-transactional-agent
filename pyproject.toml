@@ -48,10 +48,21 @@ dev = [
     "pytest-asyncio",
     "pytest-cov",
     "locust",
-    "ruff",
-    "mypy",
+    # Pinned: ruff/mypy defaults change between releases, and CI must lint
+    # and type-check exactly like a local run.
+    "ruff==0.16.8",
+    "mypy==2.3.1",
     "pandas-stubs"
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
+
+[tool.mypy]
+strict = true
+
+# Optional LLM providers, not declared dependencies: imported inside
+# try/except in src/agents/llm_factory.py and absent in CI.
+[[tool.mypy.overrides]]
+module = ["langchain_openai", "langchain_google_vertexai", "langchain_aws"]
+ignore_missing_imports = true

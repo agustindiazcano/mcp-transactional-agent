@@ -8,7 +8,9 @@ from pydantic import SecretStr
 
 from src.core.config import settings
 
-# Optional imports for various cloud providers
+# Optional imports for various cloud providers. OpenAI, Vertex AI and Bedrock
+# aren't declared dependencies; pyproject's [tool.mypy] overrides let mypy
+# pass whether or not they're installed (they aren't in CI).
 try:
     from langchain_google_genai import (
         ChatGoogleGenerativeAI,
@@ -24,12 +26,12 @@ except ImportError:
     ChatOpenAI: Any = None  # type: ignore
 
 try:
-    from langchain_google_vertexai import ChatVertexAI  # type: ignore
+    from langchain_google_vertexai import ChatVertexAI
 except ImportError:
     ChatVertexAI: Any = None  # type: ignore
 
 try:
-    from langchain_aws import ChatBedrock  # type: ignore
+    from langchain_aws import ChatBedrock
 except ImportError:
     ChatBedrock: Any = None  # type: ignore
 
