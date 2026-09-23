@@ -8,9 +8,9 @@ This document explains in human-readable terms what we are testing and the curre
 
 | Tier | Tests | Infrastructure |
 |---|---|---|
-| Unit (`tests/unit/`) | 182 | None |
+| Unit (`tests/unit/`) | 189 | None |
 | Integration (`tests/integration/`) | 50 | Real PostgreSQL (pgvector) + RabbitMQ via `docker compose up -d postgres rabbitmq`, on an isolated `_test` database |
-| **Total** | **232 passed, 0 failed** | **84% line coverage over `src/`** (`pytest --cov=src`); CI fails under 80% |
+| **Total** | **239 passed, 0 failed** | **84% line coverage over `src/`** (`pytest --cov=src`); CI fails under 80% |
 | Load (`tests/performance/locustfile.py`) | Locust, 100 users | Full `docker compose` stack — 2,630 requests, 0 failures, P95 87 ms (ingestion only) |
 | Chaos (`tests/performance/chaos_idempotency.py`) | 2,000 claims, 10% duplicates | Worker killed twice, RabbitMQ restarted once — 0 double refunds, 0 lost |
 | Throughput (`tests/performance/processing_throughput.py`) | 15 runs × 1,000 claims | 1 → 8 workers: 9.2 → 19.6 claims/s, LLMs mocked, 4-core laptop — 15,000 `COMPLETED`, one refund each |
