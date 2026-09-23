@@ -16,8 +16,9 @@ Only what is current: read this first in every session. When an item here is don
 
 ## Decisions in force
 - **Vertex setup:** `langchain-google-genai` with `vertexai=True`, not the deprecated `ChatVertexAI`. Chat on `global`, embeddings on `us-central1`. ADC only, never an API key.
-- **Judges stay asymmetric:** Judge 1 and Judge 2 come from different model families. Groq stays as an off-GCP fallback.
-- **Determinism is measured, not assumed:** verdict stability over repeated runs, since `claude-sonnet-5` rejects `temperature` and Gemini 3.5 is a thinking model.
+- **Judges stay asymmetric:** Judge 1 on Gemini (Vertex), Judge 2 on GPT-OSS (Groq). Groq is the only non-Gemini family available and also hosts the Prompt Guard.
+- **Determinism is measured, not assumed:** verdict stability over repeated runs, since the Gemini 3.x Flash models think before answering.
+- **Only Gemini (Vertex) and Groq models:** the GCP free-trial credit doesn't cover partner models; Model Garden refused Claude. Claude and Grok stay as reference prices in `.env.example`.
 - **Evaluation tools:** Promptfoo and Langfuse next, Ragas later. LangSmith and TruLens are not adopted.
 - **GCP deploy:** Terraform in `infra/` (state in a GCS bucket, no secrets in it), a demo on/off switch, and a budget alert in Billing.
 - **Messaging for GCP: still open.** A managed RabbitMQ free tier (no code change) is recommended over Pub/Sub. The user must confirm (CLAUDE.md §5f).
@@ -30,17 +31,15 @@ Only what is current: read this first in every session. When an item here is don
 3. Optional: rotate the Groq key. It was printed once in a session's output; low risk, local only.
 4. Update the GitHub profile text: it says 232 tests, and the count is 248.
 5. Decide the messaging for GCP: managed RabbitMQ or Pub/Sub.
-6. For Model Garden: enable the Claude models in the Vertex console (accept the terms).
-7. A Langfuse Cloud account (free tier), with its keys in `.env`.
-8. Settings → Branches: branch protection on `main`, requiring the CI checks.
+6. A Langfuse Cloud account (free tier), with its keys in `.env`.
+7. Settings → Branches: branch protection on `main`, requiring the CI checks.
 
 ## Next, in order
 1. **Part B, evidence for the judges.** A real run rejected a valid claim for lack of the purchase date.
    - Fetch `get_order` and `get_refund_history` through MCP before judging.
    - A deterministic check (amount ≤ order, same currency, order owned by the user), failing closed to `PENDING_HUMAN_REVIEW`.
    - Close the DB transaction the worker holds open across the judges.
-2. **`feat/vertex-model-garden`:**
-   - Claude (`claude-sonnet-5`, `claude-haiku-4-5`) on Vertex, behind the factory.
+2. **`feat/model-benchmark`** (Gemini on Vertex + GPT-OSS on Groq):
    - A verdict-stability check.
    - `scripts/cost_benchmark.py`, printing a Markdown table of latency, tokens and cost at prices fetched on the run date. Then fill in the README's Vertex cost.
 3. **GCP deploy:** Terraform for Cloud SQL (pgvector), Artifact Registry, Cloud Run and Secret Manager; CI/CD with Workload Identity Federation; cloud load numbers.
