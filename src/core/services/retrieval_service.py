@@ -26,14 +26,18 @@ async def ingest_document(
     source_tier: str,
     chunks: list[str],
 ) -> int:
-    """Embed and store each chunk, committing once at the end.
+    """Embed `chunks` and replace `source`'s chunks with them, in one commit.
 
-    Returns the number of chunks inserted (0 for an empty `chunks` list).
+    Re-ingesting a document replaces its chunks instead of duplicating them.
+    Embedding happens first, so an embeddings failure leaves the stored
+    version untouched. Returns the number of chunks inserted (0 for an empty
+    `chunks` list, which changes nothing).
     """
     if not chunks:
         return 0
 
     vectors = await embeddings_client.aembed_documents(chunks)
+    await knowledge_base_repository.delete_by_source(session, source)
     for chunk, vector in zip(chunks, vectors, strict=True):
         await knowledge_base_repository.insert_chunk(
             session,
