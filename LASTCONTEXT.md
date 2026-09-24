@@ -4,7 +4,7 @@ Only what is current: read this first in every session. When an item here is don
 
 ## Where things stand
 - **`main`** has everything through PR #56 (Langfuse tracing). Branch `docs/langfuse-tracing` updates the README and LLMOps docs. Details: `docs/worklog/2026-09-24.md`.
-- **GCP deploy: steps 1–9 of 10 done, and the demo is LIVE.** All five services run on Cloud Run (worker and sweeper as worker pools), and the first two real claims went through end to end. **Billing while up:** Cloud SQL (~$8/month) plus the two always-on worker pools (1 vCPU each; rough estimate ~$50/month each, not verified on the pricing page). The user plans to keep it up a couple of days, then run `.\scripts\demo-down.ps1`.
+- **GCP deploy: steps 1–9 of 10 done. The demo is DOWN since 2026-09-24** (`demo-down` applied: Cloud SQL `STOPPED`, both pools at 0, `terraform plan` clean). Previously live: All five services run on Cloud Run (worker and sweeper as worker pools), and the first two real claims went through end to end. **Billing while up:** Cloud SQL (~$8/month) plus the two always-on worker pools (1 vCPU each; rough estimate ~$50/month each, not verified on the pricing page). The user plans to keep it up a couple of days, then run `.\scripts\demo-down.ps1`.
   - Dashboard: https://dashboard-993240087609.us-central1.run.app · Gateway: https://gateway-993240087609.us-central1.run.app
   - **The user is learning Terraform/GCP: one small explained step per turn.** Since step 8 the user lets Claude write the `.tf`, run `validate`/`plan` and commit; the user runs `apply`. Review each plan before `apply`.
 - **Tests:** 295 (243 unit + 52 integration), 86% coverage. `ruff check src tests` and `mypy --strict src` are clean.
@@ -42,7 +42,7 @@ Only what is current: read this first in every session. When an item here is don
 |---|---|---|---|
 | 1 | 🟡 | Review and merge the `feat/gcp-cloud-run` PR | ✅ PR #55 |
 | 2 | 🟡 | Rotate the CloudAMQP password | ✅ closed by the user (free plan, 2026-09-24) |
-| 2b | 🟡 | Run `demo-down` after the couple of days live; tell Claude if the first down→up cycle errors | ⬜ |
+| 2b | 🟡 | Run `demo-down` after the couple of days live | ✅ 2026-09-24. The first `demo-up` is still untested: check Cloud SQL, the pools and one claim |
 | 3 | 🟢 | `agustin-google-cloud` service account | ✅ the user's own SA, nothing to do |
 | 4 | 🟢 | Rotate the Groq key (printed once in a session's output; low risk, local only) | optional |
 | 5 | 🟢 | GitHub profile text: says 232 tests, the count is 248 | ⬜ |
@@ -59,7 +59,7 @@ Only what is current: read this first in every session. When an item here is don
    - ✅ 7. Secret Manager: `groq-api-key`, `mcp-client-token`, `mcp-clients-json` added (values by hand), `rabbitmq-url` imported, `sweeper-sa` created, per-secret grants only. The cloud MCP client is `worker-cloud` with its own token.
    - ✅ 8. Cloud Run (`feat/gcp-cloud-run`): `mcp-server`, `gateway`, `dashboard` services; `worker`, `sweeper` worker pools; each on its own SA. `MCP_ALLOWED_HOSTS` fix (`17831b7`). First real claims: `COMPLETED` with refund #1, and a `PENDING_HUMAN_REVIEW` rejected by all three judges. `demo_up` switch. Details: `docs/worklog/2026-09-24.md`.
    - ✅ 9. Real data in Cloud SQL (2026-09-24): jobs `seed-orders` and `ingest-knowledge-base` (`worker:76a4ae5`, `ingest-kb-sa`) ran; 6 orders and 4 policy chunks. Claim `kb-cloud-001` (`user-1`, `ord-1001`, 45.50 USD, defective at 12 days) → `COMPLETED` in 4.6 s, both judges APPROVE citing the 30-day window, refund #2. The retrieved text isn't visible yet (no Langfuse keys on Cloud Run).
-   - ⬜ 10. CD with GitHub Actions + Workload Identity Federation (no keys in GitHub), and the Locust load test against Cloud Run. Before it, reorder the Dockerfiles to install dependencies before `COPY src` (today every code change reruns the full `pip install`: 2–4 min per build and a fresh ~170 MB layer per push).
+   - ⬜ 10. CD with GitHub Actions + Workload Identity Federation (no keys in GitHub), and the Locust load test against Cloud Run. The Dockerfile reorder it needed is done (`chore/dockerfile-layer-cache`: code-change rebuild 334 s → 33 s).
 2. **Part B, evidence for the judges** (independent of the deploy, can run in parallel). A real run rejected a valid claim for lack of the purchase date.
    - Fetch `get_order` and `get_refund_history` through MCP before judging.
    - A deterministic check (amount ≤ order, same currency, order owned by the user), failing closed to `PENDING_HUMAN_REVIEW`.
@@ -87,6 +87,7 @@ Only what is current: read this first in every session. When an item here is don
 - The dev DB holds test rows (prefixes `chaos-`, `tput-`, `prof-`, `vertex-e2e-`).
 
 ## Gotchas that still apply
+- Dependencies aren't pinned except where noted, so a fresh build can pull a new major/minor release. SQLAlchemy 2.1.0 did (no `greenlet` by default → `ImportError` in every container); it's now `sqlalchemy[asyncio]>=2.0.54,<2.1`. If a fresh build breaks and the old image works, compare `pip list` between the two first.
 - Inside containers, `VERTEX_PROJECT` must be set, because there's no gcloud config to resolve it from. A Vertex auth failure shows up as judges failing closed to `REJECT`, not as an auth error.
 - Gemini 3.x models return 404 on regional Vertex endpoints: chat must use `global`.
 - After migrating the dev DB from the host, rebuild every image built from `worker.Dockerfile` (`worker`, `sweeper`, `migrate`) before `docker compose up`.

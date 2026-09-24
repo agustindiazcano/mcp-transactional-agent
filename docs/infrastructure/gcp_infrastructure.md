@@ -145,6 +145,7 @@ All `terraform` commands run from `infra/` (from the repo root it finds no confi
 | Reload demo data | `gcloud run jobs execute seed-orders ...` / `ingest-knowledge-base ...` | Both are safe to re-run |
 | Read job logs | `gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=migrate" --freshness=10m --format="value(textPayload)"` | Job output goes to Cloud Logging, not the terminal |
 | Read worker logs | filter on `resource.labels.worker_pool_name="worker"` | Not `service_name` |
+| Build images locally | `docker compose build` | Dependencies sit in their own layer, keyed only on `pyproject.toml`: a code change rebuilds in ~15–35 s instead of ~5.5 min. Changing `pyproject.toml` reruns the full install once |
 | Push images | `docker push us-central1-docker.pkg.dev/project-e0ad10c9-0b2f-4dc0-ac6/app-images/<service>:<commit>` | Docker authenticates through the `gcloud` credential helper |
 
 ---
@@ -169,10 +170,9 @@ The always-on worker pools are most of the cost, which is why the demo switch ex
 | # | | Item |
 |---|---|---|
 | 1 | 🟡 | CD: a merge to `main` deploys to Cloud Run through GitHub Actions and Workload Identity Federation (no keys in GitHub) |
-| 2 | 🟡 | Reorder the Dockerfiles to install dependencies before `COPY src` (today every code change reruns the full `pip install`, 2–4 min per build) |
-| 3 | 🟡 | Rate limiting and a login for the public gateway and dashboard ([API Abuse Protection](../architecture/api_abuse_protection.md)) |
-| 4 | 🟢 | Locust load test against Cloud Run, compared with the local baseline (P95 87 ms) |
-| 5 | 🟢 | Langfuse tracing on Cloud Run (keys into Secret Manager) |
-| 6 | 🟢 | `deletion_policy = "ABANDON"` on `google_sql_user.app` before any teardown |
-| 7 | ⚪ | Automatic secret rotation |
-| 8 | ⚪ | AWS secondary target (README, Phase 6) |
+| 2 | 🟡 | Rate limiting and a login for the public gateway and dashboard ([API Abuse Protection](../architecture/api_abuse_protection.md)) |
+| 3 | 🟢 | Locust load test against Cloud Run, compared with the local baseline (P95 87 ms) |
+| 4 | 🟢 | Langfuse tracing on Cloud Run (keys into Secret Manager) |
+| 5 | 🟢 | `deletion_policy = "ABANDON"` on `google_sql_user.app` before any teardown |
+| 6 | ⚪ | Automatic secret rotation |
+| 7 | ⚪ | AWS secondary target (README, Phase 6) |

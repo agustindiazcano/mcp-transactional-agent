@@ -23,7 +23,9 @@ dependencies = [
     "langchain-groq",
     "mcp",
     "aio-pika",
-    "sqlalchemy",
+    # [asyncio] declares greenlet, which the async engine needs: SQLAlchemy 2.1
+    # stopped installing it by default. Capped at 2.0 until 2.1 is tested.
+    "sqlalchemy[asyncio]>=2.0.54,<2.1",
     "pgvector",
     "alembic",
     "asyncpg",
