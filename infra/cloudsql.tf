@@ -10,6 +10,7 @@ resource "google_sql_database_instance" "main" {
     disk_type         = "PD_HDD"
     disk_size         = 10
     disk_autoresize   = false
+    activation_policy = var.demo_up ? "ALWAYS" : "NEVER" # NEVER = stopped: data kept, only the disk billed
 
     ip_configuration {
       ipv4_enabled = true             # public IP, but with no authorized_networks...

@@ -3,10 +3,11 @@
 Only what is current: read this first in every session. When an item here is done or superseded, move the session's detailed notes to `docs/worklog/` and keep this file short. History: [docs/worklog/](docs/worklog/).
 
 ## Where things stand
-- **`main`** has everything through PR #53 (step 6, Cloud SQL). Branch `feat/gcp-secrets` adds step 7 (PR pending). Details: `docs/worklog/2026-09-22_to_2026-09-23.md`.
-- **GCP deploy: steps 1–7 of 10 done.** Cloud SQL `agentic-pg` is **running and billing (~$8/month)** until the `demo-down` switch exists; the schema is at head (`c4d2a7e81f35`), tables empty. Step 7 put every secret the services need in Secret Manager with per-secret access. Next is step 8, Cloud Run.
-  - **The user is learning Terraform/GCP: go one small explained step per turn** (the user writes the `.tf` edits and runs `plan`/`apply`/`docker` in their own terminal; review each plan before `apply`).
-- **Tests:** 248 (198 unit + 50 integration), 85% coverage. `ruff` and `mypy --strict src` are clean.
+- **`main`** has everything through PR #54 (step 7, Secret Manager). Branch `feat/gcp-cloud-run` adds step 8 (PR pending). Details: `docs/worklog/2026-09-24.md`.
+- **GCP deploy: steps 1–8 of 10 done, and the demo is LIVE.** All five services run on Cloud Run (worker and sweeper as worker pools), and the first two real claims went through end to end. **Billing while up:** Cloud SQL (~$8/month) plus the two always-on worker pools (1 vCPU each; rough estimate ~$50/month each, not verified on the pricing page). The user plans to keep it up a couple of days, then run `.\scripts\demo-down.ps1`.
+  - Dashboard: https://dashboard-993240087609.us-central1.run.app · Gateway: https://gateway-993240087609.us-central1.run.app
+  - **The user is learning Terraform/GCP: one small explained step per turn.** Since step 8 the user lets Claude write the `.tf`, run `validate`/`plan` and commit; the user runs `apply`. Review each plan before `apply`.
+- **Tests:** 255 (203 unit + 52 integration). `ruff check src tests` and `mypy --strict src` are clean.
 - **Headline numbers:**
   - Chaos test: 2,000 claims, worker killed twice and RabbitMQ restarted → 0 lost, 0 double refunds.
   - Throughput, mocked LLMs, 4-core laptop: 9.2 claims/s with 1 worker → 19.6 with 8.
@@ -28,8 +29,9 @@ Only what is current: read this first in every session. When an item here is don
   - Always `plan -out=tfplan` then `apply tfplan`, run from `infra/`.
   - External secrets (API keys, broker URL, tokens) go into Secret Manager by hand, never through Terraform variables. Only values Terraform generates itself (the DB password) are written by Terraform.
   - Cloud SQL is reached only through Cloud Run's built-in connector (public IP, no authorized networks, `ENCRYPTED_ONLY`); no VPC. Migrations: `gcloud run jobs execute migrate --region us-central1 [--args=current] --wait`; confirm the revision with the user first (CLAUDE.md §8).
-  - A `demo-up` / `demo-down` switch: stop Cloud SQL and scale the worker and sweeper to 0. Cloud SQL is the only real idle cost.
-- **Messaging for the cloud demo: CloudAMQP free plan (confirmed).** No code change; only `RABBITMQ_URL` changes. The instance is **LavinMQ** (`*.lmq.cloudamqp.com`, AMQP 0-9-1), not RabbitMQ: verify it with the first real claim in the cloud.
+  - **Demo switch:** `var.demo_up` (`scripts/demo-up.ps1` / `demo-down.ps1`). `false` stops Cloud SQL (`activation_policy = "NEVER"`, data kept) and scales both worker pools to 0; the HTTP services scale to zero on their own. Claims sent while down wait in CloudAMQP.
+  - **Cloud Run:** consumers are worker pools (no HTTP port). The MCP server is `allUsers` at the Cloud Run layer (Cloud Run IAM would claim the `Authorization` header the worker uses for its Phase 1.B token); the dashboard and gateway are public until a login exists. Always use the deterministic URLs (`<service>-993240087609.us-central1.run.app`): only that host is in the MCP server's `MCP_ALLOWED_HOSTS`.
+- **Messaging for the cloud demo: CloudAMQP free plan (LavinMQ), verified** with the first real claims (publish, consume, ACK). No code change; only `RABBITMQ_URL` changes.
 - **CV and public claims:** list Google Cloud, Cloud SQL, Terraform and CI/CD only once each one runs. Today only CI exists; CD means a merge to `main` deploys to Cloud Run through Workload Identity Federation. Vertex AI can already be listed.
 - **Evaluation tools:** Promptfoo and Langfuse next, Ragas later. LangSmith and TruLens are not adopted.
 - **Resolver agent (agent B):** it changes the Phase 1.E design, so it needs the user's go-ahead.
@@ -38,8 +40,9 @@ Only what is current: read this first in every session. When an item here is don
 ## Waiting on the user
 | # | | What | Status |
 |---|---|---|---|
-| 1 | 🟡 | Review and merge the `feat/gcp-secrets` PR | ⬜ |
-| 2 | 🟢 | Rotate the CloudAMQP password before the cloud demo goes live (the URL was pasted in a session) | optional |
+| 1 | 🟡 | Review and merge the `feat/gcp-cloud-run` PR | ⬜ |
+| 2 | 🟡 | Rotate the CloudAMQP password: the demo is live and the URL was pasted in a session (new `rabbitmq-url` version, then restart gateway, worker and sweeper) | ⬜ |
+| 2b | 🟡 | Run `demo-down` after the couple of days live; tell Claude if the first down→up cycle errors | ⬜ |
 | 3 | 🟢 | Check the `agustin-google-cloud` service account's **Keys** tab; delete any unused JSON key | ⬜ |
 | 4 | 🟢 | Rotate the Groq key (printed once in a session's output; low risk, local only) | optional |
 | 5 | 🟢 | GitHub profile text: says 232 tests, the count is 248 | ⬜ |
@@ -52,9 +55,8 @@ Only what is current: read this first in every session. When an item here is don
    - ✅ 5. The 4 images (gateway, worker, mcp_server, dashboard) are in `us-central1-docker.pkg.dev/project-e0ad10c9-0b2f-4dc0-ac6/app-images/<service>:b0e7dbe` (the `main` commit they were built from). `sweeper` and `migrate` reuse the `worker` image with a different command.
    - ✅ 6. Cloud SQL `agentic-pg` (PG 16, `db-f1-micro`), database `agentic_engine`, user `app`, secret `database-url`, Cloud Run job `migrate` (`migrate-sa`). Revision checked at base, upgraded to `c4d2a7e81f35`. Follow-ups: `deletion_policy = "ABANDON"` on `google_sql_user.app` before any teardown; seed `orders` + ingest the knowledge base with step 9.
    - ✅ 7. Secret Manager: `groq-api-key`, `mcp-client-token`, `mcp-clients-json` added (values by hand), `rabbitmq-url` imported, `sweeper-sa` created, per-secret grants only. The cloud MCP client is `worker-cloud` with its own token.
-   - Step 8 must: mount `mcp-clients-json` as a file and set `MCP_CLIENTS_FILE` to it (the image's `mcp_clients.json` accepts the public local-dev token); give the worker `MCP_CLIENT_TOKEN` from `mcp-client-token`; run the sweeper as `sweeper-sa`; keep the MCP server at `max-instances = 1` (SSE stream and POSTs must reach the same instance).
-   - ⬜ 8. Cloud Run: gateway, mcp_server and dashboard as HTTP services; worker and sweeper as always-on consumers (how to host a non-HTTP consumer on Cloud Run is decided here and shown to the user before applying). Each service runs as its own SA.
-   - ⬜ 9. One real claim end to end in the cloud (also validates LavinMQ); the `demo-up` / `demo-down` switch.
+   - ✅ 8. Cloud Run (`feat/gcp-cloud-run`): `mcp-server`, `gateway`, `dashboard` services; `worker`, `sweeper` worker pools; each on its own SA. `MCP_ALLOWED_HOSTS` fix (`17831b7`). First real claims: `COMPLETED` with refund #1, and a `PENDING_HUMAN_REVIEW` rejected by all three judges. `demo_up` switch. Details: `docs/worklog/2026-09-24.md`.
+   - ⬜ 9. Real data in Cloud SQL: seed `orders` and ingest the refund policy into `knowledge_base` (Cloud Run job runs of the worker image, like `migrate`), then re-run a claim with policy context.
    - ⬜ 10. CD with GitHub Actions + Workload Identity Federation (no keys in GitHub), and the Locust load test against Cloud Run. Before it, reorder the Dockerfiles to install dependencies before `COPY src` (today every code change reruns the full `pip install`: 2–4 min per build and a fresh ~170 MB layer per push).
 2. **Part B, evidence for the judges** (independent of the deploy, can run in parallel). A real run rejected a valid claim for lack of the purchase date.
    - Fetch `get_order` and `get_refund_history` through MCP before judging.
@@ -72,7 +74,8 @@ Only what is current: read this first in every session. When an item here is don
   - ADC is logged in (`gcloud auth application-default login`).
   - Created: the state bucket (by hand), the `app-images` repo and the 4 service accounts (Terraform), the `rabbitmq-url` secret (by hand), and the 4 images tagged `b0e7dbe` (580 MB in the repo; the free tier is 0.5 GB, so ~$0.01/month).
   - Step 6 (Terraform): Cloud SQL `agentic-pg` (**running, ~$8/month**), database `agentic_engine`, user `app`, secret `database-url`, `migrate-sa`, Cloud Run job `migrate`.
-  - Step 7: secrets `rabbitmq-url` (imported), `groq-api-key`, `mcp-client-token`, `mcp-clients-json` (v1 disabled, v2 live); `sweeper-sa`. No Cloud Run services yet.
+  - Step 7: secrets `rabbitmq-url` (imported), `groq-api-key`, `mcp-client-token`, `mcp-clients-json` (v1 disabled, v2 live); `sweeper-sa`.
+  - Step 8: services `mcp-server` (image `mcp_server:17831b7`), `gateway`, `dashboard` (`b0e7dbe`); worker pools `worker`, `sweeper` (`worker:b0e7dbe`). Cloud SQL holds `smoke-cloud-001` (refund #1) and one `PENDING_HUMAN_REVIEW` claim.
   - Docker on this laptop pushes to Artifact Registry through `gcloud auth configure-docker us-central1-docker.pkg.dev` (a credential helper in `~/.docker/config.json`, no stored password).
   - Also present, not ours: the default Compute SA (has Editor; never let Cloud Run fall back to it) and `agustin-google-cloud` (created by the user earlier).
 - **Tools:** Terraform v1.16.2, google provider v8.4.0 and random provider v3.9.1 (pinned in `infra/.terraform.lock.hcl`). `gcloud` works (open a new terminal if it isn't found).
@@ -89,5 +92,9 @@ Only what is current: read this first in every session. When an item here is don
 - `infra/backend.tf` can't use variables (the backend loads first), so the bucket name is written out there.
 - Run `terraform` from `infra/`: from the repo root it finds no configuration. A `tfplan` older than the last `.tf` edit is stale; re-plan.
 - Cloud Run job output goes to Cloud Logging, not the terminal: `gcloud logging read "resource.type=cloud_run_job AND resource.labels.job_name=migrate" --freshness=10m --format="value(textPayload)"`. Each `migrate` execution takes ~3 min to start (it pulls the 224 MB worker image).
+- The MCP SDK's `host:*` allowlist pattern needs a port; Cloud Run's `Host` has none, so cloud hosts go into `MCP_ALLOWED_HOSTS` exactly.
+- The first `/api/v1/system-health` after idle reports `"mcp": false`: its 3 s timeout is shorter than the MCP server's cold start from zero. Retry; real claims use the worker's 10 s timeout and retries.
+- Terraform compares Cloud Run `volumes`/`volume_mounts` in order: keep the `.tf` in the order Cloud Run stores them, or every plan shows a reorder diff.
+- Cloud Run worker pool logs: filter on `resource.labels.worker_pool_name="worker"` (not `service_name`).
 - The `!` prefix only works in the Claude Code prompt, not in a normal PowerShell window (there `!` means NOT).
 - The hooks in `.claude/settings.json` use `$CLAUDE_PROJECT_DIR`; a relative path blocked every tool call once the session's directory moved into `infra/`. Claude can't edit its own hooks: the user does.

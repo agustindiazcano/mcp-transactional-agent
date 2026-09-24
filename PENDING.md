@@ -68,11 +68,16 @@ Decision changed 2026-09-22: **Google Cloud is now the primary deployment target
 - [x] **Cloud SQL for PostgreSQL + `pgvector`** (`feat/gcp-cloud-sql`, 2026-09-23): `agentic-pg` (PG 16, `db-f1-micro`, Enterprise, zonal, 10 GB HDD, no backups), database `agentic_engine`, user `app`. Public IP, no authorized networks, `ENCRYPTED_ONLY`: reached only through Cloud Run's built-in connector. `DATABASE_URL` is the secret `database-url`. Alembic runs as the Cloud Run job `migrate` (`migrate-sa`, per-secret grant); revision checked at base, then upgraded to `c4d2a7e81f35` (8 migrations, `CREATE EXTENSION vector` included).
   - [ ] Add `deletion_policy = "ABANDON"` to `google_sql_user.app` before any teardown (`app` owns the tables, so dropping the user fails).
   - [ ] Seed `orders` and ingest the knowledge base into Cloud SQL (with step 9's real claim).
-- [ ] Cloud Run services: gateway, MCP server, dashboard (HTTP); worker + sweeper as min-instance consumers.
+- [x] **Cloud Run** (`feat/gcp-cloud-run`, 2026-09-24): `mcp-server`, `gateway`, `dashboard` as services; `worker`, `sweeper` as **worker pools** (Cloud Run's resource for pull-based consumers). One SA each, secrets from Secret Manager, Cloud SQL through the built-in connector. The MCP server needed `MCP_ALLOWED_HOSTS` (its DNS-rebinding allowlist was hardcoded to local hosts, so Cloud Run's `Host` would get a 421). First real claims: `COMPLETED` with a real refund, and a `PENDING_HUMAN_REVIEW` rejected by both judges and the Supreme Court.
+  - [x] `demo_up` switch + `scripts/demo-up.ps1` / `demo-down.ps1` (stops Cloud SQL, pools to 0). A real down→up cycle is still untested.
+  - [ ] Mojibake in Judge 2's reasons (`user\u00e2\u20ac\u2122s` for `user’s`), stored that way in `judge_trail`. Find where the Groq text is mis-decoded; test first.
+  - [ ] `/api/v1/system-health` reports the MCP server down on the first call after idle (3 s timeout < cold start). Raise the timeout, or accept it for the demo.
+  - [ ] Add `bandit` / Ruff's `S` rules to CI (security lint; the Python equivalent of Go's `gosec`).
+  - [ ] Login for the dashboard and gateway (public today; anyone can send claims that cost LLM calls).
 - [x] **Secret Manager** (`feat/gcp-secrets`, 2026-09-24): `database-url`, `rabbitmq-url` (imported into Terraform), `groq-api-key`, `mcp-client-token`, `mcp-clients-json`. Terraform owns containers and access, values added by hand (not in the state). Per-secret grants only; the project-wide `secretAccessor` is gone; new `sweeper-sa`. New random cloud MCP token (client `worker-cloud`); the registry with its hash is mounted as a file in step 8 (`MCP_CLIENTS_FILE`), because the image's local-dev token is public in `config.py`.
-- [ ] Cloud Run-managed TLS (comes with the services).
+- [x] Cloud Run-managed TLS (came with the services).
 - [ ] Automatic rotation of the cloud secrets (later; today a new version is added by hand).
-- [x] Decide messaging (2026-09-23): **CloudAMQP free plan**, no code change (only `RABBITMQ_URL`). The instance runs **LavinMQ** (AMQP 0-9-1, `*.lmq.cloudamqp.com`), not RabbitMQ: verify it with the first real claim in the cloud. The URL is in Secret Manager as `rabbitmq-url`.
+- [x] Decide messaging (2026-09-23): **CloudAMQP free plan**, no code change (only `RABBITMQ_URL`). The instance runs **LavinMQ** (AMQP 0-9-1, `*.lmq.cloudamqp.com`), not RabbitMQ: **verified** with the first real claims in the cloud (2026-09-24). The URL is in Secret Manager as `rabbitmq-url`.
 - [ ] Re-run the Locust load test against the Cloud Run deployment and compare with the local baseline (P95 87 ms, 0 failures).
 
 ### Step 10 — AWS (Phase 6, secondary target)
