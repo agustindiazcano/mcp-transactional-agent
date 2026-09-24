@@ -3,11 +3,11 @@
 Only what is current: read this first in every session. When an item here is done or superseded, move the session's detailed notes to `docs/worklog/` and keep this file short. History: [docs/worklog/](docs/worklog/).
 
 ## Where things stand
-- **`main`** has everything through PR #55 (step 8, Cloud Run). Details: `docs/worklog/2026-09-24.md`.
+- **`main`** has everything through PR #56 (Langfuse tracing). Branch `docs/langfuse-tracing` updates the README and LLMOps docs. Details: `docs/worklog/2026-09-24.md`.
 - **GCP deploy: steps 1–8 of 10 done, and the demo is LIVE.** All five services run on Cloud Run (worker and sweeper as worker pools), and the first two real claims went through end to end. **Billing while up:** Cloud SQL (~$8/month) plus the two always-on worker pools (1 vCPU each; rough estimate ~$50/month each, not verified on the pricing page). The user plans to keep it up a couple of days, then run `.\scripts\demo-down.ps1`.
   - Dashboard: https://dashboard-993240087609.us-central1.run.app · Gateway: https://gateway-993240087609.us-central1.run.app
   - **The user is learning Terraform/GCP: one small explained step per turn.** Since step 8 the user lets Claude write the `.tf`, run `validate`/`plan` and commit; the user runs `apply`. Review each plan before `apply`.
-- **Tests:** 255 (203 unit + 52 integration). `ruff check src tests` and `mypy --strict src` are clean.
+- **Tests:** 295 (243 unit + 52 integration), 86% coverage. `ruff check src tests` and `mypy --strict src` are clean.
 - **Headline numbers:**
   - Chaos test: 2,000 claims, worker killed twice and RabbitMQ restarted → 0 lost, 0 double refunds.
   - Throughput, mocked LLMs, 4-core laptop: 9.2 claims/s with 1 worker → 19.6 with 8.
@@ -50,7 +50,7 @@ Only what is current: read this first in every session. When an item here is don
 | 7 | 🟢 | Settings → Branches: branch protection on `main`, requiring the CI checks | ⬜ |
 
 ## Next, in order
-0. **`feat/langfuse-tracing`** (this branch): Langfuse tracing done and verified with real claims; PR pending. Follow-ups in `PENDING.md` Step 3 (model prices, Cloud Run keys, verdict scores).
+0. **Langfuse tracing: done** (PR #56). Follow-ups in `PENDING.md` Step 3: model prices, Cloud Run keys, verdict scores, and the knowledge-base `�` (fix before step 9's cloud ingestion).
 1. **GCP deploy (demo environment)**, step by step with the user:
    - ✅ 1. State bucket. ✅ 2. Terraform base. ✅ 3. Artifact Registry repo `app-images`. ✅ 4. Service accounts (`worker-sa`, `gateway-sa`, `mcp-server-sa`, `dashboard-sa`).
    - ✅ 5. The 4 images (gateway, worker, mcp_server, dashboard) are in `us-central1-docker.pkg.dev/project-e0ad10c9-0b2f-4dc0-ac6/app-images/<service>:b0e7dbe` (the `main` commit they were built from). `sweeper` and `migrate` reuse the `worker` image with a different command.

@@ -47,7 +47,7 @@
 
 An asynchronous workflow engine for running LLM agents against transactional business logic (refunds, fraud checks) without giving the model direct access to the database or internal APIs.
 
-**Evaluation:** every decision is checked at runtime by a Prompt Guard and two LLM judges. The next increment measures those judges offline, with **[Promptfoo, Langfuse, and Ragas](#llm-evaluation--observability)**: a labeled regression set and prompt-injection red-teaming gated in CI, plus per-claim tracing and cost.
+**Evaluation:** every decision is checked at runtime by a Prompt Guard and two LLM judges, and every claim is traced end to end in **[Langfuse](#llm-evaluation--observability)**: each guardrail, retrieval, judge, and tool step, with the model, tokens, and cost of every LLM call, and PII masked before export. The next increment measures the judges offline with **Promptfoo**: a labeled regression set and prompt-injection red-teaming gated in CI.
 
 It addresses three problems that appear when LLMs are placed in a write path: non-deterministic output, uncontrolled access to side-effecting operations, and synchronous blocking on slow inference calls. The engine combines an event-driven pipeline (FastAPI → RabbitMQ → worker), a Model Context Protocol (MCP) server as the only route to side-effecting tools, and retrieval over business rules stored in PostgreSQL/pgvector (Phase 1.D).
 
@@ -101,7 +101,7 @@ The project also examines a second question: **how much of an AI system's decisi
 | **RAG Ingestion (Phase 1.D)** | Provider-agnostic embeddings (Gemini `gemini-embedding-001`, truncated to 768 dims, by default), `pgvector` |
 | **LLM Providers** | Gemini AI Studio, Google Vertex AI (validated locally for the GCP deployment, ADC auth), Groq, OpenAI (GPT-4o), AWS Bedrock (secondary) |
 | **Frontend** | Streamlit + pandas (Ops Dashboard, Phase 4) |
-| **LLM Evaluation & Tracing** | Runtime Double LLM-as-a-Judge and Prompt Guard (implemented); Promptfoo and Langfuse (next); Ragas (later). See [LLM Evaluation & Observability](#llm-evaluation--observability) |
+| **LLM Evaluation & Tracing** | Runtime Double LLM-as-a-Judge and Prompt Guard (implemented); Langfuse tracing (implemented, Python SDK v4 + LangChain callback); Promptfoo (next); Ragas (later). See [LLM Evaluation & Observability](#llm-evaluation--observability) |
 | **Testing** | Pytest, pytest-asyncio, pytest-cov, Locust |
 | **Infrastructure** | Docker, Docker Compose (local); Google Cloud — Cloud Run, Cloud SQL for PostgreSQL, Artifact Registry (in progress); AWS (secondary) |
 
@@ -131,7 +131,7 @@ The project also examines a second question: **how much of an AI system's decisi
 
 ## LLM Evaluation & Observability
 
-The runtime guardrails decide each claim. This section covers how their quality gets measured. The runtime pieces run today; offline evaluation and tracing are the next increment ([PENDING.md](PENDING.md), Step 3).
+The runtime guardrails decide each claim. This section covers how their quality gets measured. The runtime pieces and tracing run today; offline evaluation is the next increment ([PENDING.md](PENDING.md), Step 3).
 
 | Layer | Tool | Status | What it answers |
 |---|---|---|---|
@@ -139,7 +139,7 @@ The runtime guardrails decide each claim. This section covers how their quality 
 | Pre-execution shield | Prompt Guard (`llama-prompt-guard-2-22m`) | Implemented | Is this input a jailbreak or an injection attempt? |
 | Cost accounting | Structured `llm_token_usage` logs (`src/agents/token_usage.py`) | Implemented | Tokens and cost per stage (see [Cost per Transaction](#cost-per-transaction)) |
 | Offline evaluation, gated in CI | **Promptfoo** | Next | How accurate the judges are on a labeled set of about 100 cases: legitimate claims, obvious fraud, borderline refunds, and prompt injection. Reports precision, recall, false approvals, and verdict stability across repeated runs, plus red-teaming for prompt injection. A change that drops accuracy below the threshold fails CI. |
-| Tracing | **Langfuse** | Next | One trace per claim: every LLM call with its input, output, latency, tokens, and cost, replacing the log lines above. |
+| Tracing | **Langfuse** | Implemented | One trace per claim: every LLM call with its input, output, latency, tokens, and cost, nested under the step that made it. See [Tracing with Langfuse](#tracing-with-langfuse). |
 | RAG evaluation | **Ragas** | Later | Context relevance and groundedness of the retrieval → judge path. Deferred because the knowledge base has 4 chunks today, too few for these scores to mean much. |
 
 **Not adopted, deliberately:**
@@ -147,6 +147,29 @@ The runtime guardrails decide each claim. This section covers how their quality 
 - **TruLens** covers tracing plus the RAG triad, which Langfuse and Ragas already cover separately, without adding a second dashboard.
 
 Details: [LLMOps & Observability](docs/testing/llmops_observability.md).
+
+### Tracing with Langfuse
+
+Every claim is one Langfuse trace, and its trace id is derived from the claim's `request_id`, so a transaction row leads straight to its trace. Each pipeline step is a typed observation, and each LLM call is a `generation` with its model, tokens, and cost, recorded by Langfuse's LangChain callback:
+
+```
+process-claim (chain)                 claim in → final status and reason out
+├─ scan-prompt-injection (guardrail)  └─ classify-prompt-injection (generation)
+├─ retrieve-policy (retriever)        └─ embed-claim (embedding)
+├─ evaluate-proposal (chain)
+│   ├─ run-judge-1 (evaluator)        └─ generate-verdict (generation)
+│   ├─ run-judge-2 (evaluator)        └─ generate-verdict (generation, with its reasoning)
+│   └─ run-supreme-court (evaluator)  └─ generate-verdict (generation)
+└─ execute-refund (tool)
+```
+
+- **Observability, never a dependency.** Tracing is off unless both keys are set. If Langfuse fails, the step runs untraced; a claim's outcome and its ACK/NACK never depend on it. Spans are exported from a background thread, so tracing adds no latency to a claim.
+- **PII masked before export** (`src/core/trace_masking.py`): `user_id` becomes a stable pseudonym (the same rule as the MCP audit log), and emails and phone or card numbers are redacted, including inside the prompts the callback records. Amounts, dates, and scores stay readable.
+- **Names are stable and describe the action**, not the model, so Langfuse evaluators and dashboards keep matching when a model changes.
+- **Verified end to end:** real claims on Vertex AI, fetched back with the Langfuse CLI and checked against Langfuse's trace best practices. That check caught a masking bug that hid the Prompt Guard's score, now covered by a regression test.
+- **Known gaps:** Langfuse has no price for the Groq models or `gemini-embedding-001`, so their cost shows empty. The Cloud Run deployment doesn't trace yet, because the keys aren't in Secret Manager.
+
+Code: `src/core/tracing.py`. Rules for changing it: CLAUDE.md, Section 4 ("LLM Tracing").
 
 <p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
@@ -626,10 +649,10 @@ Idempotency was exercised for real, not just by duplicates: the second kill land
 ## Testing
 
 ### Unit and Integration
-Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-23): **239 passed, 0 failed, 84% line coverage over `src/`**.
+Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-24): **295 passed, 0 failed, 86% line coverage over `src/`**.
 
-- **Unit (189 tests, no database required):** provider factory, judge parsing and cascade routing, Prompt Guard, token-usage extraction, chunking, retrieval service, system-health service, recovery sweeper, worker concurrency and execution routing (`COMPLETED` / `EXECUTION_FAILED` / not executable), the MCP refund executor (retries, backoff, timeouts, tool errors), the gateway's claim schema, MCP security (client registry and the shipped allowlist, PII masking, argument schemas), the sample-order seed data, the dashboard's API client, stats, and theme, and the test-database guard.
-- **Integration (50 tests, real PostgreSQL + RabbitMQ):** API gateway, PostgreSQL persistence, the transaction and order repositories (including per-user refund history), the `get_order` / `get_refund_history` read tools, knowledge-base vector search, MCP server over HTTP (401/403/422/429 responses plus audit rows), the `execute_refund` tool and `refunds` ledger (including idempotent replays), rate limiter, worker idempotency and judge-reject routing, and the dashboard's read-only transaction/system-health routers.
+- **Unit (243 tests, no database required):** provider factory, judge parsing and cascade routing, Prompt Guard, token-usage extraction, Langfuse tracing (trace structure, masking, and failure isolation, against the real SDK with an in-memory exporter), chunking, retrieval service, system-health service, recovery sweeper, worker concurrency and execution routing (`COMPLETED` / `EXECUTION_FAILED` / not executable), the MCP refund executor (retries, backoff, timeouts, tool errors), the gateway's claim schema, MCP security (client registry and the shipped allowlist, PII masking, argument schemas), the sample-order seed data, the dashboard's API client, stats, and theme, and the test-database guard.
+- **Integration (52 tests, real PostgreSQL + RabbitMQ):** API gateway, PostgreSQL persistence, the transaction and order repositories (including per-user refund history), the `get_order` / `get_refund_history` read tools, knowledge-base vector search, MCP server over HTTP (401/403/422/429 responses plus audit rows), the `execute_refund` tool and `refunds` ledger (including idempotent replays), rate limiter, worker idempotency and judge-reject routing, and the dashboard's read-only transaction/system-health routers.
 - **Isolated test database:** the suite never touches the dev database. `tests/conftest.py` points `DATABASE_URL` at `TEST_DATABASE_URL` (default: the dev database's name plus `_test`, on the same server) before any test runs, and refuses to start if that name doesn't end in `_test` or matches the dev database. `tests/integration/conftest.py` creates it if missing and runs `alembic upgrade head` once per session, so tests run against the schema the migrations produce, never `Base.metadata.create_all()`. Integration fixtures still `TRUNCATE` their tables, which is now safe: before this, a full run emptied the dev database's `transactions`, `refunds`, `mcp_audit_logs`, and `knowledge_base` (RAG) tables.
 - **Load (Locust):** 100 concurrent users against the full `docker compose` stack — see [System Performance & Telemetry](#system-performance--telemetry).
 - **Chaos / idempotency (`tests/performance/chaos_idempotency.py`):** 2,000 claims with 10% duplicates while the worker is killed twice and RabbitMQ restarted once, then checked in SQL — see [Correctness Under Faults](#correctness-under-faults).
@@ -867,9 +890,12 @@ uvicorn src.api.main:app --reload --port 8000  # terminal 4
 | `GROQ_API_KEY` | Conditional | Required when `LLM_PROVIDER=groq` |
 | `AWS_ACCESS_KEY_ID` | Conditional | Required when `LLM_PROVIDER=bedrock` |
 | `AWS_SECRET_ACCESS_KEY` | Conditional | Required when `LLM_PROVIDER=bedrock` |
-| `LANGFUSE_SECRET_KEY` | No | Langfuse tracing secret key (next increment, not yet wired in — see [LLM Evaluation & Observability](#llm-evaluation--observability)) |
-| `LANGFUSE_PUBLIC_KEY` | No | Langfuse tracing public key (next increment, not yet wired in) |
-| `LANGCHAIN_TRACING_V2` | No | LangSmith tracing. Not adopted (Langfuse is the planned tracer); leave unset |
+| `LANGFUSE_SECRET_KEY` | No | Langfuse project secret key. Tracing is off unless both keys are set — see [Tracing with Langfuse](#tracing-with-langfuse) |
+| `LANGFUSE_PUBLIC_KEY` | No | Langfuse project public key |
+| `LANGFUSE_BASE_URL` | No | Langfuse region or host (e.g. `https://us.cloud.langfuse.com`; empty means the EU cloud) |
+| `LANGFUSE_TRACING_ENABLED` | No | Switch tracing off without removing the keys (default `true`) |
+| `LANGFUSE_TRACING_ENVIRONMENT` | No | Langfuse environment the traces are filed under (default `development`) |
+| `LANGCHAIN_TRACING_V2` | No | LangSmith tracing. Not adopted (Langfuse is the tracer); leave unset |
 | `LANGCHAIN_ENDPOINT` | No | LangSmith API endpoint |
 | `LANGCHAIN_API_KEY` | No | LangSmith API key |
 | `LANGCHAIN_PROJECT` | No | LangSmith project name for this repo's traces |

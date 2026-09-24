@@ -32,7 +32,7 @@ To validate the system's resilience under heavy concurrency, we must measure its
 Because the LLM inferences represent the primary operational cost and volatility factor, they are monitored at runtime.
 
 - **Implemented today:** `src/agents/token_usage.py` logs a structured `llm_token_usage` line (stage, provider, input/output tokens) at every real LLM call site (Prompt Guard, Judge 1, Judge 2, Supreme Court). This is what the README's Cost per Transaction table was built from.
-- **Planned, not yet implemented — Langfuse:** no `langfuse` dependency is declared and no callback handler is wired into `src/agents/` or `src/worker/` yet (see `PENDING.md` Step 3). Once added, the metrics below become a per-transaction trace instead of log lines.
+- **Implemented — Langfuse tracing:** every claim is one trace, and each LLM call in it carries its tokens, cost, and latency (`src/core/tracing.py`; see [LLMOps & Observability](llmops_observability.md), section 3). The `llm_token_usage` log lines remain as a fallback when tracing is off.
 - **Key Metrics Tracked:**
   - Token consumption (Prompt vs. Completion tokens).
   - Estimated cost per transaction.
