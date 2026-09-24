@@ -155,7 +155,8 @@ resource "google_cloud_run_v2_service_iam_member" "gateway_public" {
 # --- Consumers: worker pools, Cloud Run's resource for pull-based workloads
 # (no HTTP port, no request-driven scaling). They pull from RabbitMQ.
 locals {
-  consumer_image = "${var.region}-docker.pkg.dev/${var.project_id}/app-images/worker:b0e7dbe"
+  consumer_instance_count = var.demo_up ? 1 : 0 # 0 stops the pools and their billing
+  consumer_image          = "${var.region}-docker.pkg.dev/${var.project_id}/app-images/worker:b0e7dbe"
 }
 
 resource "google_cloud_run_v2_worker_pool" "worker" {
@@ -165,7 +166,7 @@ resource "google_cloud_run_v2_worker_pool" "worker" {
 
   scaling {
     scaling_mode          = "MANUAL"
-    manual_instance_count = var.consumer_instance_count
+    manual_instance_count = local.consumer_instance_count
   }
 
   template {
@@ -251,7 +252,7 @@ resource "google_cloud_run_v2_worker_pool" "sweeper" {
 
   scaling {
     scaling_mode          = "MANUAL"
-    manual_instance_count = var.consumer_instance_count
+    manual_instance_count = local.consumer_instance_count
   }
 
   template {

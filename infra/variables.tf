@@ -9,8 +9,8 @@ variable "region" {
   type        = string
   default     = "us-central1"
 }
-variable "consumer_instance_count" {
-  description = "Instances per consumer worker pool (worker, sweeper). 0 pauses them and stops their billing."
-  type        = number
-  default     = 1
+variable "demo_up" {
+  description = "Whole-demo switch. false stops Cloud SQL and scales the worker pools to 0, so only disk and images are billed; the services already scale to zero on their own."
+  type        = bool
+  default     = true
 }
