@@ -50,14 +50,14 @@ Only what is current: read this first in every session. When an item here is don
 | 7 | 🟢 | Settings → Branches: branch protection on `main`, requiring the CI checks | ⬜ |
 
 ## Next, in order
-0. **Langfuse tracing: done** (PR #56). Follow-ups in `PENDING.md` Step 3: model prices, Cloud Run keys, verdict scores, and the knowledge-base `�` (fix before step 9's cloud ingestion).
+0. **Langfuse tracing: done** (PR #56). Follow-ups in `PENDING.md` Step 3: model prices, Cloud Run keys, verdict scores, (the knowledge-base `�` was a false alarm: a terminal rendering issue).
 1. **GCP deploy (demo environment)**, step by step with the user:
    - ✅ 1. State bucket. ✅ 2. Terraform base. ✅ 3. Artifact Registry repo `app-images`. ✅ 4. Service accounts (`worker-sa`, `gateway-sa`, `mcp-server-sa`, `dashboard-sa`).
    - ✅ 5. The 4 images (gateway, worker, mcp_server, dashboard) are in `us-central1-docker.pkg.dev/project-e0ad10c9-0b2f-4dc0-ac6/app-images/<service>:b0e7dbe` (the `main` commit they were built from). `sweeper` and `migrate` reuse the `worker` image with a different command.
    - ✅ 6. Cloud SQL `agentic-pg` (PG 16, `db-f1-micro`), database `agentic_engine`, user `app`, secret `database-url`, Cloud Run job `migrate` (`migrate-sa`). Revision checked at base, upgraded to `c4d2a7e81f35`. Follow-ups: `deletion_policy = "ABANDON"` on `google_sql_user.app` before any teardown; seed `orders` + ingest the knowledge base with step 9.
    - ✅ 7. Secret Manager: `groq-api-key`, `mcp-client-token`, `mcp-clients-json` added (values by hand), `rabbitmq-url` imported, `sweeper-sa` created, per-secret grants only. The cloud MCP client is `worker-cloud` with its own token.
    - ✅ 8. Cloud Run (`feat/gcp-cloud-run`): `mcp-server`, `gateway`, `dashboard` services; `worker`, `sweeper` worker pools; each on its own SA. `MCP_ALLOWED_HOSTS` fix (`17831b7`). First real claims: `COMPLETED` with refund #1, and a `PENDING_HUMAN_REVIEW` rejected by all three judges. `demo_up` switch. Details: `docs/worklog/2026-09-24.md`.
-   - ⬜ 9. Real data in Cloud SQL: seed `orders` and ingest the refund policy into `knowledge_base` (Cloud Run job runs of the worker image, like `migrate`), then re-run a claim with policy context.
+   - 🟡 9. Real data in Cloud SQL: jobs `seed-orders` (applied) and `ingest-knowledge-base` (`infra/ingest.tf`, planned, needs image `worker:76a4ae5`; re-ingestion now replaces chunks). Then execute both and re-run a claim with policy context.
    - ⬜ 10. CD with GitHub Actions + Workload Identity Federation (no keys in GitHub), and the Locust load test against Cloud Run. Before it, reorder the Dockerfiles to install dependencies before `COPY src` (today every code change reruns the full `pip install`: 2–4 min per build and a fresh ~170 MB layer per push).
 2. **Part B, evidence for the judges** (independent of the deploy, can run in parallel). A real run rejected a valid claim for lack of the purchase date.
    - Fetch `get_order` and `get_refund_history` through MCP before judging.

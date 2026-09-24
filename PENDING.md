@@ -26,7 +26,7 @@ Tool choice made 2026-09-23: **Promptfoo + Langfuse now, Ragas later; LangSmith 
   - [ ] Custom model prices in the Langfuse project for `openai/gpt-oss-20b`, `llama-prompt-guard-2-22m`, `gemini-embedding-001` (cost shows empty today).
   - [ ] Cloud Run tracing: keys into Secret Manager (`langfuse-public-key`, `langfuse-secret-key`), mounted on the worker pool, `LANGFUSE_TRACING_ENVIRONMENT=demo`.
   - [ ] Judge verdicts as Langfuse scores (per-judge APPROVE/REJECT, judge agreement), feeding the Promptfoo/judge-calibration work.
-  - [ ] Knowledge base mojibake: the ingested refund policy has `�` for an em dash (seen in a trace). Re-ingest reading the file as UTF-8; test first.
+  - [x] Knowledge base `�`: false alarm (2026-09-24). The stored rows and the real `retrieve-policy` traces (Langfuse v2 API) hold proper em dashes; the `�` was the Windows terminal rendering the CLI output.
 - [ ] **Ragas (RAG evaluation), later.** Context relevance and groundedness of the retrieval → judge path, once the knowledge base has more than its current 4 chunks.
 - [ ] **Turn LangSmith off.** Unset `LANGCHAIN_TRACING_V2` in `.env`: tracing is on with an invalid key, which is where the worker's `403` warnings come from.
 
