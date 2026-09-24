@@ -1019,15 +1019,11 @@ Beyond the phases above, the following are candidate directions, not planned wor
 - The worker keeps a database transaction open from the retrieval query through the judges and the refund call. With real LLMs that means one connection sitting "idle in transaction" for seconds per claim. It is one connection per worker, so it's harmless at this scale, but it doesn't scale well.
 - The MCP server runs as one Python process, at about 29 ms of CPU per claim, which caps it near 34 claims/s. Past that point it needs replicas, which the audit-table rate limiter already supports.
 
-<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
-
 ---
 
 ## Author
 
 Agustin Diaz-Cano, MS Candidate
-
-<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
 ---
 
