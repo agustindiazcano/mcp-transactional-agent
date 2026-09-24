@@ -3,10 +3,9 @@
 Only what is current: read this first in every session. When an item here is done or superseded, move the session's detailed notes to `docs/worklog/` and keep this file short. History: [docs/worklog/](docs/worklog/).
 
 ## Where things stand
-- **`main`** has everything through PR #50 (`docs/model-catalog`): Vertex AI works end to end, and the model catalog in `.env.example` is role-labeled. Details: `docs/worklog/2026-09-22_to_2026-09-23.md`.
-- **Open branch `feat/gcp-terraform-base`** (pushed, PR not opened yet; the user opens it, there's no `gh` CLI): https://github.com/agustindiazcano/mcp-transactional-agent/compare/main...feat/gcp-terraform-base
-  - The GCP deploy, steps 1–4 of 10 done: state bucket, Terraform base, Artifact Registry repo, service accounts. Details in the worklog's "GCP deploy, steps 1–4" section.
-  - **The user is learning Terraform/GCP: go one small explained step per turn** (the user writes the `.tf` edits and runs `plan`/`apply` in their own terminal; review each plan before `apply`).
+- **`main`** has everything through PR #51 (`feat/gcp-terraform-base`): Vertex AI works end to end, and the GCP deploy's Terraform base is merged. Details: `docs/worklog/2026-09-22_to_2026-09-23.md`.
+- **GCP deploy: steps 1–5 of 10 done.** State bucket, Terraform base, Artifact Registry repo, service accounts, and the 4 images pushed (tag `b0e7dbe`). Details in the worklog's "GCP deploy" sections. Next is step 6, Cloud SQL (the first resource that costs money while running).
+  - **The user is learning Terraform/GCP: go one small explained step per turn** (the user writes the `.tf` edits and runs `plan`/`apply`/`docker` in their own terminal; review each plan before `apply`).
 - **Tests:** 248 (198 unit + 50 integration), 85% coverage. `ruff` and `mypy --strict src` are clean.
 - **Headline numbers:**
   - Chaos test: 2,000 claims, worker killed twice and RabbitMQ restarted → 0 lost, 0 double refunds.
@@ -38,7 +37,7 @@ Only what is current: read this first in every session. When an item here is don
 ## Waiting on the user
 | # | | What | Status |
 |---|---|---|---|
-| 1 | 🟡 | Open and merge the `feat/gcp-terraform-base` PR (or keep adding steps 5–8 to it first) | ⬜ |
+| 1 | 🟡 | Decide when to start step 6 (Cloud SQL): it's the slowest step (5–10 min to create) and costs ~$8–10/month while on | ⬜ |
 | 2 | 🟢 | Rotate the CloudAMQP password before the cloud demo goes live (the URL was pasted in a session) | optional |
 | 3 | 🟢 | Check the `agustin-google-cloud` service account's **Keys** tab; delete any unused JSON key | ⬜ |
 | 4 | 🟢 | Rotate the Groq key (printed once in a session's output; low risk, local only) | optional |
@@ -49,12 +48,12 @@ Only what is current: read this first in every session. When an item here is don
 ## Next, in order
 1. **GCP deploy (demo environment)**, step by step with the user:
    - ✅ 1. State bucket. ✅ 2. Terraform base. ✅ 3. Artifact Registry repo `app-images`. ✅ 4. Service accounts (`worker-sa`, `gateway-sa`, `mcp-server-sa`, `dashboard-sa`).
-   - ⬜ **5. Build and push the 4 images** (gateway, worker, mcp_server, dashboard) to `us-central1-docker.pkg.dev/project-e0ad10c9-0b2f-4dc0-ac6/app-images`: `gcloud auth configure-docker`, tagging, `linux/amd64`. ~30–45 min at the learning pace.
-   - ⬜ 6. Cloud SQL for PostgreSQL + pgvector, smallest tier. Alembic runs as a Cloud Run job; confirm the revision with the user first (CLAUDE.md §8).
+   - ✅ 5. The 4 images (gateway, worker, mcp_server, dashboard) are in `us-central1-docker.pkg.dev/project-e0ad10c9-0b2f-4dc0-ac6/app-images/<service>:b0e7dbe` (the `main` commit they were built from). `sweeper` and `migrate` reuse the `worker` image with a different command.
+   - ⬜ **6. Cloud SQL for PostgreSQL + pgvector, smallest tier** ← next. Concepts to cover: private IP vs. the Cloud SQL Auth Proxy / connector, DB users, Alembic as a Cloud Run job. Alembic runs as a Cloud Run job; confirm the revision with the user first (CLAUDE.md §8).
    - ⬜ 7. Secret Manager: Groq key, MCP client tokens, DB password (`rabbitmq-url` already exists). Narrow `secretAccessor` from project-wide to per-secret grants.
    - ⬜ 8. Cloud Run: gateway, mcp_server and dashboard as HTTP services; worker and sweeper as always-on consumers (how to host a non-HTTP consumer on Cloud Run is decided here and shown to the user before applying). Each service runs as its own SA.
    - ⬜ 9. One real claim end to end in the cloud (also validates LavinMQ); the `demo-up` / `demo-down` switch.
-   - ⬜ 10. CD with GitHub Actions + Workload Identity Federation (no keys in GitHub), and the Locust load test against Cloud Run.
+   - ⬜ 10. CD with GitHub Actions + Workload Identity Federation (no keys in GitHub), and the Locust load test against Cloud Run. Before it, reorder the Dockerfiles to install dependencies before `COPY src` (today every code change reruns the full `pip install`: 2–4 min per build and a fresh ~170 MB layer per push).
 2. **Part B, evidence for the judges** (independent of the deploy, can run in parallel). A real run rejected a valid claim for lack of the purchase date.
    - Fetch `get_order` and `get_refund_history` through MCP before judging.
    - A deterministic check (amount ≤ order, same currency, order owned by the user), failing closed to `PENDING_HUMAN_REVIEW`.
@@ -69,7 +68,8 @@ Only what is current: read this first in every session. When an item here is don
   - On the free-trial credit, with billing enabled and a $20 budget alert (50/90/100%, credits excluded).
   - APIs enabled: Vertex AI, Cloud Run, Cloud SQL Admin, Artifact Registry, Secret Manager, IAM. Container Scanning is **not** enabled (it's paid).
   - ADC is logged in (`gcloud auth application-default login`).
-  - Created: the state bucket (by hand), the `app-images` repo and the 4 service accounts (Terraform), the `rabbitmq-url` secret (by hand). Nothing runs yet.
+  - Created: the state bucket (by hand), the `app-images` repo and the 4 service accounts (Terraform), the `rabbitmq-url` secret (by hand), and the 4 images tagged `b0e7dbe` (580 MB in the repo; the free tier is 0.5 GB, so ~$0.01/month). Nothing runs yet.
+  - Docker on this laptop pushes to Artifact Registry through `gcloud auth configure-docker us-central1-docker.pkg.dev` (a credential helper in `~/.docker/config.json`, no stored password).
   - Also present, not ours: the default Compute SA (has Editor; never let Cloud Run fall back to it) and `agustin-google-cloud` (created by the user earlier).
 - **Tools:** Terraform v1.16.2, google provider v8.4.0 (pinned in `infra/.terraform.lock.hcl`). `gcloud` works (open a new terminal if it isn't found).
 - **Local stack:** `.env` is back on `LLM_PROVIDER=mock`. For real Vertex: `docker compose -f docker-compose.yml -f docker-compose.gcp.yml up -d` with `LLM_PROVIDER=vertex`. For load or chaos tests: `docker-compose.chaos.yml` (mocks).
