@@ -13,6 +13,7 @@ from src.core.config import settings
 from src.core.currency import Currency
 from src.core.models import Transaction
 from src.core.services.retrieval_service import retrieve_relevant_policy
+from src.core.tracing import claim_trace, observe, shutdown_tracing
 from src.worker.amqp import CHANNEL_GONE_ERRORS, connect_with_retry, safe_ack, safe_nack
 from src.worker.refund_executor import (
     McpCallPolicy,
@@ -59,153 +60,187 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
             await safe_ack(message)
             return
 
-        # ── Step 2: Pre-Execution Shield (Prompt Guard) ─────────────────────
-        claim_text = body.get("claim_text", "")
-        guard_result: GuardResult | None = None
-        if claim_text:
-            guard_result = await scan_for_injection(claim_text)
-            if guard_result.is_injection:
-                # Acquire row lock before updating status
-                res = await db_session.execute(
-                    select(Transaction)
-                    .where(Transaction.request_id == request_id)
-                    .with_for_update()
+        # One Langfuse trace per claim, opened only once this worker owns the
+        # row (a discarded duplicate adds nothing to it). Tracing never changes
+        # the outcome: with no keys, or if Langfuse fails, it is a no-op.
+        with claim_trace(
+            request_id,
+            user_id=str(body.get("user_id", "")),
+            input={
+                "claim_text": body.get("claim_text", ""),
+                "order_id": body.get("order_id"),
+                "amount": body.get("amount"),
+                "currency": body.get("currency"),
+            },
+            tags=[f"llm-provider:{settings.LLM_PROVIDER}"],
+        ) as trace:
+            # ── Step 2: Pre-Execution Shield (Prompt Guard) ─────────────────────
+            claim_text = body.get("claim_text", "")
+            guard_result: GuardResult | None = None
+            if claim_text:
+                guard_result = await scan_for_injection(claim_text)
+                if guard_result.is_injection:
+                    # Acquire row lock before updating status
+                    res = await db_session.execute(
+                        select(Transaction)
+                        .where(Transaction.request_id == request_id)
+                        .with_for_update()
+                    )
+                    locked_txn = res.scalar_one()
+                    locked_txn.status = "BLOCKED_MALICIOUS_PROMPT"
+                    locked_txn.judge_trail = {"prompt_guard": guard_result.to_trail()}
+                    await db_session.commit()
+                    logger.warning(f"🚫 Transaction {request_id} blocked: malicious prompt detected.")
+                    trace.update(output={"status": "BLOCKED_MALICIOUS_PROMPT"})
+                    await safe_ack(message)
+                    return
+
+            # ── Step 2.5: Retrieval (Phase 1.D RAG, provider-agnostic) ──────────
+            # Best-effort: a retrieval/embeddings failure must never block
+            # transaction processing (same fail-open principle as prompt_guard.py).
+            # Once the primary agent's own LangChain loop exists (still mocked
+            # below), this is what its system prompt should be built from; today
+            # the Double Judge's `context` is the only real LLM call site
+            # available to carry it, so that's where it's threaded in.
+            retrieved_policy: str | None = None
+            if claim_text:
+                try:
+                    embeddings_provider = resolve_provider()
+                    with observe(
+                        "retrieve-policy",
+                        as_type="retriever",
+                        input=claim_text,
+                        metadata={"provider": embeddings_provider, "top_k": 1},
+                    ) as retrieval:
+                        embeddings_client = get_embeddings(embeddings_provider)
+                        retrieved_policy = await retrieve_relevant_policy(
+                            db_session, embeddings_client, claim_text, provider=embeddings_provider
+                        )
+                        retrieval.update(output=retrieved_policy)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"Retrieval skipped for {request_id}: {e}")
+
+            # Instantiate LLM
+            _ = get_llm()
+
+            # ── Step 3: Self-Correction Loop ────────────────────────────────────
+            retries = 0
+            max_retries = settings.MAX_LLM_RETRIES
+            judge_result: dict[str, Any] = {}
+
+            judge_context: dict[str, Any] = {"request_id": request_id}
+            if retrieved_policy:
+                judge_context["retrieved_policy"] = retrieved_policy
+
+            while retries < max_retries:
+                # In the real system this invokes the LangChain agent loop.
+                mock_primary_action = "execute_refund"
+                mock_primary_args = body
+
+                judge_result = await evaluate_decision(
+                    action_name=mock_primary_action,
+                    action_args=mock_primary_args,
+                    context=judge_context,
                 )
-                locked_txn = res.scalar_one()
-                locked_txn.status = "BLOCKED_MALICIOUS_PROMPT"
-                locked_txn.judge_trail = {"prompt_guard": guard_result.to_trail()}
-                await db_session.commit()
-                logger.warning(f"🚫 Transaction {request_id} blocked: malicious prompt detected.")
-                await safe_ack(message)
-                return
 
-        # ── Step 2.5: Retrieval (Phase 1.D RAG, provider-agnostic) ──────────
-        # Best-effort: a retrieval/embeddings failure must never block
-        # transaction processing (same fail-open principle as prompt_guard.py).
-        # Once the primary agent's own LangChain loop exists (still mocked
-        # below), this is what its system prompt should be built from; today
-        # the Double Judge's `context` is the only real LLM call site
-        # available to carry it, so that's where it's threaded in.
-        retrieved_policy: str | None = None
-        if claim_text:
-            try:
-                embeddings_provider = resolve_provider()
-                embeddings_client = get_embeddings(embeddings_provider)
-                retrieved_policy = await retrieve_relevant_policy(
-                    db_session, embeddings_client, claim_text, provider=embeddings_provider
-                )
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"Retrieval skipped for {request_id}: {e}")
+                if judge_result.get("verdict") == "APPROVE":
+                    break
+                else:
+                    retries += 1
+                    logger.warning(
+                        f"⚠️  Judge rejected (attempt {retries}/{max_retries}). "
+                        f"Reason: {judge_result.get('reason')}"
+                    )
 
-        # Instantiate LLM
-        _ = get_llm()
+            # ── Step 4: Deterministic execution via MCP ─────────────────────────
+            # The LLM never pushes the button: only this code calls execute_refund,
+            # and only after the judges approve. The call goes through the Phase
+            # 1.B security boundary, with request_id as the tool's idempotency key.
+            approved = judge_result.get("verdict") == "APPROVE"
+            execution: dict[str, Any] | None = None
+            final_status = "PENDING_HUMAN_REVIEW"
+            order_id = body.get("order_id")
+            amount = body.get("amount")
 
-        # ── Step 3: Self-Correction Loop ────────────────────────────────────
-        retries = 0
-        max_retries = settings.MAX_LLM_RETRIES
-        judge_result: dict[str, Any] = {}
+            if approved and not (order_id and amount):
+                execution = {
+                    "status": "not_executable",
+                    "reason": "Claim approved but has no order_id/amount to refund.",
+                }
+            elif approved:
+                currency = body.get("currency") or Currency.USD.value
+                try:
+                    with observe(
+                        "execute-refund",
+                        as_type="tool",
+                        input={"transaction_id": order_id, "amount": amount, "currency": currency},
+                        metadata={"idempotency_key": request_id},
+                    ) as refund:
+                        execution = await execute_refund_via_mcp(
+                            request_id=request_id,
+                            transaction_id=order_id,
+                            amount=amount,
+                            currency=currency,
+                            policy=McpCallPolicy.from_settings(),
+                        )
+                        refund.update(output=execution)
+                    final_status = "COMPLETED"
+                except RefundExecutionError as e:
+                    execution = {"status": "failed", "error": str(e)}
+                    final_status = "EXECUTION_FAILED"
 
-        judge_context: dict[str, Any] = {"request_id": request_id}
-        if retrieved_policy:
-            judge_context["retrieved_policy"] = retrieved_policy
-
-        while retries < max_retries:
-            # In the real system this invokes the LangChain agent loop.
-            mock_primary_action = "execute_refund"
-            mock_primary_args = body
-
-            judge_result = await evaluate_decision(
-                action_name=mock_primary_action,
-                action_args=mock_primary_args,
-                context=judge_context,
+            # ── Step 5: Pessimistic lock → final status write ───────────────────
+            res = await db_session.execute(
+                select(Transaction)
+                .where(Transaction.request_id == request_id)
+                .with_for_update()
             )
+            locked_txn = res.scalar_one()
+            # A 'skipped' guard (failed open) is recorded here too, so an
+            # unscanned claim is never indistinguishable from a clean one.
+            trail: dict[str, Any] | None = judge_result.get("trail")
+            if guard_result is not None:
+                trail = {**(trail or {}), "prompt_guard": guard_result.to_trail()}
+            if execution is not None:
+                trail = {**(trail or {}), "execution": execution}
+            locked_txn.judge_trail = trail
+            locked_txn.status = final_status
 
-            if judge_result.get("verdict") == "APPROVE":
-                break
-            else:
-                retries += 1
-                logger.warning(
-                    f"⚠️  Judge rejected (attempt {retries}/{max_retries}). "
+            if final_status == "COMPLETED":
+                logger.info(
+                    f"✅ Transaction {request_id} APPROVED and refund executed. "
                     f"Reason: {judge_result.get('reason')}"
                 )
-
-        # ── Step 4: Deterministic execution via MCP ─────────────────────────
-        # The LLM never pushes the button: only this code calls execute_refund,
-        # and only after the judges approve. The call goes through the Phase
-        # 1.B security boundary, with request_id as the tool's idempotency key.
-        approved = judge_result.get("verdict") == "APPROVE"
-        execution: dict[str, Any] | None = None
-        final_status = "PENDING_HUMAN_REVIEW"
-        order_id = body.get("order_id")
-        amount = body.get("amount")
-
-        if approved and not (order_id and amount):
-            execution = {
-                "status": "not_executable",
-                "reason": "Claim approved but has no order_id/amount to refund.",
-            }
-        elif approved:
-            try:
-                execution = await execute_refund_via_mcp(
-                    request_id=request_id,
-                    transaction_id=order_id,
-                    amount=amount,
-                    currency=body.get("currency") or Currency.USD.value,
-                    policy=McpCallPolicy.from_settings(),
+            elif final_status == "EXECUTION_FAILED":
+                logger.error(
+                    f"💥 Transaction {request_id} APPROVED but refund execution failed: "
+                    f"{execution}"
                 )
-                final_status = "COMPLETED"
-            except RefundExecutionError as e:
-                execution = {"status": "failed", "error": str(e)}
-                final_status = "EXECUTION_FAILED"
+            elif approved:
+                logger.warning(
+                    f"❌ Transaction {request_id} → PENDING_HUMAN_REVIEW: approved "
+                    "but not executable (missing order_id/amount)."
+                )
+            else:
+                logger.warning(
+                    f"❌ Transaction {request_id} → PENDING_HUMAN_REVIEW "
+                    f"after {max_retries} attempts. Final reason: {judge_result.get('reason')}"
+                )
 
-        # ── Step 5: Pessimistic lock → final status write ───────────────────
-        res = await db_session.execute(
-            select(Transaction)
-            .where(Transaction.request_id == request_id)
-            .with_for_update()
-        )
-        locked_txn = res.scalar_one()
-        # A 'skipped' guard (failed open) is recorded here too, so an
-        # unscanned claim is never indistinguishable from a clean one.
-        trail: dict[str, Any] | None = judge_result.get("trail")
-        if guard_result is not None:
-            trail = {**(trail or {}), "prompt_guard": guard_result.to_trail()}
-        if execution is not None:
-            trail = {**(trail or {}), "execution": execution}
-        locked_txn.judge_trail = trail
-        locked_txn.status = final_status
-
-        if final_status == "COMPLETED":
-            logger.info(
-                f"✅ Transaction {request_id} APPROVED and refund executed. "
-                f"Reason: {judge_result.get('reason')}"
-            )
-        elif final_status == "EXECUTION_FAILED":
-            logger.error(
-                f"💥 Transaction {request_id} APPROVED but refund execution failed: "
-                f"{execution}"
-            )
-        elif approved:
-            logger.warning(
-                f"❌ Transaction {request_id} → PENDING_HUMAN_REVIEW: approved "
-                "but not executable (missing order_id/amount)."
-            )
-        else:
-            logger.warning(
-                f"❌ Transaction {request_id} → PENDING_HUMAN_REVIEW "
-                f"after {max_retries} attempts. Final reason: {judge_result.get('reason')}"
+            await db_session.commit()
+            logger.info(f"Transaction {request_id} committed to DB with status: {locked_txn.status}")
+            trace.update(
+                output={"status": final_status, "reason": judge_result.get("reason")},
+                metadata={"judge_attempts": min(retries + 1, max_retries)},
             )
 
-        await db_session.commit()
-        logger.info(f"Transaction {request_id} committed to DB with status: {locked_txn.status}")
+            if final_status == "EXECUTION_FAILED":
+                # Retries are exhausted inside the executor; requeueing would only
+                # loop. The row already records the failure for an operator.
+                await safe_nack(message, requeue=False)
+                return
 
-        if final_status == "EXECUTION_FAILED":
-            # Retries are exhausted inside the executor; requeueing would only
-            # loop. The row already records the failure for an operator.
-            await safe_nack(message, requeue=False)
-            return
-
-        await safe_ack(message)
+            await safe_ack(message)
 
     except Exception as e:  # noqa: BLE001
         logger.error(f"Error processing message: {e}")
@@ -263,4 +298,8 @@ async def start_worker() -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(start_worker())
+    try:
+        asyncio.run(start_worker())
+    finally:
+        # Export the spans still queued in the background, then stop.
+        shutdown_tracing()

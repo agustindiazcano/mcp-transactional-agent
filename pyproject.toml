@@ -32,6 +32,10 @@ dependencies = [
     "python-dotenv",
     "sse-starlette",
     "langsmith",
+    # Tracing (src/core/tracing.py). langfuse.langchain's CallbackHandler
+    # imports `langchain` itself (only to pick its v1 code path).
+    "langfuse>=4.15.4,<5",
+    "langchain>=1.4.2,<2",
     "httpx",
     "streamlit",
     "pandas"

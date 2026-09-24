@@ -8,6 +8,7 @@ from src.agents.llm_factory import PROMPT_GUARD_MODEL, get_llm
 from src.agents.provider_roles import provider_for_role
 from src.agents.token_usage import extract_usage
 from src.core.config import settings
+from src.core.tracing import langchain_config, observe
 
 logger = structlog.get_logger(__name__)
 
@@ -46,13 +47,33 @@ async def scan_for_injection(user_input: str) -> GuardResult:
     Returns 'blocked' when the malicious-probability score is at or above
     PROMPT_GUARD_THRESHOLD, 'clear' below it, and 'skipped' when the guard
     could not produce a score (fail open).
+
+    Traced as a Langfuse `guardrail`; a 'skipped' scan is marked WARNING so
+    unscanned claims are easy to find.
     """
+    # Not gated by LLM_PROVIDER except in mock mode: this is a static,
+    # ultra-low-latency pre-execution shield and must not inherit the
+    # provider configured for the heavy reasoning agent (segregation of
+    # duties, not an oversight — see PENDING.md).
+    provider = provider_for_role("prompt_guard")
+    with observe(
+        "scan-prompt-injection",
+        as_type="guardrail",
+        input=user_input,
+        metadata={"provider": provider, "threshold": settings.PROMPT_GUARD_THRESHOLD},
+    ) as observation:
+        result = await _scan(user_input, provider)
+        observation.update(
+            output=result.to_trail(),
+            level="WARNING" if result.status == "skipped" else None,
+            status_message=result.reason if result.status == "skipped" else None,
+        )
+        return result
+
+
+async def _scan(user_input: str, provider: str) -> GuardResult:
+    """Score `user_input` with the guard model; see scan_for_injection()."""
     try:
-        # Not gated by LLM_PROVIDER except in mock mode: this is a static,
-        # ultra-low-latency pre-execution shield and must not inherit the
-        # provider configured for the heavy reasoning agent (segregation of
-        # duties, not an oversight — see PENDING.md).
-        provider = provider_for_role("prompt_guard")
         guard_model = get_llm(
             provider=provider,
             temperature=0.0,
@@ -64,7 +85,9 @@ async def scan_for_injection(user_input: str) -> GuardResult:
         messages = [HumanMessage(content=user_input)]
 
         logger.info("Scanning input for prompt injection...", length=len(user_input))
-        response = await guard_model.ainvoke(messages)
+        response = await guard_model.ainvoke(
+            messages, config=langchain_config("classify-prompt-injection")
+        )
 
         usage = extract_usage(response)
         if usage is not None:

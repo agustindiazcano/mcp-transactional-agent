@@ -91,6 +91,9 @@ def get_llm(provider: str | None = None, temperature: float = 0.7, model_name: s
             project=settings.VERTEX_PROJECT or None,
             location=settings.VERTEX_LOCATION,
             temperature=temperature,
+            # Return the model's thinking (billed either way) so traces show
+            # the reasoning behind a verdict; the judge parser reads text only.
+            include_thoughts=True,
         ))
         
     elif provider == "gemini":
@@ -99,7 +102,8 @@ def get_llm(provider: str | None = None, temperature: float = 0.7, model_name: s
         return cast(BaseChatModel, ChatGoogleGenerativeAI(
             model="gemini-3.5-flash-lite",
             google_api_key=settings.GEMINI_API_KEY,
-            temperature=temperature
+            temperature=temperature,
+            include_thoughts=True,
         ))
         
     elif provider == "bedrock":
