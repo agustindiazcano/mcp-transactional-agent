@@ -2,7 +2,7 @@
 
 How the quality of the system's LLM decisions is measured: what runs today, what comes next, and which tools were deliberately left out. The summary lives in the README's [LLM Evaluation & Observability](../../README.md#llm-evaluation--observability) section; this document has the detail.
 
-> **Status:** the runtime checks and token-usage logging are implemented. Promptfoo and Langfuse are the next increment, and Ragas comes later. None of the three is a declared dependency yet. The work is tracked in `PENDING.md` Step 3.
+> **Status:** the runtime checks, token-usage logging, and Langfuse tracing are implemented. Promptfoo is the next increment, and Ragas comes later. The work is tracked in `PENDING.md` Step 3.
 
 ## 1. Implemented today
 
@@ -10,7 +10,9 @@ How the quality of the system's LLM decisions is measured: what runs today, what
 - **Pre-execution shield:** a Prompt Guard model (`llama-prompt-guard-2-22m`) scores each claim for jailbreak and injection attempts before any judge runs.
 - **Cost accounting:** `src/agents/token_usage.py` logs a structured `llm_token_usage` line (stage, provider, input and output tokens) at every real LLM call site. The README's Cost per Transaction table was built from these lines.
 
-These checks decide individual claims. What they don't give is a measure of how often they decide correctly. That is the gap the next two tools close.
+- **Tracing:** every claim is a Langfuse trace (section 3).
+
+These checks decide individual claims. What they don't give is a measure of how often they decide correctly. That is the gap Promptfoo closes next.
 
 ## 2. Offline evaluation with Promptfoo (next)
 
@@ -21,9 +23,15 @@ A labeled set of about 100 claims, run against the judges' real prompts and mode
 - **Red-teaming:** Promptfoo's prompt-injection red-team probes generate adversarial inputs beyond the hand-written ones.
 - **In CI:** a change to a prompt or a model that drops accuracy below the agreed threshold fails the build. Each run makes real LLM calls, so it runs when prompts or models change (or on demand), with Promptfoo's cache, instead of on every push.
 
-## 3. Tracing with Langfuse (next)
+## 3. Tracing with Langfuse (implemented)
 
-One trace per claim: the Prompt Guard, each judge, and the Supreme Court, each with its input, output, latency, tokens, and cost. It attaches to the existing LangChain chat models through a callback, so the orchestration code doesn't change. A failed or escalated claim then becomes one inspectable trace instead of log lines stitched together by `request_id`. The evaluation scores from Promptfoo can be attached to the same traces.
+One trace per claim (`process-claim`), with its trace id derived from `request_id`. Under it, each step is a typed observation: the Prompt Guard as a `guardrail`, retrieval as a `retriever` with an `embedding` child, the Double Judge as a `chain` holding one `evaluator` per judge (Supreme Court included), and the refund as a `tool`. Each LLM call is a `generation` recorded by Langfuse's LangChain callback, with its prompt, output, reasoning (when the model returns it), latency, tokens, and cost. A failed or escalated claim is one inspectable trace instead of log lines stitched together by `request_id`.
+
+- **How it's wired:** `src/core/tracing.py` (Langfuse Python SDK v4). The callback attaches to the existing LangChain chat models, so the orchestration code only wraps each step; no decision logic changed.
+- **Fail-safe:** off without keys; a Langfuse failure leaves the step untraced and never changes the claim's outcome.
+- **Privacy:** `src/core/trace_masking.py` runs on every span at export. `user_id` is pseudonymized, and emails and phone or card numbers are redacted, including inside recorded prompts.
+- **Verification:** unit tests run the real SDK against an in-memory exporter (the suite never sends traces), and real claims on Vertex AI were fetched back with the Langfuse CLI and audited against Langfuse's best-practices guide.
+- **Next:** attach the judges' verdicts, and later Promptfoo's scores, to the same traces as Langfuse scores. Add custom prices for the Groq models and `gemini-embedding-001`, which Langfuse doesn't price, and add the keys to the Cloud Run deployment.
 
 ## 4. RAG evaluation with Ragas (later)
 
