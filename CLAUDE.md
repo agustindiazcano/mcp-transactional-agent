@@ -340,6 +340,7 @@ When refusing an action under this section, always state the correct alternative
 | `MCP_CLIENTS_FILE` | Phase 1.B, server side: path to the client registry (`client_id`, token hash, allowed tools) |
 | `MCP_CLIENT_TOKEN` | Phase 1.B, worker side: this worker's bearer token for the MCP server |
 | `MCP_RATE_LIMIT_PER_MIN` | Phase 1.B: default calls per minute per client and tool (default: 30) |
+| `MCP_ALLOWED_HOSTS` | Phase 6, server side: comma-separated extra `Host` headers the MCP SSE transport's DNS-rebinding protection accepts, on top of the local defaults (e.g. the Cloud Run hostname; exact, no scheme or port). Empty by default |
 | `REFUND_MAX_AMOUNT` | Phase 1.B: upper bound enforced by `execute_refund` validation (default: 10000) |
 | `MCP_TOOL_TIMEOUT_SECONDS` | Worker side: read timeout per MCP tool-call attempt; bounds the MCP SDK's hang when the security boundary rejects a call with a 4xx (default: 10) |
 | `MCP_TOOL_MAX_RETRIES` | Worker side: attempts at `execute_refund` before the transaction is marked `EXECUTION_FAILED` (default: 3) |

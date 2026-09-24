@@ -2,7 +2,6 @@ from typing import Any
 
 import uvicorn
 from mcp.server.mcpserver import MCPServer
-from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.types import ASGIApp
 
@@ -17,22 +16,9 @@ from src.core.repositories.refund_repository import (
 )
 from src.mcp_server.security.client_registry import ClientRegistry
 from src.mcp_server.security.middleware import MCPSecurityMiddleware
+from src.mcp_server.security.transport import build_transport_security, parse_hosts
 
 mcp = MCPServer("agentic-mcp-engine")
-
-# MCPServer.sse_app() defaults allowed_hosts to loopback variants only
-# (127.0.0.1:*, localhost:*, [::1]:*), which rejects every request from the
-# Worker container in Phase 1.C's docker-compose topology -- there the
-# Host header is the Docker Compose service name (e.g. "mcp_server:8080"),
-# not localhost, so the MCP SDK's DNS-rebinding protection returns HTTP 421
-# "Invalid Host header" on every single request, not just under load.
-# Extending (not disabling) the allowlist keeps that protection meaningful.
-# "mcp_server" is specific to this docker-compose topology; Phase 6's
-# Lambda/serverless topology will need its own allowed_hosts entry.
-TRANSPORT_SECURITY = TransportSecuritySettings(
-    allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*", "mcp_server:*"],
-    allowed_origins=["http://127.0.0.1:*", "http://localhost:*", "http://mcp_server:*"],
-)
 
 # Set by create_app(): tools are registered at import time on the module-level
 # `mcp` server, but the database they write to is chosen when the app is
@@ -154,11 +140,12 @@ def create_app(
     registry: ClientRegistry | None = None,
     session_maker: async_sessionmaker[AsyncSession] | None = None,
     rate_limit_per_min: int | None = None,
+    allowed_hosts: list[str] | None = None,
 ) -> ASGIApp:
     """Build the MCP ASGI app behind the Phase 1.B security boundary.
 
     Defaults read from `settings` (the process-wide registry file, a real DB
-    engine, and `MCP_RATE_LIMIT_PER_MIN`), but tests pass explicit overrides
+    engine, `MCP_RATE_LIMIT_PER_MIN`, and `MCP_ALLOWED_HOSTS`), but tests pass explicit overrides
     -- e.g. a registry built in-memory with a known token, a session maker
     pointed at a test database, or a low `rate_limit_per_min` for a fast
     test -- without touching global state. See
@@ -170,9 +157,13 @@ def create_app(
         session_maker = get_session_maker(get_engine(settings.DATABASE_URL))
     if rate_limit_per_min is None:
         rate_limit_per_min = settings.MCP_RATE_LIMIT_PER_MIN
+    if allowed_hosts is None:
+        allowed_hosts = parse_hosts(settings.MCP_ALLOWED_HOSTS)
     global _session_maker
     _session_maker = session_maker
-    inner_app = mcp.sse_app(message_path=MESSAGE_PATH, transport_security=TRANSPORT_SECURITY)
+    inner_app = mcp.sse_app(
+        message_path=MESSAGE_PATH, transport_security=build_transport_security(allowed_hosts)
+    )
     return MCPSecurityMiddleware(
         inner_app,
         registry=registry,

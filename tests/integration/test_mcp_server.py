@@ -85,6 +85,46 @@ async def test_mcp_sse_endpoint_exists(async_mcp_client):
         pass  # Expected to timeout because it's a long-lived SSE connection
 
 
+CLOUD_HOST = "mcp-server-123456789.us-central1.run.app"
+
+
+async def _sse_status(app, base_url: str) -> int | None:
+    """Open /sse with a valid token and return the status, or None if it streamed."""
+    # The SDK sends its 421 and then raises; keep the response, as uvicorn would.
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url=base_url) as client:
+        try:
+            async with asyncio.timeout(0.5):
+                async with client.stream(
+                    "GET", "/sse", headers={"Authorization": f"Bearer {VALID_TOKEN}"}
+                ) as response:
+                    return response.status_code
+        except TimeoutError:
+            return None
+
+
+@pytest.mark.asyncio
+async def test_sse_endpoint_accepts_configured_cloud_host(db_engine):
+    """A host passed in allowed_hosts (Cloud Run's URL, no port) passes DNS-rebinding checks."""
+    app = create_app(
+        registry=_test_registry(),
+        session_maker=get_session_maker(db_engine),
+        allowed_hosts=[CLOUD_HOST],
+    )
+
+    assert await _sse_status(app, f"https://{CLOUD_HOST}") in (200, None)
+
+
+@pytest.mark.asyncio
+async def test_sse_endpoint_rejects_unconfigured_host_with_421(db_engine):
+    """Without the extra host, the same request is still rejected: protection stays on."""
+    app = create_app(
+        registry=_test_registry(), session_maker=get_session_maker(db_engine), allowed_hosts=[]
+    )
+
+    assert await _sse_status(app, f"https://{CLOUD_HOST}") == 421
+
+
 @pytest.mark.asyncio
 async def test_mcp_tools_registered():
     """Verify that the required tools are registered on the MCP server."""

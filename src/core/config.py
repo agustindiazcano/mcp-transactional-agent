@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     MCP_CLIENT_TOKEN: str = "local-dev-worker-token-change-me"
     REFUND_MAX_AMOUNT: float = 10000.0
     MCP_RATE_LIMIT_PER_MIN: int = 30
+    # Server side: comma-separated extra Host headers the SSE transport accepts
+    # on top of the local defaults (src/mcp_server/security/transport.py),
+    # e.g. the Cloud Run hostname. Exact hosts, no scheme or port.
+    MCP_ALLOWED_HOSTS: str = ""
 
     # MCP tool calls from the worker (src/worker/refund_executor.py). The read
     # timeout bounds each attempt, since MCP SDK 2.2.0 hangs in call_tool when
