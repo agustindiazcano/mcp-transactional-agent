@@ -21,7 +21,7 @@ The project is organized around Phase 1 (core transactional engine, production-r
 - Database and Idempotency: PostgreSQL (with pgvector extension, Phase 1.D), SQLAlchemy (async ORM), Alembic.
 - AI Core: custom async orchestration (the pipeline, retries, Double Judge, and Supreme Court cascade are hand-written — no LangChain chains/agents); LangChain (`langchain-core`) only as a thin provider-adapter layer behind `llm_factory.py`. Providers: Google GenAI (Gemini), Google Vertex AI (primary cloud provider, Phase 6 — validated end-to-end locally via ADC), Groq API, OpenAI, AWS Bedrock (secondary).
 - Agent Sandbox: Model Context Protocol (MCP) Python SDK, over HTTP/SSE transport (see Section 4).
-- LLMOps (Testing and Guardrails): Promptfoo (shift-left testing), Langfuse (telemetry), Asymmetric Double LLM-as-a-Judge pattern for runtime output evaluation (Gemini + GPT-OSS 20B via Groq), plus a Prompt Guard pre-execution filter and a Supreme Court cascade judge for disagreement escalation.
+- LLMOps (Testing and Guardrails): Promptfoo (shift-left testing, planned), Langfuse tracing (Python SDK v4 + its LangChain `CallbackHandler`, done — see Section 4, "LLM Tracing"), Asymmetric Double LLM-as-a-Judge pattern for runtime output evaluation (Gemini + GPT-OSS 20B via Groq), plus a Prompt Guard pre-execution filter and a Supreme Court cascade judge for disagreement escalation.
 - Load Testing: Locust (concurrency/chaos validation, Phase 1.C).
 - Containerization (Phase 1.C): Docker, Docker Compose.
 - RAG Ingestion (Phase 1.D): provider-agnostic embeddings API (Gemini `gemini-embedding-001`, truncated to 768 dims, by default), `pgvector`. Cloud-native embeddings (Vertex AI on the primary GCP track, Amazon Titan on the secondary AWS track) are a Phase 6 swap, not a Phase 1.D dependency.
@@ -76,6 +76,19 @@ Known MCP SDK 2.2.0 behavior: a `tools/call` response arrives over the SSE strea
 
 ### When Two Containers Fail to Communicate: Isolate Transport From Application
 Follow [`docs/architecture/microservices_debugging_protocol.md`](docs/architecture/microservices_debugging_protocol.md) before proposing a networking/Docker-level fix for a cross-container failure. Rule of thumb: write the smallest possible script that exercises only the suspect connection (e.g. `sse_client(...)` + `.initialize()`, nothing else) and run it with `docker exec` inside the actual failing container. If it passes, the bug is in the application's control flow or exception handling around that connection, not the transport — stop suspecting Docker/DNS/networking and start reading the code path that uses the connection, especially any `async with` block wrapping a task group. The Phase 1.C MCP postmortem (`docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md`) is the canonical example: an unguarded `get_llm(provider="groq", ...)` call three layers into the application code, not a transport bug at all, despite every symptom looking like one.
+
+### LLM Tracing (Langfuse): Observability, Never a Dependency
+Every claim is traced to Langfuse through `src/core/tracing.py` (Python SDK v4, branch `feat/langfuse-tracing`). Rules for any change that adds or touches an LLM call or a pipeline step:
+- **Use the vendored `langfuse` skill** (`.claude/skills/langfuse/`, pinned in its `SOURCE.md`) for any Langfuse work, and follow its first principle: fetch the current Langfuse docs before writing code, never implement from memory.
+- **One trace per claim.** `claim_trace()` opens the root `process-claim` in `worker.py`; its trace id is `Langfuse.create_trace_id(seed=request_id)`, so a transaction row maps to its trace with no lookup. Trace input is the claim, trace output is the final status and reason.
+- **Typed, nested observations** via `observe(name, as_type=...)`: `scan-prompt-injection` (`guardrail`), `retrieve-policy` (`retriever`) → `embed-claim` (`embedding`), `evaluate-proposal` (`chain`) → `run-judge-1` / `run-judge-2` / `run-supreme-court` (`evaluator`), `execute-refund` (`tool`).
+- **Every LLM call passes `config=langchain_config("<action-name>")`**, so the Langfuse `CallbackHandler` records it as a `generation` (model, tokens, cost, thinking) under the current observation, named after the action (`classify-prompt-injection`, `generate-verdict`), never after the model. Embeddings are not covered by LangChain callbacks: trace them by hand as an `embedding` with `model` and `usage_details`.
+- **Names are an API.** Evaluators, dashboards, and saved views target observation names: keep them stable, verb-first, low-cardinality (no ids, attempt numbers, or model names — put those in metadata). Renaming one is a breaking change; say so in the PR.
+- **Fail-safe, not fail-closed.** Tracing is off unless both keys are set; with `LANGFUSE_TRACING_ENABLED=false` or no keys every helper is a no-op. A Langfuse failure (init, starting an observation, an update) is logged and the step runs untraced — it must never change a claim's outcome or its ACK/NACK. Application errors still propagate unchanged, after the observation is marked `level=ERROR`. Spans export from a background thread (no latency on the claim); `shutdown_tracing()` flushes on worker exit.
+- **Masked at export** by `src/core/trace_masking.py` (`mask_otel_spans`, pure and fast, runs on the exporter thread over every string attribute, including prompts the callback records): `user_id` is pseudonymized (`usr_<sha256[:12]>`, stable, same rule as the MCP audit log's PII masking), emails and 9–19-digit phone/card numbers are redacted; amounts, dates, UUIDs, and decimal scores stay readable. Any new PII field must be added there, with a test, before it is traced.
+- **Tests never send traces.** `tests/conftest.py` disables tracing for the whole run; a test that asserts on spans uses the `trace_exporter` fixture (`tests/support/tracing.py`: the real SDK exporting to an in-memory OpenTelemetry exporter). Use real LangChain fake chat models, not `AsyncMock`, when the test depends on callbacks firing.
+- **Verify against a real trace, not just tests:** after changing instrumentation, run one real claim and fetch it with `npx langfuse-cli api observations list --trace-id <id>` (credentials from `.env`; set `LANGFUSE_HOST` to `LANGFUSE_BASE_URL`), then audit it against https://langfuse.com/docs/observability/best-practices.
+- Known gaps: Langfuse has no price for the Groq models (`openai/gpt-oss-20b`, `llama-prompt-guard-2-22m`) or `gemini-embedding-001`, so their cost shows empty until custom model prices are defined in the Langfuse project; `gemini-3.5-flash-lite` returns no thinking (it reports no reasoning tokens), though `include_thoughts=True` is set for when a model that thinks is used. Cloud Run doesn't trace yet: the keys aren't in Secret Manager.
 
 ### Strict Typing
 Type hints are not optional. All code must pass `mypy --strict`, not just `mypy --ignore-missing-imports`. Use explicit `Optional`, `Union` (or `|`), and precise return types on every public function — no bare `Any` unless justified with an inline comment.
@@ -255,6 +268,8 @@ agentic-mcp-engine/
             currency.py      # Currency enum shared by the gateway and the MCP tools
             database.py
             models.py
+            tracing.py       # Langfuse: one trace per claim, typed observations, fail-safe
+            trace_masking.py # PII masking applied to every span at export
             services/
             repositories/
         agents/              # LLM orchestration and provider factory
@@ -330,8 +345,11 @@ When refusing an action under this section, always state the correct alternative
 | `GROQ_API_KEY` | Groq API key |
 | `AWS_ACCESS_KEY_ID` | AWS key (when LLM_PROVIDER=bedrock) |
 | `AWS_SECRET_ACCESS_KEY` | AWS secret (when LLM_PROVIDER=bedrock) |
-| `LANGFUSE_SECRET_KEY` | Langfuse telemetry secret |
-| `LANGFUSE_PUBLIC_KEY` | Langfuse telemetry public key |
+| `LANGFUSE_SECRET_KEY` | Langfuse project secret key; tracing is off unless both keys are set |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse project public key |
+| `LANGFUSE_BASE_URL` | Langfuse region or host (this project: `https://us.cloud.langfuse.com`; empty means the SDK default, the EU cloud) |
+| `LANGFUSE_TRACING_ENABLED` | Switch tracing off without removing the keys (default: `true`; the test suite forces `false`) |
+| `LANGFUSE_TRACING_ENVIRONMENT` | Langfuse environment the traces are filed under (default: `development`; use `demo` for the Cloud Run environment) |
 | `PROMPT_GUARD_THRESHOLD` | Prompt Guard malicious-probability score (Groq returns a float in [0, 1], not a label) at or above which a claim is blocked (default: 0.5) |
 | `MCP_SERVER_URL` | URL of the running MCP server |
 | `GATEWAY_URL` | Phase 4, dashboard side: base URL of the gateway API the Streamlit dashboard consumes (default: `http://localhost:8000`) |
