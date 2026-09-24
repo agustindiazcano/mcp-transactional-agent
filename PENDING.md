@@ -69,7 +69,9 @@ Decision changed 2026-09-22: **Google Cloud is now the primary deployment target
   - [ ] Add `deletion_policy = "ABANDON"` to `google_sql_user.app` before any teardown (`app` owns the tables, so dropping the user fails).
   - [ ] Seed `orders` and ingest the knowledge base into Cloud SQL (with step 9's real claim).
 - [ ] Cloud Run services: gateway, MCP server, dashboard (HTTP); worker + sweeper as min-instance consumers.
-- [ ] Secret Manager for MCP client tokens and provider keys (closes the "no secret manager" known limitation); Cloud Run-managed TLS.
+- [x] **Secret Manager** (`feat/gcp-secrets`, 2026-09-24): `database-url`, `rabbitmq-url` (imported into Terraform), `groq-api-key`, `mcp-client-token`, `mcp-clients-json`. Terraform owns containers and access, values added by hand (not in the state). Per-secret grants only; the project-wide `secretAccessor` is gone; new `sweeper-sa`. New random cloud MCP token (client `worker-cloud`); the registry with its hash is mounted as a file in step 8 (`MCP_CLIENTS_FILE`), because the image's local-dev token is public in `config.py`.
+- [ ] Cloud Run-managed TLS (comes with the services).
+- [ ] Automatic rotation of the cloud secrets (later; today a new version is added by hand).
 - [x] Decide messaging (2026-09-23): **CloudAMQP free plan**, no code change (only `RABBITMQ_URL`). The instance runs **LavinMQ** (AMQP 0-9-1, `*.lmq.cloudamqp.com`), not RabbitMQ: verify it with the first real claim in the cloud. The URL is in Secret Manager as `rabbitmq-url`.
 - [ ] Re-run the Locust load test against the Cloud Run deployment and compare with the local baseline (P95 87 ms, 0 failures).
 
