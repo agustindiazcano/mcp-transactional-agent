@@ -21,3 +21,11 @@ except UnsafeTestDatabaseError as exc:
 
 settings.DATABASE_URL = _TEST_DATABASE_URL
 os.environ["DATABASE_URL"] = _TEST_DATABASE_URL
+
+# Tracing is off for the whole run, even with Langfuse keys in .env; a test
+# that asserts on spans opts in with the in-memory `trace_exporter` fixture.
+from src.core import tracing
+from tests.support.tracing import trace_exporter  # noqa: F401
+
+settings.LANGFUSE_TRACING_ENABLED = False
+tracing.configure_tracing(None)

@@ -12,6 +12,7 @@ from langchain_core.embeddings import Embeddings
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.repositories import knowledge_base_repository
+from src.core.tracing import observe
 
 logger = logging.getLogger(__name__)
 usage_logger = structlog.get_logger("token_usage")
@@ -62,12 +63,25 @@ async def retrieve_relevant_policy(
     if not claim_text.strip():
         return None
 
-    vector = await embeddings_client.aembed_query(claim_text)
-
     # LangChain's Embeddings interface exposes no real token usage, unlike
     # chat models' AIMessage.usage_metadata -- this is a ~4-chars/token
     # estimate for cost tracking, not a metered figure (estimated=True).
     estimated_tokens = len(claim_text) // 4
+
+    # LangChain's callbacks don't cover embeddings, so this call is traced by
+    # hand: an `embedding` observation with the model and the estimated usage.
+    with observe(
+        "embed-claim",
+        as_type="embedding",
+        input=claim_text,
+        metadata={"provider": provider, "estimated_usage": True},
+        model=getattr(embeddings_client, "model", None),
+    ) as observation:
+        vector = await embeddings_client.aembed_query(claim_text)
+        observation.update(
+            output={"dimensions": len(vector)}, usage_details={"input": estimated_tokens}
+        )
+
     usage_logger.info(
         "llm_token_usage",
         stage="retrieval_embedding",

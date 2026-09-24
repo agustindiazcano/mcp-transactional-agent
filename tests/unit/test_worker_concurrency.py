@@ -395,3 +395,64 @@ async def test_handle_delivery_survives_a_channel_closed_on_settle() -> None:
         await handle_delivery(message, session_maker)
 
     message.process.assert_called_once_with(ignore_processed=True)
+
+
+# ── Langfuse trace of one claim ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_claim_is_one_trace_with_retrieval_and_refund_nested(trace_exporter) -> None:
+    from langfuse import Langfuse
+
+    from tests.support.tracing import finished_spans, is_child_of, span_attr
+
+    message = _make_message(BODY)
+    with _pipeline(retrieved_policy="Refunds within 30 days."):
+        from src.worker.worker import process_message
+        await process_message(message, _make_db_session())
+
+    spans = finished_spans(trace_exporter)
+    root = spans["process-claim"]
+    assert f"{root.context.trace_id:032x}" == Langfuse.create_trace_id(seed="req-test-001")
+    assert "I need a refund of 50 dollars." in span_attr(root, "langfuse.observation.input")
+    assert '"status": "COMPLETED"' in span_attr(root, "langfuse.observation.output")
+
+    retrieval = spans["retrieve-policy"]
+    assert is_child_of(retrieval, root)
+    assert span_attr(retrieval, "langfuse.observation.type") == "retriever"
+    assert "Refunds within 30 days." in span_attr(retrieval, "langfuse.observation.output")
+
+    refund = spans["execute-refund"]
+    assert is_child_of(refund, root)
+    assert span_attr(refund, "langfuse.observation.type") == "tool"
+    assert '"status": "executed"' in span_attr(refund, "langfuse.observation.output")
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_claim_trace_ends_with_the_blocked_status(trace_exporter) -> None:
+    from tests.support.tracing import finished_spans, span_attr
+
+    blocked = GuardResult(status="blocked", score=0.999)
+    with _pipeline(guard=blocked):
+        from src.worker.worker import process_message
+        await process_message(_make_message(BODY), _make_db_session())
+
+    spans = finished_spans(trace_exporter)
+    output = span_attr(spans["process-claim"], "langfuse.observation.output")
+    assert '"status": "BLOCKED_MALICIOUS_PROMPT"' in output
+    assert "execute-refund" not in spans
+
+
+@pytest.mark.asyncio
+async def test_a_failed_refund_is_an_error_on_its_tool_observation(trace_exporter) -> None:
+    from tests.support.tracing import finished_spans, span_attr
+
+    with _pipeline(executor_error=RefundExecutionError("MCP unreachable")):
+        from src.worker.worker import process_message
+        await process_message(_make_message(BODY), _make_db_session())
+
+    spans = finished_spans(trace_exporter)
+    assert span_attr(spans["execute-refund"], "langfuse.observation.level") == "ERROR"
+    assert '"status": "EXECUTION_FAILED"' in span_attr(
+        spans["process-claim"], "langfuse.observation.output"
+    )

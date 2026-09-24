@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     VERTEX_MODEL: str = "gemini-3.5-flash-lite"
     VERTEX_EMBEDDING_MODEL: str = "gemini-embedding-001"
 
+    # Langfuse tracing (src/core/tracing.py). Off unless both keys are set.
+    # Empty LANGFUSE_BASE_URL means the SDK's default (the EU cloud); this
+    # project's account is on https://us.cloud.langfuse.com.
+    LANGFUSE_PUBLIC_KEY: str = ""
+    LANGFUSE_SECRET_KEY: str = ""
+    LANGFUSE_BASE_URL: str = ""
+    LANGFUSE_TRACING_ENABLED: bool = True
+    LANGFUSE_TRACING_ENVIRONMENT: str = "development"
+
     # Prompt Guard: Groq returns a malicious-probability score in [0, 1];
     # inputs scoring at or above this are blocked as BLOCKED_MALICIOUS_PROMPT.
     PROMPT_GUARD_THRESHOLD: float = 0.5

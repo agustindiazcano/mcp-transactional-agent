@@ -371,3 +371,149 @@ async def test_supreme_court_failure_fallback_names_providers(
 
     assert result["verdict"] == "REJECT"
     assert result["reason"] == "Judge 1 (vertex): too high | Judge 2 (groq): too high"
+
+
+def _judge_returning(*verdicts: str) -> AsyncMock:
+    mock_llm = AsyncMock()
+    mock_llm.ainvoke.side_effect = [
+        AIMessage(content=json.dumps({"verdict": v, "reason": f"{v} reason"})) for v in verdicts
+    ]
+    return mock_llm
+
+
+@pytest.mark.asyncio
+async def test_double_judge_is_traced_as_a_chain_of_evaluators(trace_exporter):
+    from tests.support.tracing import finished_spans, is_child_of, span_attr
+
+    with patch("src.agents.judge.get_llm", return_value=_judge_returning("APPROVE", "APPROVE")):
+        await evaluate_decision("execute_refund", {"amount": 50.0}, {"request_id": "r-1"})
+
+    spans = finished_spans(trace_exporter)
+    chain = spans["evaluate-proposal"]
+    assert span_attr(chain, "langfuse.observation.type") == "chain"
+    assert '"verdict": "APPROVE"' in span_attr(chain, "langfuse.observation.output")
+    for name, provider in (("run-judge-1", "gemini"), ("run-judge-2", "groq")):
+        judge = spans[name]
+        assert is_child_of(judge, chain)
+        assert span_attr(judge, "langfuse.observation.type") == "evaluator"
+        assert span_attr(judge, "langfuse.observation.metadata.provider") == provider
+        assert '"verdict": "APPROVE"' in span_attr(judge, "langfuse.observation.output")
+    assert "run-supreme-court" not in spans
+
+
+@pytest.mark.asyncio
+async def test_supreme_court_escalation_is_traced_under_the_same_chain(trace_exporter):
+    from tests.support.tracing import finished_spans, is_child_of, span_attr
+
+    judges = _judge_returning("APPROVE", "REJECT", "APPROVE")
+    with patch("src.agents.judge.get_llm", return_value=judges):
+        await evaluate_decision("execute_refund", {"amount": 50.0}, {"request_id": "r-2"})
+
+    spans = finished_spans(trace_exporter)
+    court = spans["run-supreme-court"]
+    assert is_child_of(court, spans["evaluate-proposal"])
+    assert span_attr(court, "langfuse.observation.type") == "evaluator"
+    assert '"verdict": "APPROVE"' in span_attr(court, "langfuse.observation.output")
+
+
+@pytest.mark.asyncio
+async def test_a_judge_that_fails_closed_is_marked_as_an_error(trace_exporter):
+    from tests.support.tracing import finished_spans, span_attr
+
+    broken = AsyncMock()
+    broken.ainvoke.return_value = AIMessage(content="not json at all")
+    with patch("src.agents.judge.get_llm", return_value=broken):
+        result = await _run_single_judge("gemini", 0.0, [], stage="judge1")
+
+    assert result["verdict"] == "REJECT"
+    span = finished_spans(trace_exporter)["run-judge-1"]
+    assert span_attr(span, "langfuse.observation.level") == "ERROR"
+
+
+@pytest.mark.asyncio
+async def test_each_judge_call_carries_the_langfuse_callback(trace_exporter):
+    judges = _judge_returning("APPROVE", "APPROVE")
+    with patch("src.agents.judge.get_llm", return_value=judges):
+        await evaluate_decision("execute_refund", {"amount": 50.0}, {"request_id": "r-3"})
+
+    for call in judges.ainvoke.await_args_list:
+        callbacks = call.kwargs["config"]["callbacks"]
+        assert type(callbacks[0]).__name__ == "LangchainCallbackHandler"
+
+
+class _SlowFakeChat:
+    """Builds real LangChain chat models (so callbacks fire, unlike AsyncMock)
+    that answer after a delay, forcing the two judges to overlap."""
+
+    def __init__(self, delays: list[float], verdict: str = "APPROVE") -> None:
+        self._delays = iter(delays)
+        self._verdict = verdict
+
+    def __call__(self, **_: object) -> object:
+        import asyncio
+
+        from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+
+        delay = next(self._delays)
+        answer = json.dumps({"verdict": self._verdict, "reason": "ok"})
+
+        class _Slow(GenericFakeChatModel):
+            async def _agenerate(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+                await asyncio.sleep(delay)
+                return await super()._agenerate(*args, **kwargs)
+
+        return _Slow(messages=iter([AIMessage(content=answer)]))
+
+
+@pytest.mark.asyncio
+async def test_each_generation_nests_under_its_own_concurrent_judge(trace_exporter):
+    """Both judges run concurrently; each LLM generation must still attach to
+    its own judge, since the callback nests under whatever span is current."""
+    from tests.support.tracing import is_child_of
+
+    # Judge 1 answers last, so its callback fires while Judge 2 has started.
+    with patch("src.agents.judge.get_llm", side_effect=_SlowFakeChat([0.2, 0.05])):
+        await evaluate_decision("execute_refund", {"amount": 50.0}, {"request_id": "r-9"})
+
+    from src.core import tracing
+
+    tracing.flush_tracing()
+    spans = trace_exporter.get_finished_spans()
+    judges = {s.name: s for s in spans if s.name.startswith("run-judge")}
+    generations = [
+        s for s in spans
+        if (s.attributes or {}).get("langfuse.observation.type") == "generation"
+    ]
+    assert len(generations) == 2
+    parents = sorted(
+        name for g in generations for name, j in judges.items() if is_child_of(g, j)
+    )
+    assert parents == ["run-judge-1", "run-judge-2"]
+
+
+@pytest.mark.asyncio
+async def test_judge_reads_the_verdict_from_text_blocks_and_ignores_thinking():
+    """With include_thoughts, Gemini's content is a list holding a thinking
+    block before the answer; the thinking may itself mention a verdict."""
+    mock_llm = AsyncMock()
+    mock_llm.ainvoke.return_value = AIMessage(
+        content=[
+            {"type": "thinking", "thinking": 'Maybe {"verdict": "REJECT"}? No, it is fine.'},
+            {"type": "text", "text": '{"verdict": "APPROVE", "reason": "Within policy."}'},
+        ]
+    )
+    with patch("src.agents.judge.get_llm", return_value=mock_llm):
+        result = await _run_single_judge("gemini", 0.0, [], stage="judge1")
+
+    assert result == {"verdict": "APPROVE", "reason": "Within policy."}
+
+
+@pytest.mark.asyncio
+async def test_judge_generations_are_named_after_the_action(trace_exporter):
+    judges = _judge_returning("APPROVE", "APPROVE")
+    with patch("src.agents.judge.get_llm", return_value=judges):
+        await evaluate_decision("execute_refund", {"amount": 50.0}, {"request_id": "r-4"})
+
+    assert {c.kwargs["config"]["run_name"] for c in judges.ainvoke.await_args_list} == {
+        "generate-verdict"
+    }

@@ -44,7 +44,8 @@ def test_get_llm_gemini():
         MockGemini.assert_called_once_with(
             model="gemini-3.5-flash-lite",
             google_api_key="test_key",
-            temperature=0.7
+            temperature=0.7,
+            include_thoughts=True,
         )
 
 
@@ -110,6 +111,7 @@ def test_get_llm_vertex_uses_configured_model_project_and_location():
             project="demo-project",
             location="europe-west1",
             temperature=0.0,
+            include_thoughts=True,
         )
 
 
@@ -245,3 +247,14 @@ def test_resolve_provider_normalizes_the_override_or_the_setting(
 
     with patch("src.agents.llm_factory.settings", Settings(LLM_PROVIDER=configured)):
         assert resolve_provider(override) == expected
+
+
+def test_gemini_returns_its_thoughts_so_traces_capture_the_reasoning():
+    """The Gemini 3.x models think before answering; without include_thoughts
+    only an opaque signature comes back, and the Langfuse generation has no
+    reasoning to debug a verdict with."""
+    for provider in ("gemini", "vertex"):
+        with patch("src.agents.llm_factory.ChatGoogleGenerativeAI") as MockGemini:
+            get_llm(provider=provider, temperature=0.0)
+
+        assert MockGemini.call_args.kwargs["include_thoughts"] is True

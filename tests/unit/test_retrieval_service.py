@@ -124,3 +124,27 @@ async def test_retrieve_relevant_policy_logs_estimated_token_usage() -> None:
         total_tokens=3,
         estimated=True,
     )
+
+
+@pytest.mark.asyncio
+async def test_query_embedding_is_traced_with_model_and_estimated_usage(trace_exporter) -> None:
+    from tests.support.tracing import finished_spans, span_attr
+
+    embeddings_client = MagicMock()
+    embeddings_client.model = "gemini-embedding-001"
+    embeddings_client.aembed_query = AsyncMock(return_value=[0.1] * 768)
+
+    with patch(
+        "src.core.services.retrieval_service.knowledge_base_repository.find_most_similar",
+        new_callable=AsyncMock,
+        return_value=[],
+    ):
+        await retrieve_relevant_policy(
+            AsyncMock(), embeddings_client, "x" * 40, provider="gemini"
+        )
+
+    span = finished_spans(trace_exporter)["embed-claim"]
+    assert span_attr(span, "langfuse.observation.type") == "embedding"
+    assert span_attr(span, "langfuse.observation.model.name") == "gemini-embedding-001"
+    assert '"input": 10' in span_attr(span, "langfuse.observation.usage_details")
+    assert span_attr(span, "langfuse.observation.metadata.estimated_usage") is True

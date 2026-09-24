@@ -8,6 +8,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from src.agents.llm_factory import get_llm
 from src.agents.provider_roles import provider_for_role
 from src.agents.token_usage import extract_usage
+from src.core.tracing import langchain_config, observe
 
 logger = logging.getLogger(__name__)
 usage_logger = structlog.get_logger("token_usage")
@@ -43,10 +44,42 @@ def _fence(tag: str, payload: Any) -> str:
     return f"<{tag}>\n{body}\n</{tag}>"
 
 
+# Langfuse observation name per judge role. Names are an interface for
+# evaluators and dashboards: keep them stable, and never name them after a model.
+_JUDGE_OBSERVATION_NAMES = {
+    "judge1": "run-judge-1",
+    "judge2": "run-judge-2",
+    "supreme_court": "run-supreme-court",
+}
+
+
 async def _run_single_judge(provider: str, temperature: float, messages: list[Any], stage: str) -> dict[str, Any]:
+    """Run one judge, traced as a Langfuse `evaluator`; fails closed to REJECT.
+
+    A judge that crashes or returns an unusable verdict is marked ERROR on its
+    observation, so guardrail errors are distinguishable from real rejections.
+    """
+    with observe(
+        _JUDGE_OBSERVATION_NAMES.get(stage, stage),
+        as_type="evaluator",
+        metadata={"provider": provider, "role": stage},
+    ) as observation:
+        result, error = await _invoke_judge(provider, temperature, messages, stage)
+        observation.update(
+            output=result,
+            level="ERROR" if error else None,
+            status_message=error,
+        )
+        return result
+
+
+async def _invoke_judge(
+    provider: str, temperature: float, messages: list[Any], stage: str
+) -> tuple[dict[str, Any], str | None]:
+    """Return (verdict dict, error message or None) for one judge call."""
     try:
         llm = get_llm(provider=provider, temperature=temperature)
-        response = await llm.ainvoke(messages)
+        response = await llm.ainvoke(messages, config=langchain_config("generate-verdict"))
 
         usage = extract_usage(response)
         if usage is not None:
@@ -81,7 +114,7 @@ async def _run_single_judge(provider: str, temperature: float, messages: list[An
         if "verdict" not in result or result["verdict"] not in ["APPROVE", "REJECT"]:
             raise ValueError("Invalid verdict returned by judge.")
             
-        return cast(dict[str, Any], result)
+        return cast(dict[str, Any], result), None
         
     except Exception as e:  # noqa: BLE001
         logger.error(f"Judge evaluation failed: {e}")
@@ -89,13 +122,30 @@ async def _run_single_judge(provider: str, temperature: float, messages: list[An
         return {
             "verdict": "REJECT",
             "reason": f"System Guardrail Error: {e!s}"
-        }
+        }, f"{type(e).__name__}: {e}"
 
 async def evaluate_decision(action_name: str, action_args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     """
     Evaluates a proposed action using the Double LLM-as-a-Judge pattern.
     Returns a dictionary with 'verdict' and 'reason'.
+
+    Traced as the Langfuse chain `evaluate-proposal`, with each judge (and
+    the Supreme Court, when it is called) as an evaluator under it.
     """
+    with observe(
+        "evaluate-proposal",
+        as_type="chain",
+        input={"action": action_name, "arguments": action_args},
+    ) as observation:
+        decision = await _evaluate(action_name, action_args, context)
+        observation.update(
+            output={"verdict": decision.get("verdict"), "reason": decision.get("reason")}
+        )
+        return decision
+
+
+async def _evaluate(action_name: str, action_args: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    """Double Judge plus Supreme Court cascade; see evaluate_decision()."""
     import asyncio
 
     user_prompt = (
