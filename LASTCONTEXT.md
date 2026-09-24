@@ -50,7 +50,7 @@ Only what is current: read this first in every session. When an item here is don
 | 7 | 🟢 | Settings → Branches: branch protection on `main`, requiring the CI checks | ⬜ |
 
 ## Next, in order
-0. **Langfuse tracing: done** (PR #56). Follow-ups in `PENDING.md` Step 3: model prices, Cloud Run keys, verdict scores, and the knowledge-base `�` (fix before step 9's cloud ingestion).
+0. **Langfuse tracing: done** (PRs #56, #57). Follow-ups in `PENDING.md` Step 3: model prices, Cloud Run keys, verdict scores.
 1. **GCP deploy (demo environment)**, step by step with the user:
    - ✅ 1. State bucket. ✅ 2. Terraform base. ✅ 3. Artifact Registry repo `app-images`. ✅ 4. Service accounts (`worker-sa`, `gateway-sa`, `mcp-server-sa`, `dashboard-sa`).
    - ✅ 5. The 4 images (gateway, worker, mcp_server, dashboard) are in `us-central1-docker.pkg.dev/project-e0ad10c9-0b2f-4dc0-ac6/app-images/<service>:b0e7dbe` (the `main` commit they were built from). `sweeper` and `migrate` reuse the `worker` image with a different command.
@@ -84,6 +84,7 @@ Only what is current: read this first in every session. When an item here is don
 - The dev DB holds test rows (prefixes `chaos-`, `tput-`, `prof-`, `vertex-e2e-`).
 
 ## Gotchas that still apply
+- This console prints with cp1252: a non-ASCII character (e.g. an em dash) can show as `�` even when the data is correct. Before calling something mojibake, print the code points (`f"U+{ord(ch):04X}"`) or check the raw bytes.
 - Inside containers, `VERTEX_PROJECT` must be set, because there's no gcloud config to resolve it from. A Vertex auth failure shows up as judges failing closed to `REJECT`, not as an auth error.
 - Gemini 3.x models return 404 on regional Vertex endpoints: chat must use `global`.
 - After migrating the dev DB from the host, rebuild every image built from `worker.Dockerfile` (`worker`, `sweeper`, `migrate`) before `docker compose up`.
