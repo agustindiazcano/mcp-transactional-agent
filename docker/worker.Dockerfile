@@ -9,6 +9,9 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
+# One-shot data jobs (seed_orders, ingest_knowledge_base) and the policy they ingest.
+COPY scripts ./scripts
+COPY docs/policies ./docs/policies
 
 RUN pip install --no-cache-dir . \
     && useradd --create-home --shell /bin/bash appuser \
