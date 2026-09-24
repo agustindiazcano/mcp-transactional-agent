@@ -86,6 +86,7 @@ Decision changed 2026-09-22: **Google Cloud is now the primary deployment target
 - [x] Infrastructure reference doc: [docs/infrastructure/gcp_infrastructure.md](docs/infrastructure/gcp_infrastructure.md) (2026-09-24): both environments, service accounts and secret access, exposure, operating commands, cost. Keep it current when `infra/` changes.
 - [ ] Automatic rotation of the cloud secrets (later; today a new version is added by hand).
 - [x] Decide messaging (2026-09-23): **CloudAMQP free plan**, no code change (only `RABBITMQ_URL`). The instance runs **LavinMQ** (AMQP 0-9-1, `*.lmq.cloudamqp.com`), not RabbitMQ: **verified** with the first real claims in the cloud (2026-09-24). The URL is in Secret Manager as `rabbitmq-url`.
+- [x] **CD to Cloud Run** (2026-09-24): `.github/workflows/deploy.yml` after CI on `main`, Workload Identity Federation (no keys in GitHub), `github-deployer-sa` with per-resource grants + custom role `runOperationsReader`. First fully green run 36073809594.
 - [ ] Re-run the Locust load test against the Cloud Run deployment and compare with the local baseline (P95 87 ms, 0 failures).
 
 ### Step 10 — AWS (Phase 6, secondary target)
