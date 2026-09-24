@@ -35,7 +35,8 @@
 - [Architecture Decision Records](#architecture-decision-records) · [Research Directions](#research-directions) · [Known Limitations](#known-limitations)
 
 **Documents** ([full index](#documentation-index))
-- Architecture: [Core Engine](docs/phases/phase_1_core_engine.md) · [MCP Security Boundary](docs/architecture/mcp_security_boundary.md) · [Microservices Debugging Protocol](docs/architecture/microservices_debugging_protocol.md)
+- Architecture: [Core Engine](docs/phases/phase_1_core_engine.md) · [MCP Security Boundary](docs/architecture/mcp_security_boundary.md) · [Public API Abuse Protection](docs/architecture/api_abuse_protection.md) · [Microservices Debugging Protocol](docs/architecture/microservices_debugging_protocol.md)
+- Infrastructure: [Local Stack and Google Cloud Deployment](docs/infrastructure/gcp_infrastructure.md)
 - Roadmaps: [Deterministic Guardrails](docs/deterministic_guardrails_roadmap.md) · [Advanced AI](docs/architecture/advanced_ai_roadmap.md)
 - Testing: [Test Coverage](docs/testing/tdd_coverage.md) · [Failure Injection](docs/testing/chaos_engineering_armageddon.md) · [Telemetry & Performance](docs/testing/telemetry_performance.md) · [LLMOps & Observability](docs/testing/llmops_observability.md)
 - Postmortems: [2026-09-21 MCP Transport Failures](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md)
@@ -182,7 +183,11 @@ Code: `src/core/tracing.py`. Rules for changing it: CLAUDE.md, Section 4 ("LLM T
 - **[Advanced AI Roadmap](docs/architecture/advanced_ai_roadmap.md):** Research directions for later iterations (constrained decoding, conformal prediction, rule-based reward models).
 - **[Deterministic Guardrails Roadmap](docs/deterministic_guardrails_roadmap.md):** Deterministic and auditable mechanisms beyond LLM-as-a-Judge, including classical ML baselines.
 - **[MCP Security Boundary](docs/architecture/mcp_security_boundary.md):** The Phase 1.B specification: each guarantee (authentication, authorization, validation, rate limiting, audit) mapped to the test that verifies it.
+- **[Public API Abuse Protection](docs/architecture/api_abuse_protection.md):** What protects the public claims API today (idempotent retries, the internal MCP rate limit) and what doesn't (no limit per IP or per user, no login), the LLM calls one claim can trigger, the per-user limits a Phase 1.E chat will need, and the options to close the gap with their costs. Analysis only; no option chosen yet.
 - **[Microservices Debugging Protocol](docs/architecture/microservices_debugging_protocol.md):** How to isolate the transport plane from the application plane when two containers fail to communicate — the doctrine that resolved the Phase 1.C MCP transport postmortem.
+
+### Infrastructure
+- **[Infrastructure: Local Stack and Google Cloud Deployment](docs/infrastructure/gcp_infrastructure.md):** What runs where in both environments: the 8-service Docker Compose stack, and the Google Cloud deployment (Cloud Run services, worker pools and jobs, Cloud SQL, Secret Manager, Artifact Registry, all in Terraform). Covers the service accounts and what each can read, network exposure, the demo on/off switch, the operating commands, cost, and what isn't done yet.
 
 ### Testing & Reliability
 - **[Test Coverage Report](docs/testing/tdd_coverage.md):** Unit and integration test coverage.
@@ -389,6 +394,7 @@ Rather than one LLM that both interprets the user and decides the outcome, this 
 2. Add server-side Pydantic re-validation of that payload before it reaches the Double Judge — mirroring `src/mcp_server/tools/schemas.py`'s `extra="forbid"` pattern from Phase 1.B.
 3. Define the objective-verdict contract the Back-Office exposes back to the Front-Desk (status + reason code, not the judges' raw text) — this is what the Front-Desk phrases into a human-readable reply.
 4. Does not require Phase 2 to be complete first — the mocked path already flows through the Double Judge today regardless of what proposes the action — but pairs naturally with Phase 2 once both are real, since a rule base evaluating real, varied Front-Desk intents is more meaningful than one hardcoded action.
+5. A chat front end needs its own limits per authenticated user (messages per minute and a daily token budget), since every message is an LLM call before any claim exists. See [Public API Abuse Protection](docs/architecture/api_abuse_protection.md).
 
 <p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
@@ -519,6 +525,8 @@ The project already runs on the Gemini model family (Judge 1, Supreme Court, and
 
 ### Google Cloud — primary target (in progress)
 
+What runs where, who can read which secret, and how to operate it: [Infrastructure: Local Stack and Google Cloud Deployment](docs/infrastructure/gcp_infrastructure.md).
+
 - **Infrastructure as code:** everything in the GCP project is **Terraform** (`infra/`), with state in a versioned Cloud Storage bucket and one least-privilege service account per service.
 - **Container images (done):** the existing `docker/*.Dockerfile` images (gateway, worker, mcp_server, dashboard) are in **Artifact Registry**, tagged with the commit they were built from.
 - **Compute (done):** each service on **Cloud Run** — gateway, MCP server, and dashboard as HTTP services; worker and Recovery Sweeper as **worker pools**, Cloud Run's resource for pull-based consumers (no HTTP port, a fixed instance count). The HTTP/SSE MCP transport ([ADR](#why-httpsse-for-mcp-transport-not-stdio)) is what makes the worker and MCP server deployable as separate Cloud Run services. The MCP server runs as a single instance, since an SSE stream and its POSTs must reach the same one. Its DNS-rebinding protection was hardcoded to local hostnames, which would have rejected every request on Cloud Run with a 421; the allowlist now takes deployment hosts from `MCP_ALLOWED_HOSTS` and stays enabled. Validated with real claims end to end: CloudAMQP → worker → Vertex AI and Groq judges → `execute_refund` through the MCP server → Cloud SQL.
@@ -528,6 +536,7 @@ The project already runs on the Gemini model family (Judge 1, Supreme Court, and
 - **Model benchmark (next):** a cost, latency and verdict-stability comparison of the Gemini models on Vertex (3.1 and 3.5 Flash-Lite, 3.8 Flash) and GPT-OSS 20B on Groq, to decide which model fills which judge role. Partner models on Vertex (Claude, Grok) are out of scope for now: the project runs on GCP's free-trial credit, which doesn't cover them. Not started.
 - **Secrets (done) and TLS:** the database URL, broker URL, Groq key, MCP client token and MCP client registry are in **Secret Manager**, and each service account can read only the secrets its service uses. The cloud MCP client gets its own random token rather than the local-dev one. Cloud Run terminates TLS for every service. Together these address two of the [Known Limitations](#known-limitations) for the cloud deployment.
 - **Messaging:** a managed AMQP 0-9-1 broker (CloudAMQP), so the per-message ACK/NACK contract is unchanged and only the connection URL differs. Moving to Pub/Sub would mean re-validating the idempotency/retry contract first.
+- **Public API exposure (open):** the gateway and dashboard are public with no login and no rate limit per IP or per user; the only bound is the gateway's 2-instance cap and the single worker. The options and their costs are in [Public API Abuse Protection](docs/architecture/api_abuse_protection.md); no option is chosen yet.
 - **Re-test of load:** repeat the Phase 1.C Locust validation against the Cloud Run deployment and compare throughput/latency against the local baseline.
 
 ### AWS — secondary target (designed, not yet implemented)
@@ -994,6 +1003,7 @@ Beyond the phases above, the following are candidate directions, not planned wor
 - Single-node `docker compose` deployment; no orchestration, autoscaling, or high availability until the Phase 6 GCP deployment lands.
 - Locally, tokens and keys are read from environment variables and files, with no TLS between internal services. The GCP deployment keeps them in Secret Manager with per-secret access, but there is no automatic credential rotation yet.
 - No multi-tenancy; one set of business rules per deployment.
+- The public claims API has no login and no rate limit per IP or per user. A client that omits `request_id` gets a new one per request, so its retries aren't deduplicated, and `claim_text` has no length limit. See [Public API Abuse Protection](docs/architecture/api_abuse_protection.md).
 - A database superuser can still modify the audit table; the log is protected against the MCP service, not against a compromised host.
 - `validate_fraud_score` is still a stub (fixed `0.12`). The `orders` table and the `get_order` / `get_refund_history` read tools exist, but the worker doesn't fetch them yet, so a refund is still not checked against the original purchase amount.
 - No dead-letter exchange is configured: a message NACKed after `EXECUTION_FAILED` is dropped from the queue. The transaction row keeps the status and the error for an operator. A 4xx from the MCP boundary (e.g. a 422) is also retried like any other failure, even though it can't succeed. The retries are bounded, but they use up rate-limit quota.

@@ -48,6 +48,7 @@ Only what is current: read this first in every session. When an item here is don
 | 5 | 🟢 | GitHub profile text: says 232 tests, the count is 248 | ⬜ |
 | 6 | 🟢 | Langfuse Cloud account (free tier), keys in `.env` | ✅ US region |
 | 7 | 🟢 | Settings → Branches: branch protection on `main`, requiring the CI checks | ⬜ |
+| 8 | 🟡 | Decide the public API protection: which option, and when ([analysis](docs/architecture/api_abuse_protection.md)). Until then, `demo-down` when not demoing | ⬜ |
 
 ## Next, in order
 0. **Langfuse tracing: done** (PR #56). Follow-ups in `PENDING.md` Step 3: model prices, Cloud Run keys, verdict scores, (the knowledge-base `�` was a false alarm: a terminal rendering issue).
@@ -65,10 +66,12 @@ Only what is current: read this first in every session. When an item here is don
    - Close the DB transaction the worker holds open across the judges.
 3. **`feat/model-benchmark`** (Gemini 3.1/3.5 Flash-Lite and 3.8 Flash on Vertex, GPT-OSS 20B on Groq): a verdict-stability check, and `scripts/cost_benchmark.py` printing a Markdown table of latency, tokens and cost at prices fetched on the run date (under $1). Then fill in the README's Vertex cost.
 4. **LLM evaluation:** Promptfoo with about 100 labeled cases (the user reviews the labels; the benchmark claims seed the set), plus Langfuse.
+4b. **Public API abuse protection** (user decides; analysis in `docs/architecture/api_abuse_protection.md`): the gateway has no login and no limit per IP or per user. Suggested: a `slowapi` per-IP limit + `claim_text` `max_length` before the next public demo; a per-user limit with the login and Phase 1.E.
 5. **Reliability backlog** in `PENDING.md`: MCP server replicas, the dead-letter queue, not retrying 4xx responses, and a stepped ingestion load test.
 6. Then Phase 1.E (a real primary agent), 1.F, 2 and 3, and AWS.
 
 ## Environment state
+- **Infrastructure reference:** `docs/infrastructure/gcp_infrastructure.md` (what runs where, service accounts, secrets, exposure, operating commands, cost). Update it with any `infra/` change.
 - **GCP project `project-e0ad10c9-0b2f-4dc0-ac6`:**
   - On the free-trial credit, with billing enabled and a $20 budget alert (50/90/100%, credits excluded).
   - APIs enabled: Vertex AI, Cloud Run, Cloud SQL Admin, Artifact Registry, Secret Manager, IAM. Container Scanning is **not** enabled (it's paid).
