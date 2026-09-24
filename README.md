@@ -1,6 +1,6 @@
 # Agentic MCP Engine and RAG Gateway
 
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg) [![CI](https://github.com/agustindiazcano/mcp-transactional-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/agustindiazcano/mcp-transactional-agent/actions/workflows/ci.yml) ![Coverage: 84%](https://img.shields.io/badge/coverage-84%25-green.svg) ![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg) ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg) [![CI](https://github.com/agustindiazcano/mcp-transactional-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/agustindiazcano/mcp-transactional-agent/actions/workflows/ci.yml) ![Coverage: 86%](https://img.shields.io/badge/coverage-86%25-green.svg) ![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg) ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 
 ## Table of Contents
 
@@ -52,6 +52,8 @@ An asynchronous workflow engine for running LLM agents against transactional bus
 
 It addresses three problems that appear when LLMs are placed in a write path: non-deterministic output, uncontrolled access to side-effecting operations, and synchronous blocking on slow inference calls. The engine combines an event-driven pipeline (FastAPI → RabbitMQ → worker), a Model Context Protocol (MCP) server as the only route to side-effecting tools, and retrieval over business rules stored in PostgreSQL/pgvector (Phase 1.D).
 
+**Deployment:** runs on **Google Cloud** (Cloud Run, Cloud SQL with pgvector, Secret Manager, Vertex AI), all defined in **Terraform**, with **full CI/CD**: every push is linted, type-checked and tested, and every merge to `main` is built, pushed and deployed to Cloud Run by GitHub Actions through Workload Identity Federation, with no keys stored in GitHub. See [Phase 6](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary) and the [infrastructure doc](docs/infrastructure/gcp_infrastructure.md).
+
 **Guardrails, up front:** a structural boundary against prompt injection — nothing in the prompt or in retrieved documents can extend a caller's tool access, because tool authorization comes only from the caller's authenticated identity, enforced server-side and covered by an integration test (a restricted identity calling `execute_refund` gets a denied, audited call) — plus a Prompt Guard model that screens jailbreak attempts before any agent runs. It also favors deterministic, auditable decisions over unchecked LLM judgment: tool calls are rate-limited and audit-logged, and when the two judges disagree the case goes to a Supreme Court tie-break and then, if still unresolved, to human review (`PENDING_HUMAN_REVIEW`). See the [Deterministic Guardrails Roadmap](docs/deterministic_guardrails_roadmap.md).
 
 The project also examines a second question: **how much of an AI system's decision-making can be made deterministic and auditable instead of probabilistic?** Later phases add a rule-based confidence layer (fuzzy scoring and a belief rule base) and a drift-detection layer over quality metrics. The direction is consistent throughout: use an explicit, inspectable mechanism wherever one can do the job, and use the LLM only where symbolic reasoning cannot replace it.
@@ -62,17 +64,18 @@ The project also examines a second question: **how much of an AI system's decisi
 
 ## Project Status
 
-**At a glance** (as of 2026-09-23)
+**At a glance** (as of 2026-09-24)
 
 | | |
 |---|---|
 | **Runs locally** | `docker compose up --build` brings up **8 containers**: `postgres` (pgvector), `rabbitmq`, `migrate` (one-shot Alembic), `mcp_server`, `worker`, `sweeper`, `gateway`, `dashboard`. |
 | **UI to try it** | Streamlit Ops Dashboard at `http://localhost:8501` — submit a claim, watch it move through the pipeline, and inspect the Judge 1 / Judge 2 / Supreme Court reasoning trail per transaction ([Phase 4](#phase-4--operations-dashboard-done)). |
-| **Tests** | **239 passing** — 189 unit + 50 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks, on an isolated `_test` database) — **84% line coverage** over `src/` (`pytest --cov=src`). |
+| **Tests** | **300 passing** — 245 unit + 55 integration (the integration tier runs against real PostgreSQL and RabbitMQ, not mocks, on an isolated `_test` database) — **86% line coverage** over `src/` (`pytest --cov=src`), gated in CI. |
 | **Load test** | Locust, 100 concurrent users against the full containerized stack: **2,630 requests, 0 failures, P95 87 ms** ([numbers](#system-performance--telemetry)). |
 | **Processing throughput** | Full pipeline per claim (guard, RAG, Double Judge, refund through the MCP boundary; LLMs mocked): **9.2 claims/s with 1 worker → 19.6 with 8**, on a 4-core laptop ([numbers](#processing-throughput)). |
 | **Security** | MCP boundary with token authn, per-tool authz, server-side argument validation, rate limiting, and a fail-closed audit log. Prompt injection is handled structurally: tool access comes only from the authenticated identity, so injected text can't extend it (integration-tested), and a Prompt Guard model screens jailbreak attempts first ([Phase 1.B](#phase-1b--mcp-security-boundary-done)). |
-| **Cloud** | **Google Cloud is the primary deployment target — in progress** (Cloud Run, Cloud SQL for PostgreSQL + pgvector, Artifact Registry, with **Vertex AI** as the inference provider — validated end-to-end locally: real claims judged on Vertex through the containerized stack). AWS is kept as a secondary target ([Phase 6](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary)). |
+| **Cloud** | **Deployed on Google Cloud**: Cloud Run services and worker pools, Cloud SQL for PostgreSQL + pgvector, Secret Manager, Artifact Registry, and **Vertex AI** as the inference provider, all in Terraform. Real claims run end to end in the cloud. AWS is kept as a secondary target ([Phase 6](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary)). |
+| **CI/CD** | **Full CI/CD with GitHub Actions.** CI: every push runs `ruff`, `mypy --strict` and the full test suite against real PostgreSQL and RabbitMQ, with an 80% coverage gate. CD: every merge to `main` that passes CI is built, pushed to Artifact Registry tagged with its commit, and deployed to Cloud Run, authenticated through Workload Identity Federation (no keys in GitHub) as a deployer account that can touch only the five Cloud Run resources it deploys. |
 
 **What this is**
 
@@ -82,10 +85,10 @@ The project also examines a second question: **how much of an AI system's decisi
 
 **What this is not (yet)**
 
-- Not deployed to the cloud yet. The Google Cloud deployment is in progress; CI runs on every push (see [Testing](#testing)) but there is no CD pipeline, no SLOs, and no production incident runbook yet.
-- Local load testing complete: the Locust suite validated high-concurrency event ingestion against the containerized stack. Distributed cloud load testing is pending the GCP deployment (cold starts, real network latency, and managed-service limits are not measured yet).
+- Not a production service: the Google Cloud deployment is a demo environment, switched on to show it and off afterwards. There are no SLOs and no production incident runbook yet.
+- Local load testing complete: the Locust suite validated high-concurrency event ingestion against the containerized stack. Load testing against Cloud Run is next (cold starts, real network latency, and managed-service limits are not measured yet).
 - The primary agent is still mocked (`worker.py` hardcodes the proposed action) — Prompt Guard, RAG retrieval, the Double Judge, the Supreme Court cascade, and the refund itself all run for real: an approved claim is executed through the MCP server's `execute_refund` tool, behind the Phase 1.B boundary. `validate_fraud_score` is still a stub (fixed `0.12`). Replacing the mock is [Phase 1.E](#phase-1e--front-desk--back-office-asymmetric-agentic-workflow-designed-not-yet-implemented).
-- Not TLS-terminated between internal services, and no credential rotation or secret manager (tokens are read from environment and files) — Phase 1.B closed the authentication/authorization/rate-limiting/audit gap; these two remain open, and are expected to be addressed by the GCP deployment (Secret Manager, managed TLS).
+- Locally, secrets are read from environment variables and files, with no TLS between containers. The Google Cloud deployment keeps them in Secret Manager with per-secret access and Cloud Run terminates TLS, but there is no automatic credential rotation yet.
 
 <p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
@@ -100,11 +103,12 @@ The project also examines a second question: **how much of an AI system's decisi
 | **State & Persistence** | PostgreSQL, pgvector, SQLAlchemy (async), Alembic |
 | **AI & Orchestration** | Custom async orchestration (FastAPI → RabbitMQ → worker; Prompt Guard, Double Judge, self-correction loop, and Supreme Court cascade are built in-house, not a framework agent loop), Model Context Protocol (MCP). LangChain is used only as a thin provider-adapter layer (`langchain-core` chat/embeddings interfaces) behind `src/agents/llm_factory.py` — no LangChain chains or agents. |
 | **RAG Ingestion (Phase 1.D)** | Provider-agnostic embeddings (Gemini `gemini-embedding-001`, truncated to 768 dims, by default), `pgvector` |
-| **LLM Providers** | Gemini AI Studio, Google Vertex AI (validated locally for the GCP deployment, ADC auth), Groq, OpenAI (GPT-4o), AWS Bedrock (secondary) |
+| **LLM Providers** | Gemini AI Studio, Google Vertex AI (the cloud deployment's provider, authenticated by service account), Groq, OpenAI (GPT-4o), AWS Bedrock (secondary) |
 | **Frontend** | Streamlit + pandas (Ops Dashboard, Phase 4) |
 | **LLM Evaluation & Tracing** | Runtime Double LLM-as-a-Judge and Prompt Guard (implemented); Langfuse tracing (implemented, Python SDK v4 + LangChain callback); Promptfoo (next); Ragas (later). See [LLM Evaluation & Observability](#llm-evaluation--observability) |
 | **Testing** | Pytest, pytest-asyncio, pytest-cov, Locust |
-| **Infrastructure** | Docker, Docker Compose (local); Google Cloud — Cloud Run, Cloud SQL for PostgreSQL, Artifact Registry (in progress); AWS (secondary) |
+| **Infrastructure** | Docker, Docker Compose (local); Google Cloud — Cloud Run, Cloud SQL for PostgreSQL, Secret Manager, Artifact Registry; Terraform; AWS (secondary) |
+| **CI/CD** | GitHub Actions: CI on every push, CD to Cloud Run on every merge to `main`, authenticated through Workload Identity Federation |
 
 <p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
@@ -124,7 +128,7 @@ The project also examines a second question: **how much of an AI system's decisi
 | **Phase 3** | Quality drift detection (pluggable detector) | Designed, not yet implemented |
 | **Phase 4** | Read-only operations dashboard | Done |
 | **Phase 5** | Offline comparison: Keras MLP vs. rule base | Designed, not yet implemented |
-| **Phase 6** | Cloud deployment: Google Cloud Platform (Cloud Run, Cloud SQL for PostgreSQL, Artifact Registry, Vertex AI) as primary; AWS as secondary | In progress (GCP); AWS track designed, not yet implemented |
+| **Phase 6** | Cloud deployment: Google Cloud Platform (Cloud Run, Cloud SQL for PostgreSQL, Artifact Registry, Vertex AI) as primary; AWS as secondary | GCP deployed with Terraform and full CI/CD; cloud load test and model benchmark next. AWS track designed, not yet implemented |
 
 <p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
@@ -537,6 +541,7 @@ What runs where, who can read which secret, and how to operate it: [Infrastructu
 - **Secrets (done) and TLS:** the database URL, broker URL, Groq key, MCP client token and MCP client registry are in **Secret Manager**, and each service account can read only the secrets its service uses. The cloud MCP client gets its own random token rather than the local-dev one. Cloud Run terminates TLS for every service. Together these address two of the [Known Limitations](#known-limitations) for the cloud deployment.
 - **Messaging:** a managed AMQP 0-9-1 broker (CloudAMQP), so the per-message ACK/NACK contract is unchanged and only the connection URL differs. Moving to Pub/Sub would mean re-validating the idempotency/retry contract first.
 - **Public API exposure (open):** the gateway and dashboard are public with no login and no rate limit per IP or per user; the only bound is the gateway's 2-instance cap and the single worker. The options and their costs are in [Public API Abuse Protection](docs/architecture/api_abuse_protection.md); no option is chosen yet.
+- **CI/CD (done):** `.github/workflows/deploy.yml` runs after CI passes on `main`. It authenticates through **Workload Identity Federation**: GitHub signs a short-lived token for the run, and Google exchanges it for `github-deployer-sa`, which only this repo's `main` branch can use (the repo is matched by its numeric ID, not its name). No service account key exists. The deployer has no project-wide role: it can push only to `app-images`, deploy only the three services and two worker pools, and act only as their runtime service accounts. It builds the four images with the GitHub Actions layer cache, pushes them tagged with the commit, and deploys only the image, so env vars, secrets and scaling stay as Terraform set them. Terraform ignores the image on those resources, so an `apply` never rolls a deploy back. Database migrations stay a deliberate manual step.
 - **Re-test of load:** repeat the Phase 1.C Locust validation against the Cloud Run deployment and compare throughput/latency against the local baseline.
 
 ### AWS — secondary target (designed, not yet implemented)
@@ -667,6 +672,7 @@ Code is developed test-first (Red-Green-Refactor). Last full run (2026-09-24): *
 - **Chaos / idempotency (`tests/performance/chaos_idempotency.py`):** 2,000 claims with 10% duplicates while the worker is killed twice and RabbitMQ restarted once, then checked in SQL — see [Correctness Under Faults](#correctness-under-faults).
 - **Processing throughput (`tests/performance/processing_throughput.py`):** claims/s and service/end-to-end latency with 1–8 workers, LLMs mocked — see [Processing Throughput](#processing-throughput). Its analysis functions and the paced/timestamped submission are unit-tested.
 
+- **CD (GitHub Actions, `.github/workflows/deploy.yml`):** every merge to `main` that passes CI is built and deployed to Cloud Run — see [Phase 6](#phase-6--cloud-deployment-google-cloud-primary-in-progress-and-aws-secondary).
 - **CI (GitHub Actions, `.github/workflows/ci.yml`):** every push runs `ruff`, `mypy --strict`, and the full suite against real PostgreSQL (pgvector) and RabbitMQ service containers, and fails if line coverage drops below 80%. `ruff` and `mypy` are pinned in the `dev` extras, since their default rule sets change between releases and CI must behave exactly like a local run.
 
 See the [Test Coverage Report](docs/testing/tdd_coverage.md).
@@ -1000,7 +1006,7 @@ Beyond the phases above, the following are candidate directions, not planned wor
 
 ## Known Limitations
 
-- Single-node `docker compose` deployment; no orchestration, autoscaling, or high availability until the Phase 6 GCP deployment lands.
+- The Google Cloud deployment is sized for a demo, not for high availability: a zonal `db-f1-micro` Cloud SQL instance with no backups, one worker, and one MCP server instance (an SSE stream and its POSTs must reach the same one).
 - Locally, tokens and keys are read from environment variables and files, with no TLS between internal services. The GCP deployment keeps them in Secret Manager with per-secret access, but there is no automatic credential rotation yet.
 - No multi-tenancy; one set of business rules per deployment.
 - The public claims API has no login and no rate limit per IP or per user. A client that omits `request_id` gets a new one per request, so its retries aren't deduplicated, and `claim_text` has no length limit. See [Public API Abuse Protection](docs/architecture/api_abuse_protection.md).
