@@ -9,3 +9,8 @@ variable "region" {
   type        = string
   default     = "us-central1"
 }
+variable "consumer_instance_count" {
+  description = "Instances per consumer worker pool (worker, sweeper). 0 pauses them and stops their billing."
+  type        = number
+  default     = 1
+}
