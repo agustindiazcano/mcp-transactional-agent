@@ -45,6 +45,54 @@ async def test_ingest_document_embeds_inserts_each_chunk_and_commits_once() -> N
 
 
 @pytest.mark.asyncio
+async def test_ingest_document_replaces_the_source_after_embedding_in_one_commit() -> None:
+    """Embed first, so an embeddings failure leaves the old chunks untouched;
+    then delete the source's old chunks and insert the new ones under a single
+    commit, so a failure mid-insert rolls back to the previous version."""
+    calls = MagicMock()
+    session = AsyncMock()
+    embeddings_client = AsyncMock()
+    embeddings_client.aembed_documents = AsyncMock(return_value=[[0.1] * 768])
+    calls.attach_mock(embeddings_client.aembed_documents, "embed")
+    calls.attach_mock(session.commit, "commit")
+
+    with patch(
+        "src.core.services.retrieval_service.knowledge_base_repository.delete_by_source",
+        new_callable=AsyncMock,
+        return_value=0,
+    ) as mock_delete, patch(
+        "src.core.services.retrieval_service.knowledge_base_repository.insert_chunk",
+        new_callable=AsyncMock,
+    ) as mock_insert:
+        calls.attach_mock(mock_delete, "delete")
+        calls.attach_mock(mock_insert, "insert")
+        await ingest_document(
+            session, embeddings_client, source="x.md", source_tier="official", chunks=["c1"]
+        )
+
+    assert [c[0] for c in calls.mock_calls] == ["embed", "delete", "insert", "commit"]
+    assert mock_delete.await_args.args == (session, "x.md")
+
+
+@pytest.mark.asyncio
+async def test_ingest_document_embeddings_failure_deletes_nothing() -> None:
+    session = AsyncMock()
+    embeddings_client = AsyncMock()
+    embeddings_client.aembed_documents = AsyncMock(side_effect=RuntimeError("embeddings down"))
+
+    with patch(
+        "src.core.services.retrieval_service.knowledge_base_repository.delete_by_source",
+        new_callable=AsyncMock,
+    ) as mock_delete, pytest.raises(RuntimeError):
+        await ingest_document(
+            session, embeddings_client, source="x.md", source_tier="official", chunks=["c1"]
+        )
+
+    mock_delete.assert_not_awaited()
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_retrieve_relevant_policy_returns_none_for_blank_claim() -> None:
     session = AsyncMock()
     embeddings_client = AsyncMock()

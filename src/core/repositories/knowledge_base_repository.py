@@ -4,7 +4,9 @@ Pure DB access only -- no embeddings/HTTP calls here (CLAUDE.md: repositories
 are for database access only; external calls belong in services/agents).
 Callers generate the embedding vector and pass it in.
 """
-from sqlalchemy import select
+from typing import Any, cast
+
+from sqlalchemy import CursorResult, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.models import KnowledgeBase
@@ -32,6 +34,20 @@ async def insert_chunk(
     session.add(row)
     await session.flush()
     return row
+
+
+async def delete_by_source(session: AsyncSession, source: str) -> int:
+    """Delete every chunk ingested from `source`. Returns how many were removed.
+
+    Does not commit -- re-ingestion deletes and re-inserts under one commit, so
+    a failure mid-way rolls back to the previous version of the document.
+    """
+    # A DELETE returns a CursorResult at runtime; execute() is typed as the generic Result.
+    result = cast(
+        CursorResult[Any],
+        await session.execute(delete(KnowledgeBase).where(KnowledgeBase.source == source)),
+    )
+    return result.rowcount
 
 
 async def find_most_similar(

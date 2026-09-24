@@ -106,6 +106,27 @@ async def test_find_most_similar_orders_multiple_results_nearest_first(
 
 
 @pytest.mark.asyncio
+async def test_delete_by_source_removes_only_that_sources_rows(
+    db_session: AsyncSession,
+) -> None:
+    for source in ("policy.md", "policy.md", "other.md"):
+        await knowledge_base_repository.insert_chunk(
+            db_session, source=source, source_tier="official",
+            content=f"chunk of {source}", embedding=_unit_vector(0),
+        )
+    await db_session.commit()
+
+    deleted = await knowledge_base_repository.delete_by_source(db_session, "policy.md")
+    await db_session.commit()
+
+    remaining = await db_session.scalars(
+        text("SELECT source FROM knowledge_base ORDER BY id")
+    )
+    assert deleted == 2
+    assert list(remaining) == ["other.md"]
+
+
+@pytest.mark.asyncio
 async def test_teardown_clears_rows_without_dropping_the_table_schema() -> None:
     """Regression test for the Phase 1.C postmortem: the old teardown called
     Base.metadata.drop_all(), which drops every table on Base (including
