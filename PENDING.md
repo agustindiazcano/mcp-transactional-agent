@@ -60,11 +60,14 @@ Decision changed 2026-09-22: **Google Cloud is now the primary deployment target
   - [ ] Supreme Court: benchmark a stronger Gemini (`gemini-3.8-flash`) against today's `gemini-3.5-flash-lite`. It stays in Judge 1's family, the known limit while partner models are unavailable.
   - [ ] Keep the judges asymmetric: Judge 1 on Gemini (Vertex), Judge 2 on GPT-OSS (Groq). Groq is the only non-Gemini family available and also hosts the Prompt Guard, so it stays.
   - [ ] Later, only with a paid billing account: Claude (`claude-haiku-4-5`, `claude-sonnet-5`) and Grok 4.20 on Vertex, e.g. a third-family Supreme Court.
-- [ ] Artifact Registry: push the four app images (`gateway`, `worker`, `mcp_server`, `dashboard`).
+- [x] **Terraform base** (`feat/gcp-terraform-base`, 2026-09-23). `infra/` with state in the GCS bucket `project-e0ad10c9-0b2f-4dc0-ac6-tfstate` (versioned, created by hand: Terraform can't create its own backend), google provider `~> 8.0`, project/region as variables. Built step by step as a learning exercise.
+- [x] **Artifact Registry repo** `app-images` (Docker, `us-central1`), created by Terraform.
+- [x] **One service account per service**, least privilege, `google_project_iam_member` only (never `_binding`/`_policy`): `worker-sa` (Vertex user, secret accessor, Cloud SQL client), `gateway-sa` and `mcp-server-sa` (secret accessor, Cloud SQL client), `dashboard-sa` (no roles, so Cloud Run never falls back to the default Compute SA, which has Editor). Secret accessor is project-wide for now; narrow it to per-secret grants in the Secret Manager step.
+- [ ] Artifact Registry: build and push the four app images (`gateway`, `worker`, `mcp_server`, `dashboard`) ← next.
 - [ ] Cloud SQL for PostgreSQL with `pgvector`; run Alembic as a one-shot job (mirrors the local `migrate` service).
 - [ ] Cloud Run services: gateway, MCP server, dashboard (HTTP); worker + sweeper as min-instance consumers.
 - [ ] Secret Manager for MCP client tokens and provider keys (closes the "no secret manager" known limitation); Cloud Run-managed TLS.
-- [ ] Decide messaging: self-hosted RabbitMQ (keeps the ACK/NACK contract untouched) vs. Pub/Sub (needs the idempotency/retry contract re-validated).
+- [x] Decide messaging (2026-09-23): **CloudAMQP free plan**, no code change (only `RABBITMQ_URL`). The instance runs **LavinMQ** (AMQP 0-9-1, `*.lmq.cloudamqp.com`), not RabbitMQ: verify it with the first real claim in the cloud. The URL is in Secret Manager as `rabbitmq-url`.
 - [ ] Re-run the Locust load test against the Cloud Run deployment and compare with the local baseline (P95 87 ms, 0 failures).
 
 ### Step 10 — AWS (Phase 6, secondary target)
