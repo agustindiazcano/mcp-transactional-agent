@@ -74,6 +74,12 @@ resource "google_cloud_run_v2_service" "mcp_server" {
   }
 
   depends_on = [google_secret_manager_secret_iam_member.readers]
+
+  # Option A (step 10c): CD deploys new images with gcloud, so Terraform stops
+  # tracking the image tag and the client fields gcloud stamps on each deploy.
+  lifecycle {
+    ignore_changes = [template[0].containers[0].image, client, client_version]
+  }
 }
 
 # Public at the Cloud Run layer; the Phase 1.B boundary does the real auth.
@@ -143,6 +149,12 @@ resource "google_cloud_run_v2_service" "gateway" {
   }
 
   depends_on = [google_secret_manager_secret_iam_member.readers]
+
+  # Option A (step 10c): CD deploys new images with gcloud, so Terraform stops
+  # tracking the image tag and the client fields gcloud stamps on each deploy.
+  lifecycle {
+    ignore_changes = [template[0].containers[0].image, client, client_version]
+  }
 }
 
 # Public: the dashboard calls it from outside, and the login screen comes later.
@@ -243,6 +255,12 @@ resource "google_cloud_run_v2_worker_pool" "worker" {
   }
 
   depends_on = [google_secret_manager_secret_iam_member.readers]
+
+  # Option A (step 10c): CD deploys new images with gcloud, so Terraform stops
+  # tracking the image tag and the client fields gcloud stamps on each deploy.
+  lifecycle {
+    ignore_changes = [template[0].containers[0].image, client, client_version]
+  }
 }
 
 resource "google_cloud_run_v2_worker_pool" "sweeper" {
@@ -300,6 +318,12 @@ resource "google_cloud_run_v2_worker_pool" "sweeper" {
   }
 
   depends_on = [google_secret_manager_secret_iam_member.readers]
+
+  # Option A (step 10c): CD deploys new images with gcloud, so Terraform stops
+  # tracking the image tag and the client fields gcloud stamps on each deploy.
+  lifecycle {
+    ignore_changes = [template[0].containers[0].image, client, client_version]
+  }
 }
 
 # --- Dashboard: read-only Streamlit UI; talks only to the gateway's HTTP API.
@@ -330,6 +354,12 @@ resource "google_cloud_run_v2_service" "dashboard" {
         value = "https://gateway-${data.google_project.this.number}.${var.region}.run.app"
       }
     }
+  }
+
+  # Option A (step 10c): CD deploys new images with gcloud, so Terraform stops
+  # tracking the image tag and the client fields gcloud stamps on each deploy.
+  lifecycle {
+    ignore_changes = [template[0].containers[0].image, client, client_version]
   }
 }
 

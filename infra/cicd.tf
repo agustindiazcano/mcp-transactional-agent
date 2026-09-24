@@ -38,3 +38,66 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   # or re-created repo with the same name gets a new ID and is refused.
   attribute_condition = "assertion.repository_id == '${var.github_repository_id}' && assertion.repository_owner_id == '${var.github_owner_id}'"
 }
+
+# --- The deployer: the only identity GitHub Actions can become ---
+resource "google_service_account" "github_deployer" {
+  account_id   = "github-deployer-sa"
+  display_name = "GitHub Actions deployer (CD)"
+}
+
+# Only workflow runs on this repo's main branch may impersonate it. The pool
+# already refuses other repos; this narrows it to one branch.
+resource "google_service_account_iam_member" "github_deployer_wif" {
+  service_account_id = google_service_account.github_deployer.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.ref/refs/heads/main"
+}
+
+# Push images to app-images only, not to any other repository.
+resource "google_artifact_registry_repository_iam_member" "github_deployer_push" {
+  repository = google_artifact_registry_repository.repo.name
+  location   = var.region
+  role       = "roles/artifactregistry.writer"
+  member     = google_service_account.github_deployer.member
+}
+
+# Deploy new revisions of these five resources and nothing else in the project.
+# The jobs (migrate, seed-orders, ingest-knowledge-base) stay manual.
+resource "google_cloud_run_v2_service_iam_member" "github_deployer" {
+  for_each = {
+    gateway    = google_cloud_run_v2_service.gateway.name
+    mcp_server = google_cloud_run_v2_service.mcp_server.name
+    dashboard  = google_cloud_run_v2_service.dashboard.name
+  }
+  name     = each.value
+  location = var.region
+  role     = "roles/run.developer"
+  member   = google_service_account.github_deployer.member
+}
+
+resource "google_cloud_run_v2_worker_pool_iam_member" "github_deployer" {
+  for_each = {
+    worker  = google_cloud_run_v2_worker_pool.worker.name
+    sweeper = google_cloud_run_v2_worker_pool.sweeper.name
+  }
+  name     = each.value
+  location = var.region
+  role     = "roles/run.developer"
+  member   = google_service_account.github_deployer.member
+}
+
+# Deploying a revision means "run this code as its service account", so Cloud
+# Run checks the deployer may act as each runtime SA. Granted per SA, never
+# project-wide (which would let it act as the default Compute SA, an Editor).
+resource "google_service_account_iam_member" "github_deployer_act_as" {
+  for_each = {
+    gateway    = google_service_account.gateway.name
+    mcp_server = google_service_account.mcp_server.name
+    dashboard  = google_service_account.dashboard.name
+    worker     = google_service_account.worker.name
+    sweeper    = google_service_account.sweeper.name
+  }
+  service_account_id = each.value
+  role               = "roles/iam.serviceAccountUser"
+  member             = google_service_account.github_deployer.member
+}
