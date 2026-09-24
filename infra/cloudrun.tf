@@ -300,3 +300,42 @@ resource "google_cloud_run_v2_worker_pool" "sweeper" {
 
   depends_on = [google_secret_manager_secret_iam_member.readers]
 }
+
+# --- Dashboard: read-only Streamlit UI; talks only to the gateway's HTTP API.
+resource "google_cloud_run_v2_service" "dashboard" {
+  name                = "dashboard"
+  location            = var.region
+  ingress             = "INGRESS_TRAFFIC_ALL"
+  deletion_protection = false # stateless
+
+  template {
+    service_account  = google_service_account.dashboard.email
+    session_affinity = true # Streamlit keeps a websocket per browser session
+
+    scaling {
+      min_instance_count = 0
+      max_instance_count = 1
+    }
+
+    containers {
+      image = "${var.region}-docker.pkg.dev/${var.project_id}/app-images/dashboard:b0e7dbe"
+
+      ports {
+        container_port = 8501 # Streamlit's port in the dashboard image
+      }
+
+      env {
+        name  = "GATEWAY_URL"
+        value = "https://gateway-${data.google_project.this.number}.${var.region}.run.app"
+      }
+    }
+  }
+}
+
+# Public for now; the login screen comes later.
+resource "google_cloud_run_v2_service_iam_member" "dashboard_public" {
+  name     = google_cloud_run_v2_service.dashboard.name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
