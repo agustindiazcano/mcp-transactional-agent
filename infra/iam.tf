@@ -6,7 +6,6 @@ resource "google_service_account" "worker" {
 resource "google_project_iam_member" "worker" {
   for_each = toset([
     "roles/aiplatform.user",
-    "roles/secretmanager.secretAccessor",
     "roles/cloudsql.client",
   ])
 
@@ -28,7 +27,6 @@ resource "google_service_account" "gateway" {
 
 resource "google_project_iam_member" "gateway" {
   for_each = toset([
-    "roles/secretmanager.secretAccessor",
     "roles/cloudsql.client",
   ])
 
@@ -45,7 +43,6 @@ resource "google_service_account" "mcp_server" {
 
 resource "google_project_iam_member" "mcp_server" {
   for_each = toset([
-    "roles/secretmanager.secretAccessor",
     "roles/cloudsql.client",
   ])
 
@@ -60,4 +57,16 @@ resource "google_project_iam_member" "mcp_server" {
 resource "google_service_account" "dashboard" {
   account_id   = "dashboard-sa"
   display_name = "Dashboard (Streamlit, read-only)"
+}
+
+# --- Sweeper: requeues PROCESSING rows abandoned by a crashed worker ---
+resource "google_service_account" "sweeper" {
+  account_id   = "sweeper-sa"
+  display_name = "Recovery Sweeper (requeues abandoned transactions)"
+}
+
+resource "google_project_iam_member" "sweeper_sql_client" {
+  project = var.project_id
+  role    = "roles/cloudsql.client"
+  member  = "serviceAccount:${google_service_account.sweeper.email}"
 }
