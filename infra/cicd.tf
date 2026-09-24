@@ -101,3 +101,22 @@ resource "google_service_account_iam_member" "github_deployer_act_as" {
   role               = "roles/iam.serviceAccountUser"
   member             = google_service_account.github_deployer.member
 }
+
+# `gcloud run worker-pools deploy` returns a long-running operation and polls it
+# until the rollout finishes. Operations are a project-level resource, so the
+# per-pool run.developer grant above doesn't cover them (the first CD run got a
+# 403 on run.operations.get). A custom role with only that permission lets the
+# deployer check an operation's status, and nothing else; roles/run.viewer would
+# also let it read every Cloud Run resource's configuration.
+resource "google_project_iam_custom_role" "run_operations_reader" {
+  role_id     = "runOperationsReader"
+  title       = "Cloud Run operations reader"
+  description = "Read the status of Cloud Run long-running operations (CD polls worker-pool deploys)."
+  permissions = ["run.operations.get"]
+}
+
+resource "google_project_iam_member" "github_deployer_run_operations" {
+  project = var.project_id
+  role    = google_project_iam_custom_role.run_operations_reader.id
+  member  = google_service_account.github_deployer.member
+}

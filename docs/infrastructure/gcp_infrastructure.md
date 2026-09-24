@@ -95,7 +95,7 @@ One service account per workload, so each one's access is granted and revoked se
 | `migrate-sa` | `migrate` job | `cloudsql.client` | `database-url` |
 | `seed-orders-sa` | `seed-orders` job | `cloudsql.client` | `database-url` |
 | `ingest-kb-sa` | `ingest-knowledge-base` job | `aiplatform.user`, `cloudsql.client` | `database-url` |
-| `github-deployer-sa` | GitHub Actions deploy workflow | none project-wide. Per resource: `artifactregistry.writer` on `app-images`, `run.developer` on the 3 services and 2 worker pools, `iam.serviceAccountUser` on their 5 runtime service accounts | none |
+| `github-deployer-sa` | GitHub Actions deploy workflow | project-wide: only the custom role `runOperationsReader` (`run.operations.get`, to poll worker-pool deploys). Per resource: `artifactregistry.writer` on `app-images`, `run.developer` on the 3 services and 2 worker pools, `iam.serviceAccountUser` on their 5 runtime service accounts | none |
 
 `github-deployer-sa` can only be impersonated through Workload Identity Federation (`infra/cicd.tf`) by workflow runs on this repo's `main` branch. The identity pool accepts only this repo, matched by its numeric repository and owner IDs, not its name. No service account key exists for it.
 
@@ -153,7 +153,7 @@ All `terraform` commands run from `infra/` (from the repo root it finds no confi
 
 ---
 
-### Continuous deployment (added, first run pending)
+### Continuous deployment (running since 2026-09-24)
 
 `.github/workflows/deploy.yml` runs after CI passes on `main`, or by hand from `main` (`workflow_dispatch`):
 
@@ -184,10 +184,9 @@ The always-on worker pools are most of the cost, which is why the demo switch ex
 
 | # | | Item |
 |---|---|---|
-| 1 | 🟡 | CD: the workflow and its identity exist (`deploy.yml`, `infra/cicd.tf`); the first real run after merging is pending |
-| 2 | 🟡 | Rate limiting and a login for the public gateway and dashboard ([API Abuse Protection](../architecture/api_abuse_protection.md)) |
-| 3 | 🟢 | Locust load test against Cloud Run, compared with the local baseline (P95 87 ms) |
-| 4 | 🟢 | Langfuse tracing on Cloud Run (keys into Secret Manager) |
-| 5 | 🟢 | `deletion_policy = "ABANDON"` on `google_sql_user.app` before any teardown |
-| 6 | ⚪ | Automatic secret rotation |
-| 7 | ⚪ | AWS secondary target (README, Phase 6) |
+| 1 | 🟡 | Rate limiting and a login for the public gateway and dashboard ([API Abuse Protection](../architecture/api_abuse_protection.md)) |
+| 2 | 🟢 | Locust load test against Cloud Run, compared with the local baseline (P95 87 ms) |
+| 3 | 🟢 | Langfuse tracing on Cloud Run (keys into Secret Manager) |
+| 4 | 🟢 | `deletion_policy = "ABANDON"` on `google_sql_user.app` before any teardown |
+| 5 | ⚪ | Automatic secret rotation |
+| 6 | ⚪ | AWS secondary target (README, Phase 6) |
