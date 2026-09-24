@@ -12,6 +12,7 @@ locals {
     mcp_server  = { member = google_service_account.mcp_server.member, secrets = ["database-url", "mcp-clients-json"] }
     sweeper     = { member = google_service_account.sweeper.member, secrets = ["database-url", "rabbitmq-url"] }
     seed_orders = { member = google_service_account.seed_orders.member, secrets = ["database-url"] }
+    ingest_kb   = { member = google_service_account.ingest_kb.member, secrets = ["database-url"] }
   }
 
   # One entry per (account, secret) pair, e.g. "worker/groq-api-key".
