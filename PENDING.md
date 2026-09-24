@@ -63,7 +63,8 @@ Decision changed 2026-09-22: **Google Cloud is now the primary deployment target
 - [x] **Terraform base** (`feat/gcp-terraform-base`, 2026-09-23). `infra/` with state in the GCS bucket `project-e0ad10c9-0b2f-4dc0-ac6-tfstate` (versioned, created by hand: Terraform can't create its own backend), google provider `~> 8.0`, project/region as variables. Built step by step as a learning exercise.
 - [x] **Artifact Registry repo** `app-images` (Docker, `us-central1`), created by Terraform.
 - [x] **One service account per service**, least privilege, `google_project_iam_member` only (never `_binding`/`_policy`): `worker-sa` (Vertex user, secret accessor, Cloud SQL client), `gateway-sa` and `mcp-server-sa` (secret accessor, Cloud SQL client), `dashboard-sa` (no roles, so Cloud Run never falls back to the default Compute SA, which has Editor). Secret accessor is project-wide for now; narrow it to per-secret grants in the Secret Manager step.
-- [ ] Artifact Registry: build and push the four app images (`gateway`, `worker`, `mcp_server`, `dashboard`) ← next.
+- [x] **Images in Artifact Registry** (2026-09-24): `gateway`, `worker`, `mcp_server`, `dashboard`, tagged with the `main` commit `b0e7dbe` (never `latest`). Docker authenticates through the `gcloud` credential helper. Shared layers keep the repo at 580 MB for 4 × 224 MB images.
+- [ ] Dockerfiles: install dependencies before `COPY src`, so a code change doesn't rerun the whole `pip install` (2–4 min per build today). Do it before CD.
 - [ ] Cloud SQL for PostgreSQL with `pgvector`; run Alembic as a one-shot job (mirrors the local `migrate` service).
 - [ ] Cloud Run services: gateway, MCP server, dashboard (HTTP); worker + sweeper as min-instance consumers.
 - [ ] Secret Manager for MCP client tokens and provider keys (closes the "no secret manager" known limitation); Cloud Run-managed TLS.
