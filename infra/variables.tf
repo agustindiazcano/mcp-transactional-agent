@@ -14,3 +14,15 @@ variable "demo_up" {
   type        = bool
   default     = true
 }
+
+variable "github_repository_id" {
+  description = "Numeric ID of the GitHub repo allowed to deploy (immutable, unlike its name)."
+  type        = string
+  default     = "1374005852" # agustindiazcano/mcp-transactional-agent
+}
+
+variable "github_owner_id" {
+  description = "Numeric ID of the GitHub account that owns the repo."
+  type        = string
+  default     = "72924416" # agustindiazcano
+}

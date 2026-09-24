@@ -95,6 +95,9 @@ One service account per workload, so each one's access is granted and revoked se
 | `migrate-sa` | `migrate` job | `cloudsql.client` | `database-url` |
 | `seed-orders-sa` | `seed-orders` job | `cloudsql.client` | `database-url` |
 | `ingest-kb-sa` | `ingest-knowledge-base` job | `aiplatform.user`, `cloudsql.client` | `database-url` |
+| `github-deployer-sa` | GitHub Actions deploy workflow | none project-wide. Per resource: `artifactregistry.writer` on `app-images`, `run.developer` on the 3 services and 2 worker pools, `iam.serviceAccountUser` on their 5 runtime service accounts | none |
+
+`github-deployer-sa` can only be impersonated through Workload Identity Federation (`infra/cicd.tf`) by workflow runs on this repo's `main` branch. The identity pool accepts only this repo, matched by its numeric repository and owner IDs, not its name. No service account key exists for it.
 
 `dashboard-sa` has no roles on purpose: without its own service account, Cloud Run would run the dashboard as the default Compute service account, which has Editor on the whole project.
 
@@ -150,6 +153,18 @@ All `terraform` commands run from `infra/` (from the repo root it finds no confi
 
 ---
 
+### Continuous deployment (added, first run pending)
+
+`.github/workflows/deploy.yml` runs after CI passes on `main`, or by hand from `main` (`workflow_dispatch`):
+
+1. It authenticates as `github-deployer-sa` through Workload Identity Federation (no key stored in GitHub).
+2. It builds the four images, reusing the dependency layer from the GitHub Actions cache, and pushes them tagged with the first 7 characters of the commit.
+3. It deploys the new image to `mcp-server`, `gateway`, `dashboard`, and the `worker` and `sweeper` pools. Only the image changes: env vars, secrets, scaling and service accounts stay as Terraform set them.
+
+Terraform ignores the image on those five resources (`lifecycle { ignore_changes }`), so the tag CD deployed isn't rolled back on the next `apply`. To see which image is live, ask Cloud Run, not the `.tf` files.
+
+It deliberately doesn't run migrations (they stay manual, see above: merge, run `migrate`, then deploy), doesn't touch the three jobs' pinned images, and doesn't turn the demo on. It can deploy while the demo is down: the services start without the database, and the pools at 0 pick up the new image on the next `demo-up`.
+
 ## 8. Cost
 
 | Item | While the demo is up | While down |
@@ -169,7 +184,7 @@ The always-on worker pools are most of the cost, which is why the demo switch ex
 
 | # | | Item |
 |---|---|---|
-| 1 | 🟡 | CD: a merge to `main` deploys to Cloud Run through GitHub Actions and Workload Identity Federation (no keys in GitHub) |
+| 1 | 🟡 | CD: the workflow and its identity exist (`deploy.yml`, `infra/cicd.tf`); the first real run after merging is pending |
 | 2 | 🟡 | Rate limiting and a login for the public gateway and dashboard ([API Abuse Protection](../architecture/api_abuse_protection.md)) |
 | 3 | 🟢 | Locust load test against Cloud Run, compared with the local baseline (P95 87 ms) |
 | 4 | 🟢 | Langfuse tracing on Cloud Run (keys into Secret Manager) |

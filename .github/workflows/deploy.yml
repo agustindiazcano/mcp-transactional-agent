@@ -1,0 +1,108 @@
+# CD (GCP step 10): after CI passes on main, build the four images, push them
+# to Artifact Registry tagged with the commit, and deploy them to Cloud Run.
+#
+# Auth is Workload Identity Federation: GitHub signs a short-lived token for
+# this run, Google exchanges it for github-deployer-sa (infra/cicd.tf). No key
+# is stored in GitHub, and only runs on this repo's main branch are accepted.
+#
+# Not done here, on purpose:
+# - Database migrations. They stay manual (CLAUDE.md §8: confirm the revision
+#   first). Merge a migration, run the `migrate` job, then let this deploy.
+# - The migrate / seed-orders / ingest-knowledge-base jobs keep their pinned images.
+# - Turning the demo on. With the demo down the worker pools stay at 0 instances
+#   and pick up the new image on the next demo-up.
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # lets the job request GitHub's OIDC token for Workload Identity Federation
+
+# One deploy at a time, and never cancel one halfway through.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  REGION: us-central1
+  REGISTRY: us-central1-docker.pkg.dev/project-e0ad10c9-0b2f-4dc0-ac6/app-images
+  # `terraform output` in infra/. Not secrets: useless without a token from main.
+  WIF_PROVIDER: projects/993240087609/locations/global/workloadIdentityPools/github/providers/github-oidc
+  DEPLOYER: github-deployer-sa@project-e0ad10c9-0b2f-4dc0-ac6.iam.gserviceaccount.com
+  # The commit CI tested (workflow_run) or the one dispatched by hand.
+  SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.image }}
+    # Only a green CI run on main, or a manual run from main.
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [gateway, worker, mcp_server, dashboard]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SHA }}
+
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER }}
+          token_format: access_token
+
+      - uses: docker/login-action@v4
+        with:
+          registry: us-central1-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - uses: docker/setup-buildx-action@v4
+
+      - run: echo "SHA_SHORT=${SHA::7}" >> "$GITHUB_ENV"
+
+      # Tagged with the first 7 characters of the commit, like the images pushed
+      # by hand (never `latest`). The GitHub Actions cache keeps the dependency
+      # layer between runs, so a code-only change skips the pip install.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/${{ matrix.image }}.Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ matrix.image }}:${{ env.SHA_SHORT }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          provenance: false # one image manifest per tag, no extra attestation entries
+
+  deploy:
+    name: Deploy to Cloud Run
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      # Only the image changes: env vars, secrets, scaling and the service
+      # account stay as Terraform set them. MCP server first, since the worker calls it.
+      - name: Deploy
+        run: |
+          TAG="${SHA::7}"
+          gcloud run deploy mcp-server --image "$REGISTRY/mcp_server:$TAG" --region "$REGION" --quiet
+          gcloud run deploy gateway    --image "$REGISTRY/gateway:$TAG"    --region "$REGION" --quiet
+          gcloud run deploy dashboard  --image "$REGISTRY/dashboard:$TAG"  --region "$REGION" --quiet
+          gcloud run worker-pools deploy worker  --image "$REGISTRY/worker:$TAG" --region "$REGION" --quiet
+          gcloud run worker-pools deploy sweeper --image "$REGISTRY/worker:$TAG" --region "$REGION" --quiet
