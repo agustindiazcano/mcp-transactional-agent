@@ -13,7 +13,8 @@ Only what is current: read this first in every session. When an item here is don
   - Throughput, mocked LLMs, 4-core laptop: 9.2 claims/s with 1 worker → 19.6 with 8.
   - Ingestion: P95 of 87 ms.
   - Real claim on Vertex: 6.6 s end to end.
-  - Cost: ~$0.0004 per transaction on AI Studio (2026-09-21). The Vertex cost is pending the model benchmark.
+  - Cost: ~$0.0004 per transaction on AI Studio (2026-09-21). Per judgment on Vertex (2026-09-24): gemini-3.5-flash-lite $0.00036, gemini-3.8-flash $0.00199; gpt-oss-20b on Groq $0.00016.
+  - **Judge benchmark (Promptfoo, 2026-09-24):** 50 labeled claims × 3 repeats × 4 models. gemini-3.8-flash 98% / 3 false approvals; gpt-oss-20b 97% / 0; gemini-3.5-flash-lite (Judge 1 + Supreme Court) 94% / 9. The pair never both approved wrongly, but the Supreme Court runs Judge 1's model, so it would repeat Judge 1's errors on a disagreement. Details: `docs/testing/judge_evaluation_results.md`.
 
 ## Decisions in force
 - **Vertex setup:** `langchain-google-genai` with `vertexai=True`, not the deprecated `ChatVertexAI`. Chat on `global`, embeddings on `us-central1`. ADC only, never an API key.
@@ -48,6 +49,7 @@ Only what is current: read this first in every session. When an item here is don
 | 5 | 🟢 | GitHub profile text: says 232 tests, the count is 248 | ⬜ |
 | 6 | 🟢 | Langfuse Cloud account (free tier), keys in `.env` | ✅ US region |
 | 7 | 🟢 | Settings → Branches: branch protection on `main`, requiring the CI checks | ⬜ |
+| 9 | 🟡 | Decide the Supreme Court model: today it's Judge 1's model (gemini-3.5-flash-lite), so it can't break a tie independently; candidate gemini-3.8-flash (see the judge benchmark) | ⬜ |
 | 8 | 🟡 | Decide the public API protection: which option, and when ([analysis](docs/architecture/api_abuse_protection.md)). Until then, `demo-down` when not demoing | ⬜ |
 
 ## Next, in order
@@ -60,12 +62,12 @@ Only what is current: read this first in every session. When an item here is don
    - ✅ 8. Cloud Run (`feat/gcp-cloud-run`): `mcp-server`, `gateway`, `dashboard` services; `worker`, `sweeper` worker pools; each on its own SA. `MCP_ALLOWED_HOSTS` fix (`17831b7`). First real claims: `COMPLETED` with refund #1, and a `PENDING_HUMAN_REVIEW` rejected by all three judges. `demo_up` switch. Details: `docs/worklog/2026-09-24.md`.
    - ✅ 9. Real data in Cloud SQL (2026-09-24): jobs `seed-orders` and `ingest-knowledge-base` (`worker:76a4ae5`, `ingest-kb-sa`) ran; 6 orders and 4 policy chunks. Claim `kb-cloud-001` (`user-1`, `ord-1001`, 45.50 USD, defective at 12 days) → `COMPLETED` in 4.6 s, both judges APPROVE citing the 30-day window, refund #2. The retrieved text isn't visible yet (no Langfuse keys on Cloud Run).
    - ✅ 10. CD (2026-09-24, PR #62 + `fix/cd-worker-pool-operations`): Workload Identity Federation (repo matched by numeric ID), `github-deployer-sa` with per-resource grants plus one custom project role `runOperationsReader` (`run.operations.get`: `worker-pools deploy` polls a project-level operation; the first run got a 403 there). Option A: Terraform ignores the image, CD deploys with `gcloud`. **First fully green run: 36073809594** (manual dispatch from `main`), all 5 resources on `0525d57`, and deploying only the image kept the pools' env vars and instance count. Migrations stay manual. Still open from step 10: the Locust load test against Cloud Run.
-2. **Part B, evidence for the judges** (independent of the deploy, can run in parallel). A real run rejected a valid claim for lack of the purchase date.
+2. **Part B, evidence for the judges — NEXT.** A real run rejected a valid claim for lack of the purchase date, and the judge benchmark shows Judge 1 approving a $3,000 refund on a "$30 charger": an amount-vs-order check in code stops both.
    - Fetch `get_order` and `get_refund_history` through MCP before judging.
    - A deterministic check (amount ≤ order, same currency, order owned by the user), failing closed to `PENDING_HUMAN_REVIEW`.
    - Close the DB transaction the worker holds open across the judges.
-3. **`feat/model-benchmark`** (Gemini 3.1/3.5 Flash-Lite and 3.8 Flash on Vertex, GPT-OSS 20B on Groq): a verdict-stability check, and `scripts/cost_benchmark.py` printing a Markdown table of latency, tokens and cost at prices fetched on the run date (under $1). Then fill in the README's Vertex cost.
-4. **LLM evaluation:** Promptfoo with about 100 labeled cases (the user reviews the labels; the benchmark claims seed the set), plus Langfuse.
+3. ✅ **Promptfoo eval + model benchmark** (`feat/promptfoo-eval`, 2026-09-24): harness in `evals/promptfoo/`, 50 user-reviewed labels, 600 judgments. Follow-ups in `PENDING.md` Step 3: full-cascade eval, Supreme Court model (user decision), CI gate, the empty GPT-OSS reply.
+4. After Part B (item 2, **next**), re-run the eval: `b2-reject-04` ($3,000 refund on a "$30 charger") must become impossible to approve. Then the RAG chunker fix (headings separated from their rules, found by the eval) and re-ingestion.
 4b. **Public API abuse protection** (user decides; analysis in `docs/architecture/api_abuse_protection.md`): the gateway has no login and no limit per IP or per user. Suggested: a `slowapi` per-IP limit + `claim_text` `max_length` before the next public demo; a per-user limit with the login and Phase 1.E.
 5. **Reliability backlog** in `PENDING.md`: MCP server replicas, the dead-letter queue, not retrying 4xx responses, and a stepped ingestion load test.
 6. Then Phase 1.E (a real primary agent), 1.F, 2 and 3, and AWS.

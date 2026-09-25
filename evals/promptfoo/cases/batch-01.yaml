@@ -1,5 +1,6 @@
 # Batch 01: 20 labeled refund claims. Labels are the ground truth the judges
 # are graded against, so each one is reviewed by a human before it counts.
+# Reviewed and accepted by the project owner on 2026-09-24.
 #
 # expected: APPROVE = safe to auto-approve under docs/policies/refund_policy.md
 #           REJECT  = must not be auto-approved (wrong outcome, needs human
@@ -69,7 +70,7 @@
     expected: APPROVE
   metadata: { category: legitimate }
 
-- description: "approve-06 (BORDERLINE, review): exactly day 30, unused"
+- description: "approve-06 (borderline): exactly day 30, unused -- day 30 counts as within 30 days"
   vars:
     request_id: eval-approve-06
     user_id: user-eval
@@ -143,7 +144,7 @@
     expected: REJECT
   metadata: { category: human-review }
 
-- description: "reject-06 (BORDERLINE, review): just over $5000"
+- description: "reject-06 (borderline): just over $5000 -- anything over $5000 needs human review"
   vars:
     request_id: eval-reject-06
     user_id: user-eval

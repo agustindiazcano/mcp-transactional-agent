@@ -2,7 +2,7 @@
 
 How the quality of the system's LLM decisions is measured: what runs today, what comes next, and which tools were deliberately left out. The summary lives in the README's [LLM Evaluation & Observability](../../README.md#llm-evaluation--observability) section; this document has the detail.
 
-> **Status:** the runtime checks, token-usage logging, and Langfuse tracing are implemented. Promptfoo is the next increment, and Ragas comes later. The work is tracked in `PENDING.md` Step 3.
+> **Status:** the runtime checks, token-usage logging, and Langfuse tracing are implemented. Promptfoo's offline evaluation and model benchmark ran on 2026-09-24 (results: [Judge Evaluation & Benchmark](judge_evaluation_results.md)); its CI gate is next, and Ragas comes later. The work is tracked in `PENDING.md` Step 3.
 
 ## 1. Implemented today
 
@@ -14,7 +14,7 @@ How the quality of the system's LLM decisions is measured: what runs today, what
 
 These checks decide individual claims. What they don't give is a measure of how often they decide correctly. That is the gap Promptfoo closes next.
 
-## 2. Offline evaluation with Promptfoo (next)
+## 2. Offline evaluation with Promptfoo (implemented; CI gate next)
 
 A labeled set of about 100 claims, run against the judges' real prompts and models:
 
