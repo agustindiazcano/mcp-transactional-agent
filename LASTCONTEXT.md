@@ -1,20 +1,13 @@
-# Last Context — Current State (2026-09-24)
+# Last Context — Current State (2026-09-25)
 
-Only what is current: read this first in every session. When an item here is done or superseded, move the session's detailed notes to `docs/worklog/` and keep this file short. History: [docs/worklog/](docs/worklog/).
+Only what is still open: read this first in every session. When an item here is done, move it to `docs/worklog/` and take it out of this file. What was done up to 2026-09-24 (GCP steps 1–10, Langfuse, Promptfoo, the Supreme Court model, headline numbers): [docs/worklog/2026-09-24-lastcontext-snapshot.md](docs/worklog/2026-09-24-lastcontext-snapshot.md). Older history: [docs/worklog/](docs/worklog/).
 
 ## Where things stand
-- **`main`** has everything through PR #56 (Langfuse tracing). Branch `docs/langfuse-tracing` updates the README and LLMOps docs. Details: `docs/worklog/2026-09-24.md`.
-- **GCP deploy: steps 1–10 done (CD running). The demo is DOWN since 2026-09-24** (`demo-down` applied: Cloud SQL `STOPPED`, both pools at 0, `terraform plan` clean). Previously live: All five services run on Cloud Run (worker and sweeper as worker pools), and the first two real claims went through end to end. **Billing while up:** Cloud SQL (~$8/month) plus the two always-on worker pools (1 vCPU each; rough estimate ~$50/month each, not verified on the pricing page). The user plans to keep it up a couple of days, then run `.\scripts\demo-down.ps1`.
+- **`main`** has everything through PR #67 (Supreme Court on `gemini-3.8-flash`). Branch `docs/high-value-court` (commit `29bf2a2`, pushed, not merged) holds the Phase 1.G design.
+- **The GCP demo is DOWN** (Cloud SQL `STOPPED`, both worker pools at 0). The first `demo-up` is still untested: check Cloud SQL, the pools and one claim.
   - Dashboard: https://dashboard-993240087609.us-central1.run.app · Gateway: https://gateway-993240087609.us-central1.run.app
-  - **The user is learning Terraform/GCP: one small explained step per turn.** Since step 8 the user lets Claude write the `.tf`, run `validate`/`plan` and commit; the user runs `apply`. Review each plan before `apply`.
-- **Tests:** 295 (243 unit + 52 integration), 86% coverage. `ruff check src tests` and `mypy --strict src` are clean.
-- **Headline numbers:**
-  - Chaos test: 2,000 claims, worker killed twice and RabbitMQ restarted → 0 lost, 0 double refunds.
-  - Throughput, mocked LLMs, 4-core laptop: 9.2 claims/s with 1 worker → 19.6 with 8.
-  - Ingestion: P95 of 87 ms.
-  - Real claim on Vertex: 6.6 s end to end.
-  - Cost: ~$0.0004 per transaction on AI Studio (2026-09-21). Per judgment on Vertex (2026-09-24): gemini-3.5-flash-lite $0.00036, gemini-3.8-flash $0.00199; gpt-oss-20b on Groq $0.00016.
-  - **Judge benchmark (Promptfoo, 2026-09-24):** 50 labeled claims × 3 repeats × 4 models. gemini-3.8-flash 98% / 3 false approvals; gpt-oss-20b 97% / 0; gemini-3.5-flash-lite (Judge 1 + Supreme Court) 94% / 9. The Supreme Court now runs `gemini-3.8-flash` (it ran Judge 1's model); 6 of 6 correct in the real cascade. But verdicts drift between runs: both judges later approved a €4,800 claim (over $5,000) 4 of 5 times, so only a deterministic currency-aware check (Part B) closes it. Details: `docs/testing/judge_evaluation_results.md`.
+  - **The user is learning Terraform/GCP: one small explained step per turn.** Claude writes the `.tf`, runs `validate`/`plan` and commits; the user runs `apply`. Review each plan before `apply`.
+- **Open gap:** judge verdicts drift between runs (both judges approved a €4,800 claim, over $5,000, 4 of 5 times). Only a deterministic currency-aware check (Part B) closes it. Details: `docs/testing/judge_evaluation_results.md`.
 
 ## Decisions in force
 - **Vertex setup:** `langchain-google-genai` with `vertexai=True`, not the deprecated `ChatVertexAI`. Chat on `global`, embeddings on `us-central1`. ADC only, never an API key.
@@ -29,12 +22,13 @@ Only what is current: read this first in every session. When an item here is don
   - IAM only through `google_project_iam_member` (additive), never `_binding` or `_policy`. Renames go through a `moved` block, never destroy + create. Secret access is per secret only (`google_secret_manager_secret_iam_member`): the table is `secret_readers` in `infra/secret_access.tf`; no SA has project-wide `secretAccessor`.
   - Always `plan -out=tfplan` then `apply tfplan`, run from `infra/`.
   - External secrets (API keys, broker URL, tokens) go into Secret Manager by hand, never through Terraform variables. Only values Terraform generates itself (the DB password) are written by Terraform.
-  - Cloud SQL is reached only through Cloud Run's built-in connector (public IP, no authorized networks, `ENCRYPTED_ONLY`); no VPC. Migrations: `gcloud run jobs execute migrate --region us-central1 [--args=current] --wait`; confirm the revision with the user first (CLAUDE.md §8).
+  - Cloud SQL is reached only through Cloud Run's built-in connector (public IP, no authorized networks, `ENCRYPTED_ONLY`); no VPC. Migrations: `gcloud run jobs execute migrate --region us-central1 [--args=current] --wait`; confirm the revision with the user first (CLAUDE.md §8). Migrations stay manual (CD deploys images only).
   - **Demo switch:** `var.demo_up` (`scripts/demo-up.ps1` / `demo-down.ps1`). `false` stops Cloud SQL (`activation_policy = "NEVER"`, data kept) and scales both worker pools to 0; the HTTP services scale to zero on their own. Claims sent while down wait in CloudAMQP.
   - **Cloud Run:** consumers are worker pools (no HTTP port). The MCP server is `allUsers` at the Cloud Run layer (Cloud Run IAM would claim the `Authorization` header the worker uses for its Phase 1.B token); the dashboard and gateway are public until a login exists. Always use the deterministic URLs (`<service>-993240087609.us-central1.run.app`): only that host is in the MCP server's `MCP_ALLOWED_HOSTS`.
-- **Messaging for the cloud demo: CloudAMQP free plan (LavinMQ), verified** with the first real claims (publish, consume, ACK). No code change; only `RABBITMQ_URL` changes.
-- **CV and public claims:** list Google Cloud, Cloud SQL, Terraform and CI/CD only once each one runs. Today only CI exists; CD means a merge to `main` deploys to Cloud Run through Workload Identity Federation. Vertex AI can already be listed.
-- **Evaluation tools:** Promptfoo and Langfuse next, Ragas later. LangSmith and TruLens are not adopted.
+  - **CD:** Terraform ignores the image; CD deploys with `gcloud` through Workload Identity Federation (`github-deployer-sa`).
+- **Messaging for the cloud demo: CloudAMQP free plan (LavinMQ).** No code change; only `RABBITMQ_URL` changes.
+- **CV and public claims:** list a technology only once it runs.
+- **Evaluation tools:** Ragas later. LangSmith and TruLens are not adopted.
 - **Resolver agent (agent B):** it changes the Phase 1.E design, so it needs the user's go-ahead.
 - **High-Value Court (Phase 1.G), planned (user decision 2026-09-24):** refunds of $1,000–$5,000 (in USD, after conversion) need four judges from four model families to all approve; a superior judge (candidate Gemini Pro) reviews any rejection and can only confirm it or route to a human, **never approve over a rejection**. Threshold configurable, default $1,000. After Part B. Design: `docs/architecture/high_value_court.md`.
 - **Public docs are recruiter-facing:** no "human in the loop" anecdotes, and nothing presented as done before it is.
@@ -42,51 +36,32 @@ Only what is current: read this first in every session. When an item here is don
 ## Waiting on the user
 | # | | What | Status |
 |---|---|---|---|
-| 1 | 🟡 | Review and merge the `feat/gcp-cloud-run` PR | ✅ PR #55 |
-| 2 | 🟡 | Rotate the CloudAMQP password | ✅ closed by the user (free plan, 2026-09-24) |
-| 2b | 🟡 | Run `demo-down` after the couple of days live | ✅ 2026-09-24. The first `demo-up` is still untested: check Cloud SQL, the pools and one claim |
-| 3 | 🟢 | `agustin-google-cloud` service account | ✅ the user's own SA, nothing to do |
-| 4 | 🟢 | Rotate the Groq key (printed once in a session's output; low risk, local only) | optional |
-| 5 | 🟢 | GitHub profile text: says 232 tests, the count is 248 | ⬜ |
-| 6 | 🟢 | Langfuse Cloud account (free tier), keys in `.env` | ✅ US region |
-| 7 | 🟢 | Settings → Branches: branch protection on `main`, requiring the CI checks | ⬜ |
-| 9 | 🟡 | Decide the Supreme Court model | ✅ gemini-3.8-flash (2026-09-24, `SUPREME_COURT_MODEL`) |
-| 8 | 🟡 | Decide the public API protection: which option, and when ([analysis](docs/architecture/api_abuse_protection.md)). Until then, `demo-down` when not demoing | ⬜ |
+| 1 | 🟡 | Merge `docs/high-value-court` (open its PR) | ⬜ |
+| 2 | 🟡 | Decide the public API protection: which option, and when ([analysis](docs/architecture/api_abuse_protection.md)). Until then, `demo-down` when not demoing | ⬜ |
+| 3 | 🟢 | Rotate the Groq key (printed once in a session's output; low risk, local only) | optional |
+| 4 | 🟢 | GitHub profile text: says 232 tests, the count is 295 | ⬜ |
+| 5 | 🟢 | Settings → Branches: branch protection on `main`, requiring the CI checks | ⬜ |
 
 ## Next, in order
-0. **Langfuse tracing: done** (PR #56). Follow-ups in `PENDING.md` Step 3: model prices, Cloud Run keys, verdict scores, (the knowledge-base `�` was a false alarm: a terminal rendering issue).
-1. **GCP deploy (demo environment)**, step by step with the user:
-   - ✅ 1. State bucket. ✅ 2. Terraform base. ✅ 3. Artifact Registry repo `app-images`. ✅ 4. Service accounts (`worker-sa`, `gateway-sa`, `mcp-server-sa`, `dashboard-sa`).
-   - ✅ 5. The 4 images (gateway, worker, mcp_server, dashboard) are in `us-central1-docker.pkg.dev/project-e0ad10c9-0b2f-4dc0-ac6/app-images/<service>:b0e7dbe` (the `main` commit they were built from). `sweeper` and `migrate` reuse the `worker` image with a different command.
-   - ✅ 6. Cloud SQL `agentic-pg` (PG 16, `db-f1-micro`), database `agentic_engine`, user `app`, secret `database-url`, Cloud Run job `migrate` (`migrate-sa`). Revision checked at base, upgraded to `c4d2a7e81f35`. Follow-ups: `deletion_policy = "ABANDON"` on `google_sql_user.app` before any teardown; seed `orders` + ingest the knowledge base with step 9.
-   - ✅ 7. Secret Manager: `groq-api-key`, `mcp-client-token`, `mcp-clients-json` added (values by hand), `rabbitmq-url` imported, `sweeper-sa` created, per-secret grants only. The cloud MCP client is `worker-cloud` with its own token.
-   - ✅ 8. Cloud Run (`feat/gcp-cloud-run`): `mcp-server`, `gateway`, `dashboard` services; `worker`, `sweeper` worker pools; each on its own SA. `MCP_ALLOWED_HOSTS` fix (`17831b7`). First real claims: `COMPLETED` with refund #1, and a `PENDING_HUMAN_REVIEW` rejected by all three judges. `demo_up` switch. Details: `docs/worklog/2026-09-24.md`.
-   - ✅ 9. Real data in Cloud SQL (2026-09-24): jobs `seed-orders` and `ingest-knowledge-base` (`worker:76a4ae5`, `ingest-kb-sa`) ran; 6 orders and 4 policy chunks. Claim `kb-cloud-001` (`user-1`, `ord-1001`, 45.50 USD, defective at 12 days) → `COMPLETED` in 4.6 s, both judges APPROVE citing the 30-day window, refund #2. The retrieved text isn't visible yet (no Langfuse keys on Cloud Run).
-   - ✅ 10. CD (2026-09-24, PR #62 + `fix/cd-worker-pool-operations`): Workload Identity Federation (repo matched by numeric ID), `github-deployer-sa` with per-resource grants plus one custom project role `runOperationsReader` (`run.operations.get`: `worker-pools deploy` polls a project-level operation; the first run got a 403 there). Option A: Terraform ignores the image, CD deploys with `gcloud`. **First fully green run: 36073809594** (manual dispatch from `main`), all 5 resources on `0525d57`, and deploying only the image kept the pools' env vars and instance count. Migrations stay manual. Still open from step 10: the Locust load test against Cloud Run.
-2. **Part B, evidence for the judges — NEXT.** A real run rejected a valid claim for lack of the purchase date, and the judge benchmark shows Judge 1 approving a $3,000 refund on a "$30 charger": an amount-vs-order check in code stops both.
+1. 🔴 **Part B, evidence for the judges — NEXT.** A real run rejected a valid claim for lack of the purchase date, and the judge benchmark shows Judge 1 approving a $3,000 refund on a "$30 charger": an amount-vs-order check in code stops both.
    - Fetch `get_order` and `get_refund_history` through MCP before judging.
    - A deterministic check (amount ≤ order, same currency, order owned by the user), failing closed to `PENDING_HUMAN_REVIEW`.
    - Close the DB transaction the worker holds open across the judges.
-3. ✅ **Promptfoo eval + model benchmark** (`feat/promptfoo-eval`, 2026-09-24): harness in `evals/promptfoo/`, 50 user-reviewed labels, 600 judgments. Follow-ups in `PENDING.md` Step 3: full-cascade eval, Supreme Court model (user decision), CI gate, the empty GPT-OSS reply.
-4. After Part B (item 2, **next**), re-run the eval: `b2-reject-04` ($3,000 refund on a "$30 charger") must become impossible to approve. Then the RAG chunker fix (headings separated from their rules, found by the eval) and re-ingestion.
-4b. **Public API abuse protection** (user decides; analysis in `docs/architecture/api_abuse_protection.md`): the gateway has no login and no limit per IP or per user. Suggested: a `slowapi` per-IP limit + `claim_text` `max_length` before the next public demo; a per-user limit with the login and Phase 1.E.
-5. **Reliability backlog** in `PENDING.md`: MCP server replicas, the dead-letter queue, not retrying 4xx responses, and a stepped ingestion load test.
-6. Then Phase 1.E (a real primary agent), 1.F, **1.G (High-Value Court, planned)**, 2 and 3, and AWS.
+2. 🟡 After Part B, re-run the eval: `b2-reject-04` ($3,000 refund on a "$30 charger") must become impossible to approve. Then the RAG chunker fix (headings separated from their rules, found by the eval) and re-ingestion.
+3. 🟡 **GCP leftovers:** test the first `demo-up`; Locust load test against Cloud Run (compare with the local baseline); `deletion_policy = "ABANDON"` on `google_sql_user.app` before any teardown.
+4. 🟡 **Langfuse follow-ups** (`PENDING.md` Step 3): custom model prices (Groq models, `gemini-embedding-001`), Langfuse keys in Secret Manager for Cloud Run, verdict scores.
+5. 🟡 **Promptfoo follow-ups** (`PENDING.md` Step 3): full-cascade eval, CI gate, the empty GPT-OSS reply.
+6. 🟡 **Public API abuse protection** (user decides): suggested a `slowapi` per-IP limit + `claim_text` `max_length` before the next public demo; a per-user limit with the login and Phase 1.E.
+7. 🟢 **Reliability backlog** in `PENDING.md`: MCP server replicas, the dead-letter queue, not retrying 4xx responses, and a stepped ingestion load test.
+8. ⚪ Then Phase 1.E (a real primary agent), 1.F, 1.G (High-Value Court), 2 and 3, and AWS.
 
 ## Environment state
 - **Infrastructure reference:** `docs/infrastructure/gcp_infrastructure.md` (what runs where, service accounts, secrets, exposure, operating commands, cost). Update it with any `infra/` change.
-- **GCP project `project-e0ad10c9-0b2f-4dc0-ac6`:**
-  - On the free-trial credit, with billing enabled and a $20 budget alert (50/90/100%, credits excluded).
-  - APIs enabled: Vertex AI, Cloud Run, Cloud SQL Admin, Artifact Registry, Secret Manager, IAM. Container Scanning is **not** enabled (it's paid).
-  - ADC is logged in (`gcloud auth application-default login`).
-  - Created: the state bucket (by hand), the `app-images` repo and the 4 service accounts (Terraform), the `rabbitmq-url` secret (by hand), and the 4 images tagged `b0e7dbe` (580 MB in the repo; the free tier is 0.5 GB, so ~$0.01/month).
-  - Step 6 (Terraform): Cloud SQL `agentic-pg` (**running, ~$8/month**), database `agentic_engine`, user `app`, secret `database-url`, `migrate-sa`, Cloud Run job `migrate`.
-  - Step 7: secrets `rabbitmq-url` (imported), `groq-api-key`, `mcp-client-token`, `mcp-clients-json` (v1 disabled, v2 live); `sweeper-sa`.
-  - Step 8: services `mcp-server` (image `mcp_server:17831b7`), `gateway`, `dashboard` (`b0e7dbe`); worker pools `worker`, `sweeper` (`worker:b0e7dbe`). Cloud SQL holds `smoke-cloud-001` (refund #1) and one `PENDING_HUMAN_REVIEW` claim.
-  - Docker on this laptop pushes to Artifact Registry through `gcloud auth configure-docker us-central1-docker.pkg.dev` (a credential helper in `~/.docker/config.json`, no stored password).
-  - Also present, not ours: the default Compute SA (has Editor; never let Cloud Run fall back to it) and `agustin-google-cloud` (created by the user earlier).
+- **GCP project `project-e0ad10c9-0b2f-4dc0-ac6`:** free-trial credit, billing enabled, $20 budget alert (50/90/100%, credits excluded). Container Scanning is **not** enabled (it's paid). ADC is logged in. **Billing while the demo is up:** Cloud SQL (~$8/month) plus the two worker pools (rough estimate ~$50/month each, not verified).
+  - Also present, not ours: the default Compute SA (has Editor; never let Cloud Run fall back to it) and `agustin-google-cloud` (the user's own SA).
+  - Docker on this laptop pushes to Artifact Registry through `gcloud auth configure-docker us-central1-docker.pkg.dev` (credential helper, no stored password).
 - **Tools:** Terraform v1.16.2, google provider v8.4.0 and random provider v3.9.1 (pinned in `infra/.terraform.lock.hcl`). `gcloud` works (open a new terminal if it isn't found).
-- **Local stack:** `.env` is back on `LLM_PROVIDER=mock`. For real Vertex: `docker compose -f docker-compose.yml -f docker-compose.gcp.yml up -d` with `LLM_PROVIDER=vertex`. For load or chaos tests: `docker-compose.chaos.yml` (mocks).
+- **Local stack:** `.env` is on `LLM_PROVIDER=mock`. For real Vertex: `docker compose -f docker-compose.yml -f docker-compose.gcp.yml up -d` with `LLM_PROVIDER=vertex`. For load or chaos tests: `docker-compose.chaos.yml` (mocks).
 - The dev DB holds test rows (prefixes `chaos-`, `tput-`, `prof-`, `vertex-e2e-`).
 
 ## Gotchas that still apply
