@@ -70,9 +70,9 @@ async def test_success_on_first_attempt_returns_tool_result() -> None:
     call_tool = AsyncMock(return_value=_tool_result(structured=EXECUTED))
 
     with (
-        patch("src.worker.refund_executor.sse_client") as mock_sse,
-        patch("src.worker.refund_executor.ClientSession") as mock_cs,
-        patch("src.worker.refund_executor.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        patch("src.worker.mcp_client.sse_client") as mock_sse,
+        patch("src.worker.mcp_client.ClientSession") as mock_cs,
+        patch("src.worker.mcp_client.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
     ):
         _wire_mcp(mock_sse, mock_cs, call_tool)
         result = await execute_refund_via_mcp(**REFUND_KWARGS, policy=POLICY)
@@ -87,8 +87,8 @@ async def test_session_is_authenticated_and_bounded_by_read_timeout() -> None:
     call_tool = AsyncMock(return_value=_tool_result(structured=EXECUTED))
 
     with (
-        patch("src.worker.refund_executor.sse_client") as mock_sse,
-        patch("src.worker.refund_executor.ClientSession") as mock_cs,
+        patch("src.worker.mcp_client.sse_client") as mock_sse,
+        patch("src.worker.mcp_client.ClientSession") as mock_cs,
     ):
         _wire_mcp(mock_sse, mock_cs, call_tool)
         await execute_refund_via_mcp(**REFUND_KWARGS, policy=POLICY)
@@ -106,9 +106,9 @@ async def test_transient_failure_retries_with_new_session_and_backoff() -> None:
     )
 
     with (
-        patch("src.worker.refund_executor.sse_client") as mock_sse,
-        patch("src.worker.refund_executor.ClientSession") as mock_cs,
-        patch("src.worker.refund_executor.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        patch("src.worker.mcp_client.sse_client") as mock_sse,
+        patch("src.worker.mcp_client.ClientSession") as mock_cs,
+        patch("src.worker.mcp_client.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
     ):
         _wire_mcp(mock_sse, mock_cs, call_tool)
         result = await execute_refund_via_mcp(**REFUND_KWARGS, policy=POLICY)
@@ -124,9 +124,9 @@ async def test_backoff_is_exponential_between_attempts() -> None:
     call_tool = AsyncMock(side_effect=RuntimeError("mcp down"))
 
     with (
-        patch("src.worker.refund_executor.sse_client") as mock_sse,
-        patch("src.worker.refund_executor.ClientSession") as mock_cs,
-        patch("src.worker.refund_executor.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        patch("src.worker.mcp_client.sse_client") as mock_sse,
+        patch("src.worker.mcp_client.ClientSession") as mock_cs,
+        patch("src.worker.mcp_client.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
     ):
         _wire_mcp(mock_sse, mock_cs, call_tool)
         with pytest.raises(RefundExecutionError):
@@ -141,9 +141,9 @@ async def test_tool_error_result_counts_as_failed_attempt() -> None:
     call_tool = AsyncMock(return_value=_tool_result(is_error=True))
 
     with (
-        patch("src.worker.refund_executor.sse_client") as mock_sse,
-        patch("src.worker.refund_executor.ClientSession") as mock_cs,
-        patch("src.worker.refund_executor.asyncio.sleep", new_callable=AsyncMock),
+        patch("src.worker.mcp_client.sse_client") as mock_sse,
+        patch("src.worker.mcp_client.ClientSession") as mock_cs,
+        patch("src.worker.mcp_client.asyncio.sleep", new_callable=AsyncMock),
     ):
         _wire_mcp(mock_sse, mock_cs, call_tool)
         with pytest.raises(RefundExecutionError, match="boom"):
@@ -157,9 +157,9 @@ async def test_result_without_structured_content_counts_as_failed_attempt() -> N
     call_tool = AsyncMock(return_value=_tool_result(structured=None))
 
     with (
-        patch("src.worker.refund_executor.sse_client") as mock_sse,
-        patch("src.worker.refund_executor.ClientSession") as mock_cs,
-        patch("src.worker.refund_executor.asyncio.sleep", new_callable=AsyncMock),
+        patch("src.worker.mcp_client.sse_client") as mock_sse,
+        patch("src.worker.mcp_client.ClientSession") as mock_cs,
+        patch("src.worker.mcp_client.asyncio.sleep", new_callable=AsyncMock),
     ):
         _wire_mcp(mock_sse, mock_cs, call_tool)
         with pytest.raises(RefundExecutionError, match="no structured result"):
@@ -180,9 +180,9 @@ async def test_policy_from_settings_reads_worker_configuration() -> None:
 @pytest.mark.asyncio
 async def test_connection_failure_counts_as_failed_attempt() -> None:
     with (
-        patch("src.worker.refund_executor.sse_client") as mock_sse,
-        patch("src.worker.refund_executor.ClientSession"),
-        patch("src.worker.refund_executor.asyncio.sleep", new_callable=AsyncMock),
+        patch("src.worker.mcp_client.sse_client") as mock_sse,
+        patch("src.worker.mcp_client.ClientSession"),
+        patch("src.worker.mcp_client.asyncio.sleep", new_callable=AsyncMock),
     ):
         mock_sse.return_value.__aenter__ = AsyncMock(side_effect=ConnectionError("refused"))
         mock_sse.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -205,9 +205,9 @@ async def test_task_group_failure_reports_the_underlying_cause() -> None:
     call_tool = AsyncMock(side_effect=group)
 
     with (
-        patch("src.worker.refund_executor.sse_client") as mock_sse,
-        patch("src.worker.refund_executor.ClientSession") as mock_cs,
-        patch("src.worker.refund_executor.asyncio.sleep", new_callable=AsyncMock),
+        patch("src.worker.mcp_client.sse_client") as mock_sse,
+        patch("src.worker.mcp_client.ClientSession") as mock_cs,
+        patch("src.worker.mcp_client.asyncio.sleep", new_callable=AsyncMock),
     ):
         _wire_mcp(mock_sse, mock_cs, call_tool)
         with pytest.raises(RefundExecutionError, match="RuntimeError: Client error '422"):

@@ -15,6 +15,7 @@ from src.core.models import Transaction
 from src.core.services.retrieval_service import retrieve_relevant_policy
 from src.core.tracing import claim_trace, observe, shutdown_tracing
 from src.worker.amqp import CHANNEL_GONE_ERRORS, connect_with_retry, safe_ack, safe_nack
+from src.worker.evidence import EvidenceUnavailableError, verify_claim_evidence
 from src.worker.refund_executor import (
     McpCallPolicy,
     RefundExecutionError,
@@ -120,6 +121,47 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                 except Exception as e:  # noqa: BLE001
                     logger.warning(f"Retrieval skipped for {request_id}: {e}")
 
+            # End the read transaction retrieval opened: nothing was written
+            # since the claim's commit, and the MCP and LLM calls below take
+            # seconds. The final write opens its own transaction.
+            await db_session.rollback()
+
+            judge_context: dict[str, Any] = {"request_id": request_id}
+            if retrieved_policy:
+                judge_context["retrieved_policy"] = retrieved_policy
+
+            # ── Step 2.6: Evidence check (Part B) ───────────────────────────────
+            # Code, not a judge, checks the order and the refund history. A
+            # failure (or an MCP outage) goes to human review with no LLM call:
+            # the check can stop an approval, never grant one.
+            evidence_trail: dict[str, Any] | None = None
+            evidence_failure: str | None = None
+            if body.get("order_id") and body.get("amount"):
+                with observe(
+                    "verify-evidence",
+                    as_type="guardrail",
+                    input={
+                        "order_id": body.get("order_id"),
+                        "amount": body.get("amount"),
+                        "currency": body.get("currency"),
+                    },
+                ) as verification:
+                    try:
+                        evidence = await verify_claim_evidence(body, McpCallPolicy.from_settings())
+                    except EvidenceUnavailableError as e:
+                        evidence_trail = {"status": "unavailable", "error": str(e)}
+                        evidence_failure = f"Evidence unavailable: {e}"
+                        verification.update(
+                            output=evidence_trail, level="ERROR", status_message=str(e)
+                        )
+                    else:
+                        evidence_trail = evidence.to_trail()
+                        verification.update(output=evidence_trail)
+                        if evidence.passed:
+                            judge_context["evidence"] = evidence.summary_for_judges()
+                        else:
+                            evidence_failure = " ".join(evidence.failures)
+
             # Instantiate LLM
             _ = get_llm()
 
@@ -128,11 +170,7 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
             max_retries = settings.MAX_LLM_RETRIES
             judge_result: dict[str, Any] = {}
 
-            judge_context: dict[str, Any] = {"request_id": request_id}
-            if retrieved_policy:
-                judge_context["retrieved_policy"] = retrieved_policy
-
-            while retries < max_retries:
+            while evidence_failure is None and retries < max_retries:
                 # In the real system this invokes the LangChain agent loop.
                 mock_primary_action = "execute_refund"
                 mock_primary_args = body
@@ -201,6 +239,8 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
             trail: dict[str, Any] | None = judge_result.get("trail")
             if guard_result is not None:
                 trail = {**(trail or {}), "prompt_guard": guard_result.to_trail()}
+            if evidence_trail is not None:
+                trail = {**(trail or {}), "evidence": evidence_trail}
             if execution is not None:
                 trail = {**(trail or {}), "execution": execution}
             locked_txn.judge_trail = trail
@@ -216,6 +256,11 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                     f"💥 Transaction {request_id} APPROVED but refund execution failed: "
                     f"{execution}"
                 )
+            elif evidence_failure is not None:
+                logger.warning(
+                    f"❌ Transaction {request_id} → PENDING_HUMAN_REVIEW: evidence check "
+                    f"failed, judges not called. Reason: {evidence_failure}"
+                )
             elif approved:
                 logger.warning(
                     f"❌ Transaction {request_id} → PENDING_HUMAN_REVIEW: approved "
@@ -230,8 +275,15 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
             await db_session.commit()
             logger.info(f"Transaction {request_id} committed to DB with status: {locked_txn.status}")
             trace.update(
-                output={"status": final_status, "reason": judge_result.get("reason")},
-                metadata={"judge_attempts": min(retries + 1, max_retries)},
+                output={
+                    "status": final_status,
+                    "reason": evidence_failure or judge_result.get("reason"),
+                },
+                metadata={
+                    "judge_attempts": 0
+                    if evidence_failure is not None
+                    else min(retries + 1, max_retries)
+                },
             )
 
             if final_status == "EXECUTION_FAILED":

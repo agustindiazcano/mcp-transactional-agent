@@ -12,6 +12,7 @@ Tests cover:
 import json
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,6 +20,8 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from src.agents.prompt_guard import GuardResult
+from src.core.services.evidence_check import EvidenceCheck
+from src.worker.evidence import EvidenceUnavailableError
 from src.worker.refund_executor import RefundExecutionError
 
 CLEAR_GUARD = GuardResult(status="clear", score=0.001)
@@ -31,6 +34,28 @@ EXECUTED = {
     "amount": 50.0,
     "currency": "USD",
 }
+
+ORDER = {
+    "order_id": "ord-001",
+    "user_id": "usr-123",
+    "amount": 80.0,
+    "currency": "USD",
+    "created_at": "2026-09-12T10:00:00+00:00",
+}
+PASSED_EVIDENCE = EvidenceCheck(
+    order_id="ord-001",
+    failures=(),
+    order=ORDER,
+    already_refunded=Decimal("0.00"),
+    amount_usd=Decimal("50.00"),
+)
+FAILED_EVIDENCE = EvidenceCheck(
+    order_id="ord-001",
+    failures=("Refund 3000.00 USD exceeds what remains refundable on order ord-001 (80.00 USD).",),
+    order=ORDER,
+    already_refunded=Decimal("0.00"),
+    amount_usd=Decimal("3000.00"),
+)
 
 
 def _make_message(body: dict[str, Any]) -> MagicMock:
@@ -94,6 +119,8 @@ def _pipeline(
     retrieved_policy: str | None = None,
     executor_result: dict[str, Any] | None = None,
     executor_error: Exception | None = None,
+    evidence: EvidenceCheck = PASSED_EVIDENCE,
+    evidence_error: Exception | None = None,
 ) -> Iterator[dict[str, MagicMock]]:
     """Patch every external dependency of process_message."""
     with ExitStack() as stack:
@@ -127,6 +154,14 @@ def _pipeline(
                     new_callable=AsyncMock,
                     return_value=executor_result or EXECUTED,
                     side_effect=executor_error,
+                )
+            ),
+            "evidence": stack.enter_context(
+                patch(
+                    "src.worker.worker.verify_claim_evidence",
+                    new_callable=AsyncMock,
+                    return_value=evidence,
+                    side_effect=evidence_error,
                 )
             ),
         }
@@ -332,8 +367,128 @@ async def test_skipped_guard_is_recorded_alongside_judge_trail() -> None:
             "score": None,
             "reason": "ImportError: langchain-groq is not installed",
         },
+        "evidence": PASSED_EVIDENCE.to_trail(),
         "execution": EXECUTED,
     }
+
+
+# ── Evidence for the judges (Part B) ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_verified_evidence_reaches_the_judges_and_the_trail() -> None:
+    message = _make_message(BODY)
+    db_session = _make_db_session()
+
+    with _pipeline() as mocks:
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    assert mocks["evidence"].await_args.args[0] == BODY
+    judge_context = mocks["judge"].await_args.kwargs["context"]
+    assert judge_context["evidence"] == PASSED_EVIDENCE.summary_for_judges()
+    locked_row = _locked_row(db_session)
+    assert locked_row.status == "COMPLETED"
+    assert locked_row.judge_trail["evidence"] == PASSED_EVIDENCE.to_trail()
+
+
+@pytest.mark.asyncio
+async def test_failed_evidence_goes_to_human_review_without_judges() -> None:
+    """The benchmark's $3,000 refund on a $30 order: code stops it, so no
+    judge can approve it, and no LLM call is spent on it."""
+    message = _make_message(BODY)
+    db_session = _make_db_session()
+
+    with _pipeline(evidence=FAILED_EVIDENCE) as mocks:
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    mocks["judge"].assert_not_awaited()
+    mocks["executor"].assert_not_awaited()
+    locked_row = _locked_row(db_session)
+    assert locked_row.status == "PENDING_HUMAN_REVIEW"
+    assert locked_row.judge_trail["evidence"] == FAILED_EVIDENCE.to_trail()
+    assert locked_row.judge_trail["prompt_guard"]["status"] == "clear"
+    message.ack.assert_awaited_once()
+    message.nack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unavailable_evidence_fails_closed_to_human_review() -> None:
+    message = _make_message(BODY)
+    db_session = _make_db_session()
+
+    with _pipeline(evidence_error=EvidenceUnavailableError("ConnectionError: refused")) as mocks:
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    mocks["judge"].assert_not_awaited()
+    mocks["executor"].assert_not_awaited()
+    locked_row = _locked_row(db_session)
+    assert locked_row.status == "PENDING_HUMAN_REVIEW"
+    assert locked_row.judge_trail["evidence"] == {
+        "status": "unavailable",
+        "error": "ConnectionError: refused",
+    }
+    message.ack.assert_awaited_once()
+    message.nack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_claim_without_refund_details_is_judged_without_evidence() -> None:
+    message = _make_message(BODY_WITHOUT_REFUND_DETAILS)
+    db_session = _make_db_session()
+
+    with _pipeline() as mocks:
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    mocks["evidence"].assert_not_awaited()
+    assert "evidence" not in mocks["judge"].await_args.kwargs["context"]
+    assert "evidence" not in _locked_row(db_session).judge_trail
+
+
+@pytest.mark.asyncio
+async def test_no_db_transaction_is_held_open_while_evidence_and_judges_run() -> None:
+    """Retrieval opens a read transaction; it must end before the slow MCP
+    and LLM calls, not stay "idle in transaction" until the final write."""
+    message = _make_message(BODY)
+    db_session = _make_db_session()
+    rollbacks_seen: list[int] = []
+
+    async def judge(**_: Any) -> dict[str, Any]:
+        rollbacks_seen.append(db_session.rollback.await_count)
+        return APPROVE
+
+    async def evidence(*_: Any) -> EvidenceCheck:
+        rollbacks_seen.append(db_session.rollback.await_count)
+        return PASSED_EVIDENCE
+
+    with _pipeline() as mocks:
+        mocks["judge"].side_effect = judge
+        mocks["evidence"].side_effect = evidence
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    assert rollbacks_seen == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_evidence_claim_trace_ends_with_the_reason(trace_exporter) -> None:
+    from tests.support.tracing import finished_spans, is_child_of, span_attr
+
+    with _pipeline(evidence=FAILED_EVIDENCE):
+        from src.worker.worker import process_message
+        await process_message(_make_message(BODY), _make_db_session())
+
+    spans = finished_spans(trace_exporter)
+    root = spans["process-claim"]
+    check = spans["verify-evidence"]
+    assert is_child_of(check, root)
+    assert span_attr(check, "langfuse.observation.type") == "guardrail"
+    output = span_attr(root, "langfuse.observation.output")
+    assert '"status": "PENDING_HUMAN_REVIEW"' in output
+    assert "exceeds what remains refundable" in output
 
 
 # ── Broker restart mid-message (found by the chaos/idempotency test) ─────────

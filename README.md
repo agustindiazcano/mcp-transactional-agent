@@ -278,6 +278,7 @@ The ingestion gateway publishes each request to RabbitMQ and returns `202 Accept
 | Idempotency window | `IDEMPOTENCY_TTL_SECONDS` (default 24 h). A `request_id` replayed after expiry is treated as a new request. |
 | Retries | Up to `MAX_LLM_RETRIES` (default 3) with exponential backoff on rate limits and timeouts. |
 | Exhausted retries | Message moves to the dead-letter queue; no partial effect is committed. |
+| Evidence check | Before the judges, for a claim with `order_id` and `amount`: the worker fetches `get_order` and `get_refund_history` through MCP and checks them in code (order exists and belongs to the user, same currency, refund plus earlier refunds on the order fits in it, at most `REFUND_HUMAN_REVIEW_THRESHOLD_USD` in USD). A failure, or an MCP outage, goes to `PENDING_HUMAN_REVIEW` without an LLM call; the result is stored in `judge_trail["evidence"]`. |
 | Double Judge rejection | If either Gemini or Groq rejects, the transaction is persisted as `PENDING_HUMAN_REVIEW`; no tool is executed. |
 | Refund execution | Only after approval, only from deterministic worker code. `request_id` is the `execute_refund` tool's idempotency key (UNIQUE constraint on `refunds.request_id` plus `INSERT ... ON CONFLICT DO NOTHING`): a replay returns the existing refund with `status: "already_executed"` instead of refunding again. |
 | Execution failure | Each attempt opens a fresh MCP session bounded by `MCP_TOOL_TIMEOUT_SECONDS`, with exponential backoff (`MCP_TOOL_BACKOFF_BASE_SECONDS`) for up to `MCP_TOOL_MAX_RETRIES` attempts. When all attempts fail, the transaction is persisted as `EXECUTION_FAILED` and the message is NACKed with `requeue=False`. The row, not the queue, is what records the failure for an operator. |
@@ -973,6 +974,8 @@ uvicorn src.api.main:app --reload --port 8000  # terminal 4
 | `MCP_TOOL_TIMEOUT_SECONDS` | No | Worker side: read timeout per MCP tool-call attempt; bounds the MCP SDK's hang when the security boundary rejects a call with a 4xx (default: 10) |
 | `MCP_TOOL_MAX_RETRIES` | No | Worker side: attempts at `execute_refund` before the transaction is marked `EXECUTION_FAILED` (default: 3) |
 | `MCP_TOOL_BACKOFF_BASE_SECONDS` | No | Worker side: base delay of the exponential backoff between tool-call attempts (default: 1.0) |
+| `REFUND_HUMAN_REVIEW_THRESHOLD_USD` | No | Evidence check: refunds above this amount in USD go to human review without the judges (default: 5000) |
+| `FX_RATES_TO_USD` | No | Evidence check: static rates to USD as JSON (default: ECB rates of 2026-09-24); a currency missing here fails the check closed |
 | `EXPERT_SYSTEM_CONFIDENCE_THRESHOLD` | No (2) | Minimum belief degree for auto-approval (default: 0.85) |
 | `DRIFT_DETECTOR` | No (3) | `ewma`, `cusum`, `page_hinkley`, or `kalman` (default: `ewma`) |
 | `EWMA_LAMBDA` | No (3) | EWMA smoothing factor (default: 0.2) |

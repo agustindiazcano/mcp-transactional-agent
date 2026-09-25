@@ -37,6 +37,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from src.core.config import settings
+from src.core.database import get_session_maker
+from src.core.repositories.order_repository import insert_orders_if_absent
 
 logger = structlog.get_logger("chaos_idempotency")
 
@@ -97,6 +99,30 @@ def build_submission_plan(run_id: str, total: int, dup_rate: float, seed: int) -
         position = rng.randint(plan.index(original) + 1, len(plan))
         plan.insert(position, Claim(original.request_id, original.body, is_duplicate=True))
     return plan
+
+
+def orders_for_plan(plan: list[Claim]) -> list[dict[str, Any]]:
+    """One order per unique claim, matching its user, amount and currency.
+
+    The worker checks each refund against its order before the judges
+    (Part B), so a claim whose order doesn't exist would go to human review.
+    """
+    orders: dict[str, dict[str, Any]] = {}
+    for claim in plan:
+        body = claim.body
+        orders.setdefault(body["order_id"], {
+            "order_id": body["order_id"],
+            "user_id": body["user_id"],
+            "amount": body["amount"],
+            "currency": body["currency"],
+        })
+    return list(orders.values())
+
+
+async def seed_plan_orders(engine: AsyncEngine, plan: list[Claim]) -> int:
+    """Insert the plan's orders that are missing; returns how many were added."""
+    async with get_session_maker(engine)() as session:
+        return await insert_orders_if_absent(session, orders_for_plan(plan))
 
 
 # ── Verdict ─────────────────────────────────────────────────────────────────
@@ -365,6 +391,7 @@ async def run(args: argparse.Namespace) -> int:
     logger.info("run_started", run_id=run_id, submissions=len(plan), unique=len(unique_ids))
 
     try:
+        await seed_plan_orders(engine, plan)
         started = time.monotonic()
         submit_task = asyncio.create_task(
             submit_all(args.gateway_url, plan, args.concurrency, args.max_attempts)
