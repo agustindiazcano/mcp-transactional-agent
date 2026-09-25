@@ -9,8 +9,8 @@ could hallucinate or omit is checked here, independent of any real LLM call.
 """
 import pytest
 from pydantic import ValidationError
-from src.agents.proposal import ClaimProposal
 
+from src.agents.proposal import ClaimProposal
 from src.core.config import settings
 from src.core.currency import Currency
 
