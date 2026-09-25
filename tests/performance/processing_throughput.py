@@ -49,6 +49,7 @@ from src.core.config import settings
 from tests.performance.chaos_idempotency import (
     build_submission_plan,
     drive_faults_and_drain,
+    seed_plan_orders,
     submit_all,
 )
 
@@ -202,6 +203,7 @@ async def run(args: argparse.Namespace) -> int:
     engine = create_async_engine(args.database_url)
 
     try:
+        await seed_plan_orders(engine, plan)
         offset = await db_clock_offset(engine)
         submit = submit_all(args.gateway_url, plan, args.concurrency, args.max_attempts,
                             rate=args.rate)

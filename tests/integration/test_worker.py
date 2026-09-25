@@ -1,3 +1,4 @@
+from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -9,6 +10,7 @@ from src.agents.prompt_guard import GuardResult
 from src.core.config import settings
 from src.core.database import get_engine, get_session_maker
 from src.core.models import Transaction
+from src.core.services.evidence_check import EvidenceCheck
 from src.worker.worker import process_message
 
 EXECUTED = {
@@ -19,6 +21,25 @@ EXECUTED = {
     "amount": 50.0,
     "currency": "USD",
 }
+
+VERIFIED = EvidenceCheck(
+    order_id="ord-1",
+    failures=(),
+    order={"order_id": "ord-1", "user_id": "user1", "amount": 50.0, "currency": "USD",
+           "created_at": "2026-09-12T10:00:00+00:00"},
+    already_refunded=Decimal("0.00"),
+    amount_usd=Decimal("50.00"),
+)
+
+
+@pytest.fixture(autouse=True)
+def verified_evidence():
+    """These tests are about the worker's DB writes; the evidence check and
+    its MCP calls are covered in tests/unit (no MCP server runs here)."""
+    with patch(
+        "src.worker.worker.verify_claim_evidence", new_callable=AsyncMock, return_value=VERIFIED
+    ) as mock:
+        yield mock
 
 
 @pytest_asyncio.fixture
@@ -110,6 +131,7 @@ async def test_worker_persists_judge_trail(db_session: AsyncSession):
         assert txn.judge_trail == {
             **fake_trail,
             "prompt_guard": {"status": "clear", "score": 0.001, "reason": None},
+            "evidence": VERIFIED.to_trail(),
             "execution": EXECUTED,
         }
 

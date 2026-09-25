@@ -1,6 +1,10 @@
 import pytest
 
-from tests.performance.chaos_idempotency import Outcome, build_submission_plan
+from tests.performance.chaos_idempotency import (
+    Outcome,
+    build_submission_plan,
+    orders_for_plan,
+)
 
 
 def test_plan_has_the_requested_number_of_duplicates() -> None:
@@ -81,3 +85,20 @@ def test_missing_and_stuck_claims_count_as_lost() -> None:
 
 def test_replays_absorbed_by_idempotency_are_not_failures() -> None:
     assert _outcome(already_executed_replays=4).failures() == []
+
+
+def test_every_claim_has_a_matching_order_to_pass_the_evidence_check() -> None:
+    """Part B checks each refund against its order before the judges, so the
+    run seeds one order per unique claim: same user, amount and currency."""
+    plan = build_submission_plan("chaos-1", total=20, dup_rate=0.25, seed=3)
+
+    orders = orders_for_plan(plan)
+
+    unique = {c.request_id: c.body for c in plan}
+    assert len(orders) == len(unique)
+    by_id = {o["order_id"]: o for o in orders}
+    for body in unique.values():
+        order = by_id[body["order_id"]]
+        assert order["user_id"] == body["user_id"]
+        assert order["amount"] == body["amount"]
+        assert order["currency"] == body["currency"]

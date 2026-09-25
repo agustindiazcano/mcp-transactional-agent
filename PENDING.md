@@ -4,12 +4,15 @@ Personal working notes: only what is still open, in priority order. Everything d
 
 ## Priority Order
 
-### 1 — 🔴 Evidence for the judges (Part B) — next
+### 1 — 🔴 Evidence for the judges (Part B) — built on `feat/judge-evidence`, PR next
 Real example 2026-09-23: Judge 2 rejected a valid $45.50 claim because it couldn't verify the 30-day window without the purchase date. The benchmark shows Judge 1 approving a $3,000 refund on a "$30 charger", and both judges approving a €4,800 claim (over the $5,000 limit) 4 of 5 times.
-- [ ] The worker fetches `get_order` / `get_refund_history` through MCP before judging.
-- [ ] A deterministic check (amount ≤ order, same currency, order owned by the claim's user, currency-aware limit) fails closed to `PENDING_HUMAN_REVIEW`.
-- [ ] Evidence injected into `<reference_context>` and recorded in `judge_trail["evidence"]`. Closes the CLAUDE.md §10 "refund exceeds the original amount" check.
-- [ ] The worker holds a DB transaction open from retrieval through the judges and the refund call ("idle in transaction" for seconds with real LLMs). Commit or close it after retrieval.
+- [x] The worker fetches `get_order` / `get_refund_history` through MCP before judging.
+- [x] A deterministic check (amount ≤ order, same currency, order owned by the claim's user, currency-aware limit) fails closed to `PENDING_HUMAN_REVIEW`.
+- [x] Evidence injected into `<reference_context>` and recorded in `judge_trail["evidence"]`. Closes the CLAUDE.md §10 "refund exceeds the original amount" check.
+- [x] The worker holds a DB transaction open from retrieval through the judges and the refund call ("idle in transaction" for seconds with real LLMs). Commit or close it after retrieval.
+- [ ] Check the cloud `worker-cloud` allowlist (`mcp-clients-json` secret) includes `get_order` and `get_refund_history` before the next cloud demo.
+- [ ] Re-run the chaos test against the stack (it now seeds an order per claim).
+- [ ] Dev DB: `ord-1001` has $182 refunded on a $45.50 order and `ord-1002` is fully refunded, from runs before the check; re-seed or pick other orders for demos.
 - [ ] After Part B, re-run the eval: `b2-reject-04` ($3,000 refund on a "$30 charger") must become impossible to approve.
 
 ### 2 — 🟡 LLMOps follow-ups (Promptfoo, Langfuse, RAG)

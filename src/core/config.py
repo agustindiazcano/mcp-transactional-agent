@@ -71,6 +71,14 @@ class Settings(BaseSettings):
     MCP_TOOL_MAX_RETRIES: int = 3
     MCP_TOOL_BACKOFF_BASE_SECONDS: float = 1.0
 
+    # Evidence check before the judges (src/core/services/evidence_check.py).
+    # Refunds above this, in USD, go to human review (docs/policies/refund_policy.md).
+    REFUND_HUMAN_REVIEW_THRESHOLD_USD: float = 5000.0
+    # Static rates to USD, updated by hand: deterministic and auditable, never
+    # fetched per claim. ECB reference rates of 2026-09-24 (GBP via EUR).
+    # A currency missing here fails the check closed.
+    FX_RATES_TO_USD: dict[str, float] = {"USD": 1.0, "EUR": 1.1367, "GBP": 1.3220}
+
     # Worker Settings
     MAX_LLM_RETRIES: int = 3
     IDEMPOTENCY_TTL_SECONDS: int = 86400

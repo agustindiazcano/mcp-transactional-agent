@@ -7,7 +7,7 @@ Only what is still open: read this first in every session. When an item here is 
 - **The GCP demo is DOWN** (Cloud SQL `STOPPED`, both worker pools at 0). The first `demo-up` is still untested: check Cloud SQL, the pools and one claim.
   - Dashboard: https://dashboard-993240087609.us-central1.run.app · Gateway: https://gateway-993240087609.us-central1.run.app
   - **The user is learning Terraform/GCP: one small explained step per turn.** Claude writes the `.tf`, runs `validate`/`plan` and commits; the user runs `apply`. Review each plan before `apply`.
-- **Open gap:** judge verdicts drift between runs (both judges approved a €4,800 claim, over $5,000, 4 of 5 times). Only a deterministic currency-aware check (Part B) closes it. Details: `docs/testing/judge_evaluation_results.md`.
+- **Part B (evidence check) is built on `feat/judge-evidence`, not merged yet.** Before the judges, the worker fetches `get_order` + `get_refund_history` through MCP and checks them in code (owner, currency, refund + earlier refunds ≤ order, ≤ $5,000 in USD at static ECB rates). A failure or an MCP outage → `PENDING_HUMAN_REVIEW`, no LLM call, ACK. Verified on the local stack (mocked LLMs): 5 claims, 1 `COMPLETED`, 4 stopped by the check with the right reason. Tests: 305 unit + integration green, `ruff`/`mypy --strict` clean. Judge verdict drift itself is still open (it's why the check exists).
 
 ## Decisions in force
 - **Vertex setup:** `langchain-google-genai` with `vertexai=True`, not the deprecated `ChatVertexAI`. Chat on `global`, embeddings on `us-central1`. ADC only, never an API key.
@@ -43,10 +43,9 @@ Only what is still open: read this first in every session. When an item here is 
 | 5 | 🟢 | Settings → Branches: branch protection on `main`, requiring the CI checks | ⬜ |
 
 ## Next, in order
-1. 🔴 **Part B, evidence for the judges — NEXT.** A real run rejected a valid claim for lack of the purchase date, and the judge benchmark shows Judge 1 approving a $3,000 refund on a "$30 charger": an amount-vs-order check in code stops both.
-   - Fetch `get_order` and `get_refund_history` through MCP before judging.
-   - A deterministic check (amount ≤ order, same currency, order owned by the user), failing closed to `PENDING_HUMAN_REVIEW`.
-   - Close the DB transaction the worker holds open across the judges.
+1. 🔴 **Part B: open the PR for `feat/judge-evidence`, merge.** Before any cloud demo with it:
+   - The cloud MCP client `worker-cloud`'s allowlist (the `mcp-clients-json` secret) must include `get_order` and `get_refund_history`; if not, every cloud claim with an order waits out the MCP timeouts, then goes to human review. Check it (it holds token hashes and allowlists, no plaintext token).
+   - Re-run the chaos test (`chaos_idempotency.py` now seeds an order per claim).
 2. 🟡 After Part B, re-run the eval: `b2-reject-04` ($3,000 refund on a "$30 charger") must become impossible to approve. Then the RAG chunker fix (headings separated from their rules, found by the eval) and re-ingestion.
 3. 🟡 **GCP leftovers:** test the first `demo-up`; Locust load test against Cloud Run (compare with the local baseline); `deletion_policy = "ABANDON"` on `google_sql_user.app` before any teardown.
 4. 🟡 **Langfuse follow-ups** (`PENDING.md` Step 3): custom model prices (Groq models, `gemini-embedding-001`), Langfuse keys in Secret Manager for Cloud Run, verdict scores.
