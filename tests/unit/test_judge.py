@@ -517,3 +517,64 @@ async def test_judge_generations_are_named_after_the_action(trace_exporter):
     assert {c.kwargs["config"]["run_name"] for c in judges.ainvoke.await_args_list} == {
         "generate-verdict"
     }
+
+
+def test_build_judge_messages_fences_the_proposal_and_the_context():
+    """The eval suite (evals/promptfoo) grades the judges on these exact messages,
+    so they're built in one public place instead of inline in _evaluate()."""
+    from src.agents.judge import JUDGE_SYSTEM_PROMPT, build_judge_messages
+
+    messages = build_judge_messages(
+        "execute_refund", {"amount": 45.5}, {"retrieved_policy": "30-day window"}
+    )
+
+    assert isinstance(messages[0], SystemMessage)
+    assert messages[0].content == JUDGE_SYSTEM_PROMPT
+    human = str(messages[1].content)
+    assert '<untrusted_data>\n{"action": "execute_refund", "arguments": {"amount": 45.5}}' in human
+    assert '<reference_context>\n{"retrieved_policy": "30-day window"}' in human
+
+
+@pytest.mark.asyncio
+async def test_evaluate_decision_sends_exactly_build_judge_messages():
+    """Production and the eval suite must send byte-identical messages."""
+    from src.agents.judge import build_judge_messages
+
+    args = {"transaction_id": "ord-1", "amount": 10.0}
+    context = {"request_id": "r-1"}
+    mock_llm = AsyncMock()
+    mock_llm.ainvoke.return_value = AIMessage(
+        content=json.dumps({"verdict": "APPROVE", "reason": "ok"})
+    )
+    with patch("src.agents.judge.get_llm", return_value=mock_llm):
+        await evaluate_decision(action_name="execute_refund", action_args=args, context=context)
+
+    sent = mock_llm.ainvoke.call_args.args[0]
+    expected = build_judge_messages("execute_refund", args, context)
+    assert [(type(m), m.content) for m in sent] == [(type(m), m.content) for m in expected]
+
+
+def test_parse_verdict_extracts_json_from_a_markdown_reply():
+    from src.agents.judge import parse_verdict
+
+    raw = 'Sure:\n```json\n{"verdict": "REJECT", "reason": "over the limit"}\n```'
+
+    assert parse_verdict(raw) == {"verdict": "REJECT", "reason": "over the limit"}
+
+
+def test_parse_verdict_reads_text_blocks_and_ignores_thinking():
+    from src.agents.judge import parse_verdict
+
+    blocks = [
+        {"type": "thinking", "thinking": '{"verdict": "REJECT"}'},
+        {"type": "text", "text": '{"verdict": "APPROVE", "reason": "fine"}'},
+    ]
+
+    assert parse_verdict(blocks)["verdict"] == "APPROVE"
+
+
+def test_parse_verdict_rejects_an_unknown_verdict():
+    from src.agents.judge import parse_verdict
+
+    with pytest.raises(ValueError):
+        parse_verdict('{"verdict": "MAYBE", "reason": "unsure"}')
