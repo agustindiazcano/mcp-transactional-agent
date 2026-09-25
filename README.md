@@ -167,9 +167,9 @@ Run on 2026-09-24: 50 human-labeled claims × 3 repeats × 4 models = 600 judgme
 A **false approval** is a claim that must not be auto-approved (outside the policy, requiring human review, or an attack) that the judge approved: the dangerous error. All four models blocked all 9 prompt-injection attempts on every repeat.
 
 **What it found:**
-- **No single model is safe alone, but the pair is.** Judge 1 approved a **$3,000 refund for a "$30 charger"** (rationalizing "3000 cents") and a €4,800 claim against a $5,000 limit. Judge 2 rejected both, and in 150 paired judgments the two never both approved a claim they shouldn't have. Cross-model judges work as designed.
-- **The tie-breaker undoes it.** A disagreement escalates to the Supreme Court, which runs the same model and prompt as Judge 1, and Gemini gave the same verdict on every repeat. So it would most likely repeat Judge 1's wrong approval (inferred; measuring the full cascade is next). The fixes, in order: deterministic checks before the judges (refund ≤ order amount, same currency) and a different Supreme Court model (gemini-3.8-flash got both cases right).
-- **Determinism is measured, not assumed:** the Gemini models gave the same verdict on all 3 repeats of every case. GPT-OSS was stable on 49 of 50; the exception was an empty reply to a claim in Spanish, which production's parser failed closed to REJECT.
+- **No single model is safe alone.** Judge 1 approved a **$3,000 refund for a "$30 charger"** (rationalizing "3000 cents") and a €4,800 claim against a $5,000 limit. In this run Judge 2 rejected both, and the two never both approved wrongly. But a later run of the full cascade had both judges approve the euro claim 4 times out of 5, so the pair helps without guaranteeing anything.
+- **The tie-breaker ran Judge 1's model**, so on a disagreement it would repeat Judge 1's error. **Fixed:** the Supreme Court now runs `gemini-3.8-flash` (`SUPREME_COURT_MODEL`), the benchmark's most accurate model, and it decided correctly every time it was reached in the full cascade (6 of 6). The remaining gap needs no LLM: deterministic checks before the judges (refund ≤ order amount, currency-aware limits), next.
+- **Determinism is measured, not assumed:** within one run the Gemini models gave the same verdict on all 3 repeats of every case (GPT-OSS on 49 of 50). Between runs a few hours apart, verdicts on the same inputs flipped completely, so back-to-back repeats understate drift.
 - **It found a real RAG bug:** the chunker can leave a policy heading at the end of one chunk and its rules in the next, so retrieval can return a heading with no rules. Logged for a test-first fix.
 
 ### Tracing with Langfuse
@@ -922,6 +922,7 @@ uvicorn src.api.main:app --reload --port 8000  # terminal 4
 | `VERTEX_LOCATION` | No | Vertex location for chat (default `global`; the Gemini 3.5 models aren't served regionally) |
 | `VERTEX_EMBEDDING_LOCATION` | No | Vertex location for embeddings (default `us-central1`: ~1 s per embedding vs ~12 s on `global`, measured locally) |
 | `VERTEX_MODEL` / `VERTEX_EMBEDDING_MODEL` | No | Defaults `gemini-3.5-flash-lite` / `gemini-embedding-001` |
+| `SUPREME_COURT_MODEL` | No | Default `gemini-3.8-flash`. The Supreme Court's own Gemini model (AI Studio or Vertex), different from Judge 1's so a tie-break is an independent opinion; chosen by the [Judge Benchmark](#judge-benchmark-promptfoo) |
 | `GROQ_API_KEY` | Conditional | Required when `LLM_PROVIDER=groq` |
 | `AWS_ACCESS_KEY_ID` | Conditional | Required when `LLM_PROVIDER=bedrock` |
 | `AWS_SECRET_ACCESS_KEY` | Conditional | Required when `LLM_PROVIDER=bedrock` |
@@ -1043,7 +1044,9 @@ Beyond the phases above, the following are candidate directions, not planned wor
 
 ## Author
 
-Agustin Diaz-Cano, MS Candidate
+**Agustin Diaz-Cano** M.Sc. Candidate, Information Systems Engineering - [UTN](https://frba.utn.edu.ar/)
+
+[LinkedIn](https://www.linkedin.com/in/agustindiazcano/) · [Portfolio](http://www.agustindiazcano.com/) · [ORCID](https://orcid.org/0009-0001-4336-490X) · [Google Scholar](https://scholar.google.com/citations?user=qUcRD6UAAAAJ&hl=en)
 
 ---
 
