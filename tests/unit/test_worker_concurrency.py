@@ -478,7 +478,10 @@ async def test_a_claim_without_refund_details_is_judged_without_evidence() -> No
 # proposal doesn't override order_id/amount/currency -- the claim's own
 # structured fields, already validated at the gateway, still drive evidence
 # and execution exactly as before this phase. A non-refund intent
-# (clarify/out_of_scope) is never evidence-checked or judged.
+# (clarify/out_of_scope) is never evidence-checked or judged. A 'clarify'
+# intent routes to NEEDS_CLARIFICATION (there is a question to surface, not
+# just a claim for a human to review); 'out_of_scope' still routes to
+# PENDING_HUMAN_REVIEW (nothing to ask the user, it's simply not a refund).
 
 
 @pytest.mark.asyncio
@@ -501,7 +504,7 @@ async def test_front_desk_clarify_intent_skips_evidence_and_judges() -> None:
     mocks["judge"].assert_not_awaited()
     mocks["executor"].assert_not_awaited()
     locked_row = _locked_row(db_session)
-    assert locked_row.status == "PENDING_HUMAN_REVIEW"
+    assert locked_row.status == "NEEDS_CLARIFICATION"
     assert locked_row.judge_trail["front_desk"]["intent"] == "clarify"
     assert locked_row.judge_trail["front_desk"]["reason"] == "What order and amount?"
     message.ack.assert_awaited_once()
@@ -636,7 +639,7 @@ async def test_reclassification_to_clarify_replaces_the_human_review_reason() ->
 
     assert mocks["judge"].await_count == 1
     locked_row = _locked_row(db_session)
-    assert locked_row.status == "PENDING_HUMAN_REVIEW"
+    assert locked_row.status == "NEEDS_CLARIFICATION"
     assert locked_row.judge_trail["front_desk_retry"]["intent"] == "clarify"
     assert locked_row.judge_trail["front_desk_retry"]["reason"] == "Which order is this about, exactly?"
 

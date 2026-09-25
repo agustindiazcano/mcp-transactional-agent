@@ -248,7 +248,16 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
             # 1.B security boundary, with request_id as the tool's idempotency key.
             approved = judge_result.get("verdict") == "APPROVE"
             execution: dict[str, Any] | None = None
-            final_status = "PENDING_HUMAN_REVIEW"
+            # A 'clarify' intent (initial proposal or the one reclassification
+            # retry) has a question for the user, not just a claim waiting on
+            # a human reviewer -- NEEDS_CLARIFICATION surfaces that distinctly.
+            # 'out_of_scope' has nothing to ask and still goes to
+            # PENDING_HUMAN_REVIEW.
+            final_status = (
+                "NEEDS_CLARIFICATION"
+                if front_desk_intent == "clarify"
+                else "PENDING_HUMAN_REVIEW"
+            )
             order_id = body.get("order_id")
             amount = body.get("amount")
 
@@ -314,13 +323,13 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                 )
             elif front_desk_reason is not None and retry_proposal is not None:
                 logger.warning(
-                    f"❌ Transaction {request_id} → PENDING_HUMAN_REVIEW: judge "
+                    f"❌ Transaction {request_id} → {final_status}: judge "
                     f"rejected, and the Front-Desk reclassified as "
                     f"intent={front_desk_intent!r} on review. Reason: {front_desk_reason}"
                 )
             elif front_desk_reason is not None:
                 logger.warning(
-                    f"❌ Transaction {request_id} → PENDING_HUMAN_REVIEW: Front-Desk "
+                    f"❌ Transaction {request_id} → {final_status}: Front-Desk "
                     f"proposed intent={front_desk_intent!r} (not a refund), judges not "
                     f"called. Reason: {front_desk_reason}"
                 )
