@@ -264,7 +264,14 @@ async def test_approved_claim_without_refund_details_goes_to_human_review() -> N
 
 
 @pytest.mark.asyncio
-async def test_all_retries_exhausted_routes_to_human_review() -> None:
+async def test_judge_reject_routes_to_human_review_without_retrying() -> None:
+    """The primary agent's proposal is still hardcoded (Phase 1.E not
+    implemented yet), so every retry would send evaluate_decision the exact
+    same action_name/action_args as the first call. Retrying an unchanged
+    proposal isn't self-correction -- it's a re-vote against judges whose
+    verdicts aren't perfectly stable between runs, which only inflates the
+    false-approval rate. So a REJECT is called exactly once, not retried up
+    to MAX_LLM_RETRIES."""
     message = _make_message(BODY)
     db_session = _make_db_session()
     reject_result = {"verdict": "REJECT", "reason": "Missing amount field."}
@@ -278,7 +285,7 @@ async def test_all_retries_exhausted_routes_to_human_review() -> None:
         await process_message(message, db_session)
 
     message.ack.assert_awaited_once()
-    assert mocks["judge"].await_count == 2
+    assert mocks["judge"].await_count == 1
     mocks["executor"].assert_not_awaited()
     assert _locked_row(db_session).status == "PENDING_HUMAN_REVIEW"
 

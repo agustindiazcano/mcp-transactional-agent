@@ -166,11 +166,21 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
             _ = get_llm()
 
             # ── Step 3: Self-Correction Loop ────────────────────────────────────
-            retries = 0
-            max_retries = settings.MAX_LLM_RETRIES
+            # The primary agent's proposal is still hardcoded (Phase 1.E is not
+            # implemented yet): mock_primary_action/mock_primary_args are the
+            # same on every attempt, so there is nothing for a retry to
+            # correct. Re-asking the identical question to the same judge
+            # ensemble until it happens to say APPROVE is a re-vote, not
+            # self-correction -- with verdicts that aren't perfectly stable
+            # between runs (docs/testing/judge_evaluation_results.md), that
+            # would only inflate the false-approval rate. So this evaluates
+            # the proposal exactly once. Once Phase 1.E's real proposer can
+            # revise its proposal from judge feedback, this becomes a real
+            # loop again: retry only when the new proposal actually differs
+            # from the one just rejected, up to MAX_LLM_RETRIES.
             judge_result: dict[str, Any] = {}
 
-            while evidence_failure is None and retries < max_retries:
+            if evidence_failure is None:
                 # In the real system this invokes the LangChain agent loop.
                 mock_primary_action = "execute_refund"
                 mock_primary_args = body
@@ -181,13 +191,9 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                     context=judge_context,
                 )
 
-                if judge_result.get("verdict") == "APPROVE":
-                    break
-                else:
-                    retries += 1
+                if judge_result.get("verdict") != "APPROVE":
                     logger.warning(
-                        f"⚠️  Judge rejected (attempt {retries}/{max_retries}). "
-                        f"Reason: {judge_result.get('reason')}"
+                        f"⚠️  Judge rejected. Reason: {judge_result.get('reason')}"
                     )
 
             # ── Step 4: Deterministic execution via MCP ─────────────────────────
@@ -268,8 +274,8 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                 )
             else:
                 logger.warning(
-                    f"❌ Transaction {request_id} → PENDING_HUMAN_REVIEW "
-                    f"after {max_retries} attempts. Final reason: {judge_result.get('reason')}"
+                    f"❌ Transaction {request_id} → PENDING_HUMAN_REVIEW. "
+                    f"Final reason: {judge_result.get('reason')}"
                 )
 
             await db_session.commit()
@@ -280,9 +286,7 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                     "reason": evidence_failure or judge_result.get("reason"),
                 },
                 metadata={
-                    "judge_attempts": 0
-                    if evidence_failure is not None
-                    else min(retries + 1, max_retries)
+                    "judge_attempts": 0 if evidence_failure is not None else 1,
                 },
             )
 
