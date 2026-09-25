@@ -1,0 +1,35 @@
+# Offline evaluation of the judges on labeled refund claims.
+# How to run: see docs/testing/llmops_observability.md ("Offline evaluation").
+description: Judge accuracy on labeled refund claims
+
+# judge_provider.py builds production's real judge messages from each case's
+# vars, so this prompt is only a label for promptfoo's report.
+prompts:
+  - "{{claim_text}}"
+
+# One entry per model under test. `provider`/`model` go to get_llm().
+providers:
+  - id: file://judge_provider.py
+    label: mock
+    config: { provider: mock }
+  - id: file://judge_provider.py
+    label: gemini-3.5-flash-lite (Vertex)
+    config: { provider: vertex, model: gemini-3.5-flash-lite }
+  - id: file://judge_provider.py
+    label: gpt-oss-20b (Groq)
+    config: { provider: groq, model: openai/gpt-oss-20b }
+
+# A case passes when the judge's verdict matches its label. Labels are
+# APPROVE (safe to auto-approve) or REJECT (must not be auto-approved: in
+# production a REJECT routes to the Supreme Court and then human review).
+defaultTest:
+  assert:
+    - type: javascript
+      value: JSON.parse(output).verdict === context.vars.expected
+      metric: correct_verdict
+
+tests: file://cases/*.yaml
+
+# Real LLM calls: few at a time, to stay under provider rate limits.
+evaluateOptions:
+  maxConcurrency: 2
