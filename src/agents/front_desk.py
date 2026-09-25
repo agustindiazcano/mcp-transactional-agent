@@ -63,19 +63,33 @@ def _fence(tag: str, payload: str) -> str:
     return f"<{tag}>\n{escaped}\n</{tag}>"
 
 
-def build_front_desk_messages(claim_text: str) -> list[BaseMessage]:
+def build_front_desk_messages(
+    claim_text: str, rejection_feedback: str | None = None
+) -> list[BaseMessage]:
     """The messages the Front-Desk receives: the system prompt, then the
-    claim's free text fenced as untrusted data.
+    claim's free text fenced as untrusted data, and -- on a self-correction
+    retry (worker.py, Phase 1.E step 4) -- the judges' own rejection reason,
+    so the Front-Desk can reconsider whether this was really a refund at all.
+
+    `rejection_feedback` is our own deterministic judge output, not
+    user-supplied text, so it is not fenced as untrusted data the way
+    `claim_text` is.
 
     Public so an offline eval can grade the Front-Desk on the exact messages
     production sends, the same rule judge.py's `build_judge_messages`
     follows (CLAUDE.md's Promptfoo section).
     """
-    user_prompt = (
-        "Customer message:\n"
-        f"{_fence('untrusted_data', claim_text)}\n\n"
-        "Propose an action based on the rules above."
-    )
+    user_prompt = f"Customer message:\n{_fence('untrusted_data', claim_text)}\n\n"
+    if rejection_feedback:
+        user_prompt += (
+            "A specialist already reviewed a 'refund' proposal for this same message "
+            "and rejected it for this reason:\n"
+            f"{rejection_feedback}\n\n"
+            "Reconsider your proposal in light of that. If the message doesn't "
+            "actually support a complete, verifiable refund request, propose "
+            "'clarify' or 'out_of_scope' instead of 'refund' again.\n\n"
+        )
+    user_prompt += "Propose an action based on the rules above."
     return [SystemMessage(content=FRONT_DESK_SYSTEM_PROMPT), HumanMessage(content=user_prompt)]
 
 
@@ -105,8 +119,17 @@ def _clarify_fallback(reason: str) -> ClaimProposal:
     return ClaimProposal(intent="clarify", reason=reason)
 
 
-async def propose_action(claim_text: str) -> ClaimProposal:
+async def propose_action(
+    claim_text: str, rejection_feedback: str | None = None
+) -> ClaimProposal:
     """Turn ``claim_text`` into a `ClaimProposal`.
+
+    ``rejection_feedback``, when given, is the judges' own reason for
+    rejecting a prior `refund` proposal for this same claim (worker.py's
+    self-correction retry, Phase 1.E step 4) -- it lets the Front-Desk
+    reconsider its classification, not revise refund details the judges
+    never saw (those come from the claim's own structured fields, not the
+    proposal; see worker.py's Step 2.55 for the intent-gate-only design).
 
     Never raises: a malformed reply, an invalid proposal shape, or an LLM
     failure all fail closed to `intent="clarify"` rather than surfacing a
@@ -115,17 +138,18 @@ async def propose_action(claim_text: str) -> ClaimProposal:
     with observe(
         "propose-action",
         as_type="chain",
-        input={"claim_text": claim_text},
+        input={"claim_text": claim_text, "rejection_feedback": rejection_feedback},
+        metadata={"retry": rejection_feedback is not None},
     ) as observation:
-        proposal = await _propose(claim_text)
+        proposal = await _propose(claim_text, rejection_feedback)
         observation.update(output=proposal.model_dump())
         return proposal
 
 
-async def _propose(claim_text: str) -> ClaimProposal:
+async def _propose(claim_text: str, rejection_feedback: str | None = None) -> ClaimProposal:
     provider = provider_for_role("front_desk")
     model_name = FRONT_DESK_MOCK_MODEL if provider == "mock" else model_for_role("front_desk")
-    messages = build_front_desk_messages(claim_text)
+    messages = build_front_desk_messages(claim_text, rejection_feedback)
 
     try:
         llm = get_llm(provider=provider, temperature=0.0, model_name=model_name)

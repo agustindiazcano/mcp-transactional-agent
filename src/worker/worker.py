@@ -202,6 +202,7 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
             # real loop again: retry only when the new proposal actually
             # differs from the one just rejected, up to MAX_LLM_RETRIES.
             judge_result: dict[str, Any] = {}
+            retry_proposal: ClaimProposal | None = None
 
             if evidence_failure is None and front_desk_reason is None:
                 action_name = "execute_refund"
@@ -217,6 +218,29 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                     logger.warning(
                         f"⚠️  Judge rejected. Reason: {judge_result.get('reason')}"
                     )
+
+                    # ── Step 3.5: Front-Desk reclassification (self-correction) ──
+                    # Narrow scope (2026-09-25 decision): a REJECT can't change
+                    # what the judges just evaluated -- action_args is still the
+                    # claim's own body, per Step 2.55's intent-gate-only design
+                    # -- so re-running the same judges on the same args would be
+                    # exactly the re-vote this file has always refused to do
+                    # (see Step 3's comment). What a REJECT *can* change is
+                    # whether the claim was correctly classified as a refund at
+                    # all: the Front-Desk gets exactly one more look, told why a
+                    # specialist rejected it. If it now says clarify/
+                    # out_of_scope, that reclassification -- not the raw judge
+                    # rationale -- becomes the human-review reason, matching the
+                    # Feedback Loop's "never a raw judge rationale" contract
+                    # (Section 5a-iv, item 3). If it still says refund, there is
+                    # nothing new to act on and the judges are not called again.
+                    reclassification = await propose_action(
+                        claim_text, rejection_feedback=judge_result.get("reason")
+                    )
+                    if reclassification.intent != "refund":
+                        retry_proposal = reclassification
+                        front_desk_reason = reclassification.reason
+                        front_desk_intent = reclassification.intent
 
             # ── Step 4: Deterministic execution via MCP ─────────────────────────
             # The LLM never pushes the button: only this code calls execute_refund,
@@ -269,6 +293,8 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                 trail = {**(trail or {}), "prompt_guard": guard_result.to_trail()}
             if proposal is not None:
                 trail = {**(trail or {}), "front_desk": proposal.model_dump()}
+            if retry_proposal is not None:
+                trail = {**(trail or {}), "front_desk_retry": retry_proposal.model_dump()}
             if evidence_trail is not None:
                 trail = {**(trail or {}), "evidence": evidence_trail}
             if execution is not None:
@@ -285,6 +311,12 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                 logger.error(
                     f"💥 Transaction {request_id} APPROVED but refund execution failed: "
                     f"{execution}"
+                )
+            elif front_desk_reason is not None and retry_proposal is not None:
+                logger.warning(
+                    f"❌ Transaction {request_id} → PENDING_HUMAN_REVIEW: judge "
+                    f"rejected, and the Front-Desk reclassified as "
+                    f"intent={front_desk_intent!r} on review. Reason: {front_desk_reason}"
                 )
             elif front_desk_reason is not None:
                 logger.warning(
@@ -316,9 +348,7 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                     "reason": front_desk_reason or evidence_failure or judge_result.get("reason"),
                 },
                 metadata={
-                    "judge_attempts": (
-                        0 if front_desk_reason is not None or evidence_failure is not None else 1
-                    ),
+                    "judge_attempts": 1 if judge_result else 0,
                 },
             )
 
