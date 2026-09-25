@@ -5,7 +5,8 @@ black background, one phosphor accent for normal state, red reserved
 strictly for alert states.
 
 Real Transaction.status values (worker.py): PROCESSING, COMPLETED,
-PENDING_HUMAN_REVIEW, BLOCKED_MALICIOUS_PROMPT, EXECUTION_FAILED (approved,
+PENDING_HUMAN_REVIEW, NEEDS_CLARIFICATION (the Front-Desk has a question for
+the user, Phase 1.E), BLOCKED_MALICIOUS_PROMPT, EXECUTION_FAILED (approved,
 but the MCP refund call failed after every retry). There is no PENDING or
 REJECTED status -- a judge reject routes to PENDING_HUMAN_REVIEW, not a
 separate terminal state.
@@ -18,7 +19,12 @@ PHOSPHOR_DIM = "#1f8f5c"
 ALERT_RED = "#ff3b3b"
 TEXT_MUTED = "#5c7a70"
 
-ALERT_STATUSES = {"PENDING_HUMAN_REVIEW", "BLOCKED_MALICIOUS_PROMPT", "EXECUTION_FAILED"}
+ALERT_STATUSES = {
+    "PENDING_HUMAN_REVIEW",
+    "NEEDS_CLARIFICATION",
+    "BLOCKED_MALICIOUS_PROMPT",
+    "EXECUTION_FAILED",
+}
 
 CSS = f"""
 <style>
