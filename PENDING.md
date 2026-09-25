@@ -13,7 +13,7 @@ Part B (below) is merged, so this is unblocked. Replaces `worker.py`'s hardcoded
 - [ ] `NEEDS_CLARIFICATION` outcome: a new status with the agent's question, shown on the dashboard.
 - [ ] Feedback loop: the objective verdict contract (`REJECTED: <objective reason>`, never raw judge rationale) that the Front-Desk phrases into a reply, without re-interpreting or overriding it.
 - [ ] Promptfoo eval for the proposer: ~30 labeled claims (user reviews labels), accuracy of extracted intent/arguments.
-- [ ] A real run on Vertex, docs, PR. This is where the $100 Anthropic cloud credits start getting spent.
+- [ ] A real run on Vertex, docs, PR. Real cost here is Gemini/Groq/Vertex API usage, a separate budget from the $100 Anthropic cloud credits (those cover Claude Code cloud sessions, not LLM provider calls).
 - [ ] Chat abuse limits (only once the chat variant is built): per-user message rate and daily token budget ([analysis](docs/architecture/api_abuse_protection.md), section 4).
 - [ ] Re-measure cost per transaction once the primary agent is real, averaged over more transactions (today: one happy-path measurement, ~$0.0004).
 
