@@ -86,7 +86,7 @@ def get_llm(provider: str | None = None, temperature: float = 0.7, model_name: s
         # Credentials come from ADC (the Cloud Run service account, or
         # GOOGLE_APPLICATION_CREDENTIALS locally) -- no API key.
         return cast(BaseChatModel, ChatGoogleGenerativeAI(
-            model=settings.VERTEX_MODEL,
+            model=model_name or settings.VERTEX_MODEL,
             vertexai=True,
             project=settings.VERTEX_PROJECT or None,
             location=settings.VERTEX_LOCATION,

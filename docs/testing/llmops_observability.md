@@ -23,6 +23,23 @@ A labeled set of about 100 claims, run against the judges' real prompts and mode
 - **Red-teaming:** Promptfoo's prompt-injection red-team probes generate adversarial inputs beyond the hand-written ones.
 - **In CI:** a change to a prompt or a model that drops accuracy below the agreed threshold fails the build. Each run makes real LLM calls, so it runs when prompts or models change (or on demand), with Promptfoo's cache, instead of on every push.
 
+### Running it (started 2026-09-24)
+The harness is in `evals/promptfoo/`:
+- `judge_provider.py` runs **one judge** on a labeled claim with production's own code: `build_judge_messages()` for the messages, `parse_verdict()` for the reply, and `get_llm()` for the model. The policy text is the real chunk ingestion stores (`chunk_markdown()`), the one holding the case's `policy_section` rules, so the judge is graded given a correct retrieval.
+- `promptfooconfig.yaml` lists one provider entry per model (plus `mock` for free plumbing runs). A case passes when the verdict equals its `expected` label.
+- `cases/*.yaml` holds the labeled claims. `expected: REJECT` means "must not be auto-approved": wrong outcome, needs human review, or an attack.
+
+From the repo root (PowerShell), with ADC logged in for Vertex and `GROQ_API_KEY` in `.env`:
+
+```powershell
+$env:PROMPTFOO_PYTHON = "$PWD\.venv\Scripts\python.exe"
+npx promptfoo@0.123.1 eval -c evals/promptfoo/promptfooconfig.yaml --filter-providers mock   # free
+npx promptfoo@0.123.1 eval -c evals/promptfoo/promptfooconfig.yaml --filter-providers "Vertex|Groq"
+npx promptfoo@0.123.1 view   # browse the results
+```
+
+The `Event loop is closed` lines in the output are harmless: an HTTP client closing after promptfoo's per-call event loop ends.
+
 ## 3. Tracing with Langfuse (implemented)
 
 One trace per claim (`process-claim`), with its trace id derived from `request_id`. Under it, each step is a typed observation: the Prompt Guard as a `guardrail`, retrieval as a `retriever` with an `embedding` child, the Double Judge as a `chain` holding one `evaluator` per judge (Supreme Court included), and the refund as a `tool`. Each LLM call is a `generation` recorded by Langfuse's LangChain callback, with its prompt, output, reasoning (when the model returns it), latency, tokens, and cost. A failed or escalated claim is one inspectable trace instead of log lines stitched together by `request_id`.

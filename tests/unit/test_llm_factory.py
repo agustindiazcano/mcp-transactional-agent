@@ -258,3 +258,14 @@ def test_gemini_returns_its_thoughts_so_traces_capture_the_reasoning():
             get_llm(provider=provider, temperature=0.0)
 
         assert MockGemini.call_args.kwargs["include_thoughts"] is True
+
+
+def test_get_llm_vertex_model_name_overrides_the_configured_model():
+    """The model benchmark compares several Gemini models on Vertex in one run,
+    so an explicit model_name wins over VERTEX_MODEL (which stays the default)."""
+    mock_settings = Settings(LLM_PROVIDER="vertex", VERTEX_MODEL="gemini-default")
+    with patch("src.agents.llm_factory.settings", mock_settings), \
+         patch("src.agents.llm_factory.ChatGoogleGenerativeAI") as MockVertex:
+        get_llm(temperature=0.0, model_name="gemini-other")
+
+        assert MockVertex.call_args.kwargs["model"] == "gemini-other"

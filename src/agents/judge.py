@@ -1,9 +1,10 @@
 import json
 import logging
+import re
 from typing import Any, cast
 
 import structlog
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from src.agents.llm_factory import get_llm
 from src.agents.provider_roles import provider_for_role
@@ -53,6 +54,49 @@ _JUDGE_OBSERVATION_NAMES = {
 }
 
 
+def build_judge_messages(
+    action_name: str, action_args: dict[str, Any], context: dict[str, Any]
+) -> list[BaseMessage]:
+    """The messages every judge receives: the system prompt, then the proposal
+    fenced as untrusted data and the context fenced as reference.
+
+    Public so the offline eval suite (evals/promptfoo) grades the judges on the
+    exact messages production sends, not on a copy of the prompt.
+    """
+    user_prompt = (
+        "Proposed action and its arguments (may contain end-user text):\n"
+        f"{_fence('untrusted_data', {'action': action_name, 'arguments': action_args})}\n\n"
+        "Reference context:\n"
+        f"{_fence('reference_context', context)}\n\n"
+        "Evaluate this proposed action based on the criteria."
+    )
+    return [SystemMessage(content=JUDGE_SYSTEM_PROMPT), HumanMessage(content=user_prompt)]
+
+
+def parse_verdict(content_raw: str | list[str | dict[Any, Any]]) -> dict[str, Any]:
+    """Parse a judge reply into {"verdict", "reason"}.
+
+    Reads only text blocks (a model's thinking blocks are ignored), extracts the
+    JSON object even when wrapped in markdown, and raises ValueError (or
+    json.JSONDecodeError) unless the verdict is APPROVE or REJECT.
+    """
+    # Newer LangChain replies are a list of content blocks.
+    if isinstance(content_raw, list):
+        content = "".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content_raw
+        )
+    else:
+        content = str(content_raw)
+
+    match = re.search(r"\{.*\}", content.strip(), re.DOTALL)
+    result = json.loads(match.group(0) if match else content.strip())
+
+    if not isinstance(result, dict) or result.get("verdict") not in ("APPROVE", "REJECT"):
+        raise ValueError("Invalid verdict returned by judge.")
+    return cast(dict[str, Any], result)
+
+
 async def _run_single_judge(provider: str, temperature: float, messages: list[Any], stage: str) -> dict[str, Any]:
     """Run one judge, traced as a Langfuse `evaluator`; fails closed to REJECT.
 
@@ -85,37 +129,12 @@ async def _invoke_judge(
         if usage is not None:
             usage_logger.info("llm_token_usage", stage=stage, provider=provider, **usage)
 
-        content_raw = response.content
-        
-        # Handle new LangChain format where content might be a list of blocks
-        if isinstance(content_raw, list):
-            content = "".join([
-                block.get("text", "") if isinstance(block, dict) else str(block) 
-                for block in content_raw
-            ])
-        else:
-            content = str(content_raw)
-            
-        content = content.strip()
-        
-        # Extract JSON block using regex to handle variations in markdown formatting
-        import re
-        match = re.search(r'\{.*\}', content, re.DOTALL)
-        if match:
-            content = match.group(0)
-            
         try:
-            result = json.loads(content)
+            return parse_verdict(response.content), None
         except json.JSONDecodeError:
             logger.error(f"Failed to parse JSON. Raw LLM output: {response.content}")
             raise
-        
-        # Validate format
-        if "verdict" not in result or result["verdict"] not in ["APPROVE", "REJECT"]:
-            raise ValueError("Invalid verdict returned by judge.")
-            
-        return cast(dict[str, Any], result), None
-        
+
     except Exception as e:  # noqa: BLE001
         logger.error(f"Judge evaluation failed: {e}")
         # Fail safe: if the judge crashes or hallucinates, reject the action.
@@ -148,19 +167,8 @@ async def _evaluate(action_name: str, action_args: dict[str, Any], context: dict
     """Double Judge plus Supreme Court cascade; see evaluate_decision()."""
     import asyncio
 
-    user_prompt = (
-        "Proposed action and its arguments (may contain end-user text):\n"
-        f"{_fence('untrusted_data', {'action': action_name, 'arguments': action_args})}\n\n"
-        "Reference context:\n"
-        f"{_fence('reference_context', context)}\n\n"
-        "Evaluate this proposed action based on the criteria."
-    )
-    
-    messages = [
-        SystemMessage(content=JUDGE_SYSTEM_PROMPT),
-        HumanMessage(content=user_prompt)
-    ]
-    
+    messages = build_judge_messages(action_name, action_args, context)
+
     # Run both judges concurrently (temperature=0.0 for determinism).
     # LLM construction happens inside _run_single_judge so a missing optional
     # provider package (e.g. langchain-groq) fails that judge closed to REJECT
