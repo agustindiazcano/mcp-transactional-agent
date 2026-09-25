@@ -36,3 +36,15 @@ def provider_for_role(role: LlmRole) -> str:
     if configured == "vertex" and provider == "gemini":
         return "vertex"
     return provider
+
+
+def model_for_role(role: LlmRole) -> str | None:
+    """Return the model ``role`` runs on, or None for its provider's default.
+
+    Only the Supreme Court has its own model: on Judge 1's model it would repeat
+    Judge 1's verdict on the very disagreements it exists to break (measured in
+    docs/testing/judge_evaluation_results.md). The mock takes no model name.
+    """
+    if role == "supreme_court" and provider_for_role(role) in ("gemini", "vertex"):
+        return settings.SUPREME_COURT_MODEL
+    return None

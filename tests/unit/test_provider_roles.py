@@ -51,3 +51,38 @@ def test_vertex_mode_moves_the_gemini_roles_to_vertex(monkeypatch: pytest.Monkey
 
 def test_default_pairing_covers_every_role() -> None:
     assert set(DEFAULT_ROLE_PROVIDERS) == set(ALL_ROLES)
+
+
+@pytest.mark.parametrize("configured", ["gemini", "vertex"])
+def test_supreme_court_runs_its_own_model(monkeypatch: pytest.MonkeyPatch, configured: str) -> None:
+    """The judge benchmark (docs/testing/judge_evaluation_results.md) showed that a
+    Supreme Court on Judge 1's model repeats Judge 1's verdict on a disagreement,
+    so it gets its own model (SUPREME_COURT_MODEL, default gemini-3.8-flash)."""
+    from src.agents.provider_roles import model_for_role
+
+    monkeypatch.setattr(settings, "LLM_PROVIDER", configured)
+    monkeypatch.setattr(settings, "SUPREME_COURT_MODEL", "gemini-test-court")
+
+    assert model_for_role("supreme_court") == "gemini-test-court"
+
+
+@pytest.mark.parametrize("role", ["judge1", "judge2", "prompt_guard"])
+def test_other_roles_keep_their_providers_default_model(role: LlmRole) -> None:
+    from src.agents.provider_roles import model_for_role
+
+    assert model_for_role(role) is None
+
+
+def test_mock_mode_gives_the_supreme_court_no_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The mock ignores model names except the Prompt Guard's; pass none."""
+    from src.agents.provider_roles import model_for_role
+
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "mock")
+
+    assert model_for_role("supreme_court") is None
+
+
+def test_supreme_court_default_is_the_benchmarked_model() -> None:
+    from src.core.config import Settings
+
+    assert Settings().SUPREME_COURT_MODEL == "gemini-3.8-flash"

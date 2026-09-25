@@ -100,7 +100,7 @@ def get_llm(provider: str | None = None, temperature: float = 0.7, model_name: s
         if ChatGoogleGenerativeAI is None:
             raise ImportError("langchain-google-genai is not installed")
         return cast(BaseChatModel, ChatGoogleGenerativeAI(
-            model="gemini-3.5-flash-lite",
+            model=model_name or "gemini-3.5-flash-lite",
             google_api_key=settings.GEMINI_API_KEY,
             temperature=temperature,
             include_thoughts=True,

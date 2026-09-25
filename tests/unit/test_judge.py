@@ -578,3 +578,26 @@ def test_parse_verdict_rejects_an_unknown_verdict():
 
     with pytest.raises(ValueError):
         parse_verdict('{"verdict": "MAYBE", "reason": "unsure"}')
+
+
+@pytest.mark.asyncio
+async def test_supreme_court_is_built_with_its_own_model_and_judges_are_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the Supreme Court gets SUPREME_COURT_MODEL; the base judges keep
+    their provider's default model."""
+    monkeypatch.setattr(settings, "SUPREME_COURT_MODEL", "gemini-test-court")
+    replies = iter(["APPROVE", "REJECT", "APPROVE"])  # judges disagree -> escalate
+
+    def fake_get_llm(provider: str, temperature: float, model_name: str | None = None) -> AsyncMock:
+        llm = AsyncMock()
+        llm.ainvoke.return_value = AIMessage(
+            content=json.dumps({"verdict": next(replies), "reason": "r"})
+        )
+        return llm
+
+    with patch("src.agents.judge.get_llm", side_effect=fake_get_llm) as spy:
+        await evaluate_decision("execute_refund", {"amount": 1.0}, {"request_id": "r"})
+
+    models = [c.kwargs.get("model_name") for c in spy.call_args_list]
+    assert models == [None, None, "gemini-test-court"]
