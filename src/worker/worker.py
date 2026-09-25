@@ -6,9 +6,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.agents.front_desk import propose_action
 from src.agents.judge import evaluate_decision
 from src.agents.llm_factory import get_embeddings, get_llm, resolve_provider
 from src.agents.prompt_guard import GuardResult, scan_for_injection
+from src.agents.proposal import ClaimProposal
 from src.core.config import settings
 from src.core.currency import Currency
 from src.core.models import Transaction
@@ -130,13 +132,33 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
             if retrieved_policy:
                 judge_context["retrieved_policy"] = retrieved_policy
 
+            # ── Step 2.55: Front-Desk proposal (Phase 1.E, intent gate) ─────────
+            # propose_action() replaces the hardcoded mock_primary_action: the
+            # primary agent's own classification of the claim decides whether
+            # there is a refund to evaluate at all. A non-refund intent
+            # (clarify/out_of_scope) is never evidence-checked or judged --
+            # there is nothing yet to check or approve. Intent gate only
+            # (2026-09-25 decision): when it *is* a refund, the proposal's own
+            # order_id/amount/currency are not used as the source of truth --
+            # the claim's own structured fields, already validated at the
+            # gateway, still drive evidence and execution, unchanged from
+            # before this phase.
+            proposal: ClaimProposal | None = None
+            front_desk_reason: str | None = None
+            front_desk_intent: str | None = None
+            if claim_text:
+                proposal = await propose_action(claim_text)
+                if proposal.intent != "refund":
+                    front_desk_reason = proposal.reason
+                    front_desk_intent = proposal.intent
+
             # ── Step 2.6: Evidence check (Part B) ───────────────────────────────
             # Code, not a judge, checks the order and the refund history. A
             # failure (or an MCP outage) goes to human review with no LLM call:
             # the check can stop an approval, never grant one.
             evidence_trail: dict[str, Any] | None = None
             evidence_failure: str | None = None
-            if body.get("order_id") and body.get("amount"):
+            if front_desk_reason is None and body.get("order_id") and body.get("amount"):
                 with observe(
                     "verify-evidence",
                     as_type="guardrail",
@@ -167,27 +189,27 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
 
             # ── Step 3: Self-Correction Loop ────────────────────────────────────
             # The primary agent's proposal is still hardcoded (Phase 1.E is not
-            # implemented yet): mock_primary_action/mock_primary_args are the
-            # same on every attempt, so there is nothing for a retry to
-            # correct. Re-asking the identical question to the same judge
-            # ensemble until it happens to say APPROVE is a re-vote, not
+            # implemented yet): the action itself is still the fixed
+            # "execute_refund"/body pair on every attempt (the Front-Desk
+            # gates intent only, see Step 2.55), so there is nothing for a
+            # retry to correct. Re-asking the identical question to the same
+            # judge ensemble until it happens to say APPROVE is a re-vote, not
             # self-correction -- with verdicts that aren't perfectly stable
             # between runs (docs/testing/judge_evaluation_results.md), that
             # would only inflate the false-approval rate. So this evaluates
-            # the proposal exactly once. Once Phase 1.E's real proposer can
-            # revise its proposal from judge feedback, this becomes a real
-            # loop again: retry only when the new proposal actually differs
-            # from the one just rejected, up to MAX_LLM_RETRIES.
+            # the proposal exactly once. Once Phase 1.E's self-correction loop
+            # can revise the proposal from judge feedback, this becomes a
+            # real loop again: retry only when the new proposal actually
+            # differs from the one just rejected, up to MAX_LLM_RETRIES.
             judge_result: dict[str, Any] = {}
 
-            if evidence_failure is None:
-                # In the real system this invokes the LangChain agent loop.
-                mock_primary_action = "execute_refund"
-                mock_primary_args = body
+            if evidence_failure is None and front_desk_reason is None:
+                action_name = "execute_refund"
+                action_args = body
 
                 judge_result = await evaluate_decision(
-                    action_name=mock_primary_action,
-                    action_args=mock_primary_args,
+                    action_name=action_name,
+                    action_args=action_args,
                     context=judge_context,
                 )
 
@@ -245,6 +267,8 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
             trail: dict[str, Any] | None = judge_result.get("trail")
             if guard_result is not None:
                 trail = {**(trail or {}), "prompt_guard": guard_result.to_trail()}
+            if proposal is not None:
+                trail = {**(trail or {}), "front_desk": proposal.model_dump()}
             if evidence_trail is not None:
                 trail = {**(trail or {}), "evidence": evidence_trail}
             if execution is not None:
@@ -261,6 +285,12 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                 logger.error(
                     f"💥 Transaction {request_id} APPROVED but refund execution failed: "
                     f"{execution}"
+                )
+            elif front_desk_reason is not None:
+                logger.warning(
+                    f"❌ Transaction {request_id} → PENDING_HUMAN_REVIEW: Front-Desk "
+                    f"proposed intent={front_desk_intent!r} (not a refund), judges not "
+                    f"called. Reason: {front_desk_reason}"
                 )
             elif evidence_failure is not None:
                 logger.warning(
@@ -283,10 +313,12 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
             trace.update(
                 output={
                     "status": final_status,
-                    "reason": evidence_failure or judge_result.get("reason"),
+                    "reason": front_desk_reason or evidence_failure or judge_result.get("reason"),
                 },
                 metadata={
-                    "judge_attempts": 0 if evidence_failure is not None else 1,
+                    "judge_attempts": (
+                        0 if front_desk_reason is not None or evidence_failure is not None else 1
+                    ),
                 },
             )
 

@@ -20,6 +20,8 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from src.agents.prompt_guard import GuardResult
+from src.agents.proposal import ClaimProposal
+from src.core.currency import Currency
 from src.core.services.evidence_check import EvidenceCheck
 from src.worker.evidence import EvidenceUnavailableError
 from src.worker.refund_executor import RefundExecutionError
@@ -34,6 +36,12 @@ EXECUTED = {
     "amount": 50.0,
     "currency": "USD",
 }
+
+REFUND_PROPOSAL = ClaimProposal(
+    intent="refund", order_id="ord-001", amount=50.0, currency="USD", reason="Wants $50 back."
+)
+CLARIFY_PROPOSAL = ClaimProposal(intent="clarify", reason="What order and amount?")
+OUT_OF_SCOPE_PROPOSAL = ClaimProposal(intent="out_of_scope", reason="Not a refund request.")
 
 ORDER = {
     "order_id": "ord-001",
@@ -369,6 +377,13 @@ async def test_skipped_guard_is_recorded_alongside_judge_trail() -> None:
     assert locked_row.status == "COMPLETED"
     assert locked_row.judge_trail == {
         **judge_trail,
+        "front_desk": {
+            "intent": "refund",
+            "order_id": "ord-1",
+            "amount": 10.0,
+            "currency": Currency.USD,
+            "reason": "Mocked for local dev",
+        },
         "prompt_guard": {
             "status": "skipped",
             "score": None,
@@ -453,6 +468,128 @@ async def test_a_claim_without_refund_details_is_judged_without_evidence() -> No
     mocks["evidence"].assert_not_awaited()
     assert "evidence" not in mocks["judge"].await_args.kwargs["context"]
     assert "evidence" not in _locked_row(db_session).judge_trail
+
+
+# ── Front-Desk proposal, intent gate only (Phase 1.E, step 3/7) ──────────────
+# 2026-09-25 decision: propose_action() gates *intent* only. A refund
+# proposal doesn't override order_id/amount/currency -- the claim's own
+# structured fields, already validated at the gateway, still drive evidence
+# and execution exactly as before this phase. A non-refund intent
+# (clarify/out_of_scope) is never evidence-checked or judged.
+
+
+@pytest.mark.asyncio
+async def test_front_desk_clarify_intent_skips_evidence_and_judges() -> None:
+    message = _make_message(BODY)
+    db_session = _make_db_session()
+
+    with (
+        _pipeline() as mocks,
+        patch(
+            "src.worker.worker.propose_action",
+            new_callable=AsyncMock,
+            return_value=CLARIFY_PROPOSAL,
+        ),
+    ):
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    mocks["evidence"].assert_not_awaited()
+    mocks["judge"].assert_not_awaited()
+    mocks["executor"].assert_not_awaited()
+    locked_row = _locked_row(db_session)
+    assert locked_row.status == "PENDING_HUMAN_REVIEW"
+    assert locked_row.judge_trail["front_desk"]["intent"] == "clarify"
+    assert locked_row.judge_trail["front_desk"]["reason"] == "What order and amount?"
+    message.ack.assert_awaited_once()
+    message.nack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_front_desk_out_of_scope_intent_skips_evidence_and_judges() -> None:
+    message = _make_message(BODY)
+    db_session = _make_db_session()
+
+    with (
+        _pipeline() as mocks,
+        patch(
+            "src.worker.worker.propose_action",
+            new_callable=AsyncMock,
+            return_value=OUT_OF_SCOPE_PROPOSAL,
+        ),
+    ):
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    mocks["evidence"].assert_not_awaited()
+    mocks["judge"].assert_not_awaited()
+    locked_row = _locked_row(db_session)
+    assert locked_row.status == "PENDING_HUMAN_REVIEW"
+    assert locked_row.judge_trail["front_desk"]["reason"] == "Not a refund request."
+    message.ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_front_desk_refund_intent_still_uses_the_claims_own_fields() -> None:
+    message = _make_message(BODY)
+    db_session = _make_db_session()
+
+    with (
+        _pipeline() as mocks,
+        patch(
+            "src.worker.worker.propose_action",
+            new_callable=AsyncMock,
+            return_value=REFUND_PROPOSAL,
+        ) as mock_propose,
+    ):
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    mock_propose.assert_awaited_once_with(BODY["claim_text"])
+    mocks["evidence"].assert_awaited_once()
+    assert mocks["evidence"].await_args.args[0] == BODY
+    call = mocks["executor"].await_args
+    assert call.kwargs["transaction_id"] == "ord-001"
+    assert call.kwargs["amount"] == 50.0
+    locked_row = _locked_row(db_session)
+    assert locked_row.status == "COMPLETED"
+    assert locked_row.judge_trail["front_desk"]["intent"] == "refund"
+
+
+@pytest.mark.asyncio
+async def test_front_desk_not_consulted_when_claim_text_is_empty() -> None:
+    message = _make_message({**BODY, "claim_text": ""})
+    db_session = _make_db_session()
+
+    with (
+        _pipeline(),
+        patch("src.worker.worker.propose_action", new_callable=AsyncMock) as mock_propose,
+    ):
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    mock_propose.assert_not_awaited()
+    locked_row = _locked_row(db_session)
+    assert "front_desk" not in locked_row.judge_trail
+    assert locked_row.status == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_a_claim_trace_nests_the_front_desk_proposal(trace_exporter) -> None:
+    """propose_action() carries its own `propose-action` chain observation
+    (front_desk.py); it must nest under the claim's root trace like every
+    other real step, without worker.py needing to wrap it in its own span."""
+    from tests.support.tracing import finished_spans, is_child_of, span_attr
+
+    with _pipeline():
+        from src.worker.worker import process_message
+        await process_message(_make_message(BODY), _make_db_session())
+
+    spans = finished_spans(trace_exporter)
+    root = spans["process-claim"]
+    proposal_span = spans["propose-action"]
+    assert is_child_of(proposal_span, root)
+    assert span_attr(proposal_span, "langfuse.observation.type") == "chain"
 
 
 @pytest.mark.asyncio
