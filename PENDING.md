@@ -57,6 +57,14 @@ Why it's here: `src/agents/llm_factory.py`'s `get_llm(provider=...)` already imp
 - [ ] Per-request override: optional `judge_1_provider`/`judge_2_provider` fields on `ClaimRequest`, validated against `get_llm()`'s existing provider allowlist; two `st.selectbox` dropdowns in the dashboard's ingestion panel; `evaluate_decision()` accepts explicit providers, falling back to today's hardcoded pairing when unset.
 - [ ] Global hot-swappable default: an admin surface (e.g. `PUT /config/providers`) backed by `pydantic-settings` and/or a config table — a "vendor is down, reroute now" lever with no restart. Later increment, not required alongside the per-request override.
 
+### Step 6b — High-Value Court (Phase 1.G) — planned
+Designed 2026-09-24 with the user; full design in [docs/architecture/high_value_court.md](docs/architecture/high_value_court.md). Why: the judge benchmark showed that same-family judges fail together and that verdicts drift between runs, so two agreeing judges aren't enough for a large refund.
+- [ ] Prerequisite: Part B (deterministic evidence checks), including currency conversion to USD.
+- [ ] Routing by amount in USD: < $1,000 today's pipeline; $1,000–$5,000 the court; > $5,000 human review (policy). `HIGH_VALUE_THRESHOLD_USD`, default 1000.
+- [ ] Four judges from four different model families, all must APPROVE (families to confirm on Groq and measure with the eval).
+- [ ] Superior judge (candidate: Gemini Pro, check the trial credit covers it): on any rejection it can only confirm the REJECT or route to human review. **Never approves over a rejection** (user decision).
+- [ ] Pick the models with the Promptfoo eval; grade the whole court as one provider on new $1,000–$5,000 cases, repeats spread over time. Acceptance bar: zero false approvals.
+
 ### Step 7 — Deterministic Confidence Layer (Phase 2)
 - [ ] Integrate the fuzzy-scoring layer and the Belief Rule Base alongside the AI Judge, so critical transactions (`execute_refund`, `validate_fraud_score`) require double approval — probabilistic (LLM judge) *and* symbolic (rule base) — before auto-approving.
 

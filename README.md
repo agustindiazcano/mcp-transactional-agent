@@ -15,6 +15,7 @@
   - [1.D RAG over Business Rules](#phase-1d--rag-over-business-rules-pgvector-provider-agnostic-embeddings-done)
   - [1.E Front-Desk / Back-Office Workflow](#phase-1e--front-desk--back-office-asymmetric-agentic-workflow-designed-not-yet-implemented)
   - [1.F Dynamic LLM Provider Selection](#phase-1f--dynamic-llm-provider-selection-designed-not-yet-implemented)
+  - [1.G High-Value Court](#phase-1g--high-value-court-designed-not-yet-implemented)
 - [Phase 2 — Confidence Layer](#phase-2--confidence-layer-in-progress)
 - [Phase 3 — Quality Drift Detection](#phase-3--quality-drift-detection-designed-not-yet-implemented)
 - [Phase 4 — Operations Dashboard](#phase-4--operations-dashboard-done)
@@ -35,7 +36,7 @@
 - [Architecture Decision Records](#architecture-decision-records) · [Research Directions](#research-directions) · [Known Limitations](#known-limitations)
 
 **Documents** ([full index](#documentation-index))
-- Architecture: [Core Engine](docs/phases/phase_1_core_engine.md) · [MCP Security Boundary](docs/architecture/mcp_security_boundary.md) · [Public API Abuse Protection](docs/architecture/api_abuse_protection.md) · [Microservices Debugging Protocol](docs/architecture/microservices_debugging_protocol.md)
+- Architecture: [Core Engine](docs/phases/phase_1_core_engine.md) · [MCP Security Boundary](docs/architecture/mcp_security_boundary.md) · [High-Value Court](docs/architecture/high_value_court.md) · [Public API Abuse Protection](docs/architecture/api_abuse_protection.md) · [Microservices Debugging Protocol](docs/architecture/microservices_debugging_protocol.md)
 - Infrastructure: [Local Stack and Google Cloud Deployment](docs/infrastructure/gcp_infrastructure.md)
 - Roadmaps: [Deterministic Guardrails](docs/deterministic_guardrails_roadmap.md) · [Advanced AI](docs/architecture/advanced_ai_roadmap.md)
 - Testing: [Test Coverage](docs/testing/tdd_coverage.md) · [Failure Injection](docs/testing/chaos_engineering_armageddon.md) · [Telemetry & Performance](docs/testing/telemetry_performance.md) · [LLMOps & Observability](docs/testing/llmops_observability.md) · [Judge Evaluation & Benchmark](docs/testing/judge_evaluation_results.md)
@@ -124,6 +125,7 @@ The project also examines a second question: **how much of an AI system's decisi
 | **Phase 1.D** | RAG over business rules: pgvector + provider-agnostic embeddings (cloud-native embeddings swap deferred to Phase 6) | Done — validated end-to-end locally |
 | **Phase 1.E** | Front-Desk / Back-Office asymmetric agentic workflow: a real, server-side-revalidated primary agent, replacing `worker.py`'s mocked one | Designed, not yet implemented |
 | **Phase 1.F** | Dynamic LLM provider selection: per-request/per-judge override plus a hot-swappable global default | Designed, not yet implemented |
+| **Phase 1.G** | High-Value Court: refunds of $1,000–$5,000 need four judges from four model families to agree; a superior judge reviews rejections but can never turn one into an approval | Designed, not yet implemented |
 | **Phase 2** | Confidence layer: fuzzy scoring + belief rule base | In progress |
 | **Phase 3** | Quality drift detection (pluggable detector) | Designed, not yet implemented |
 | **Phase 4** | Read-only operations dashboard | Done |
@@ -140,7 +142,8 @@ The runtime guardrails decide each claim. This section covers how their quality 
 
 | Layer | Tool | Status | What it answers |
 |---|---|---|---|
-| Runtime decision check | Asymmetric Double LLM-as-a-Judge + Supreme Court tie-break | Implemented | Should this claim be approved? |
+| Runtime decision check | Asymmetric Double LLM-as-a-Judge + Supreme Court tie-break (`gemini-3.8-flash`) | Implemented | Should this claim be approved? |
+| High-value review ($1,000–$5,000) | **High-Value Court**: four judges from four model families, unanimous, plus a superior judge that can only confirm a rejection or send it to a human | Designed ([Phase 1.G](#phase-1g--high-value-court-designed-not-yet-implemented)) | Is a large refund safe to pay without a human? |
 | Pre-execution shield | Prompt Guard (`llama-prompt-guard-2-22m`) | Implemented | Is this input a jailbreak or an injection attempt? |
 | Cost accounting | Structured `llm_token_usage` logs (`src/agents/token_usage.py`) | Implemented | Tokens and cost per stage (see [Cost per Transaction](#cost-per-transaction)) |
 | Offline evaluation and model benchmark | **Promptfoo** | Implemented (CI gate next) | How accurate each candidate judge model is on 50 human-labeled claims (legitimate, outside policy, human review, borderline, malformed, prompt injection), graded on production's own prompt and parser: accuracy, false approvals, false rejections, verdict stability over repeats, latency and cost. See [Judge Benchmark](#judge-benchmark-promptfoo). |
@@ -206,6 +209,7 @@ Code: `src/core/tracing.py`. Rules for changing it: CLAUDE.md, Section 4 ("LLM T
 - **[Advanced AI Roadmap](docs/architecture/advanced_ai_roadmap.md):** Research directions for later iterations (constrained decoding, conformal prediction, rule-based reward models).
 - **[Deterministic Guardrails Roadmap](docs/deterministic_guardrails_roadmap.md):** Deterministic and auditable mechanisms beyond LLM-as-a-Judge, including classical ML baselines.
 - **[MCP Security Boundary](docs/architecture/mcp_security_boundary.md):** The Phase 1.B specification: each guarantee (authentication, authorization, validation, rate limiting, audit) mapped to the test that verifies it.
+- **[High-Value Court (Phase 1.G)](docs/architecture/high_value_court.md):** The design of a stricter review tier for refunds of $1,000–$5,000: routing by amount after currency conversion, four judges from four model families that must all approve, a superior judge that can only confirm a rejection or send it to a human, configuration, costs and trade-offs, and how the Promptfoo eval will validate it. Designed, not yet implemented.
 - **[Public API Abuse Protection](docs/architecture/api_abuse_protection.md):** What protects the public claims API today (idempotent retries, the internal MCP rate limit) and what doesn't (no limit per IP or per user, no login), the LLM calls one claim can trigger, the per-user limits a Phase 1.E chat will need, and the options to close the gap with their costs. Analysis only; no option chosen yet.
 - **[Microservices Debugging Protocol](docs/architecture/microservices_debugging_protocol.md):** How to isolate the transport plane from the application plane when two containers fail to communicate — the doctrine that resolved the Phase 1.C MCP transport postmortem.
 
@@ -444,6 +448,29 @@ These aren't mutually exclusive, and which one gets built first is an implementa
 3. Add the two provider dropdowns to the dashboard's ingestion panel.
 4. The global admin-config lever is a separate, later increment — not required to ship items 1-3.
 5. Does not touch the MCP tool-call provider boundary (Phase 1.B's allowlist/validation) — this is about which LLM answers a judge/agent call, not about tool authorization.
+
+<p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
+
+---
+
+## Phase 1.G — High-Value Court (Designed, not yet implemented)
+
+### Problem
+The [judge benchmark](#judge-benchmark-promptfoo) showed that a wrong approval's cost scales with the amount, that judges from the same model family fail together (all three Gemini models made the same mistake on one case), and that verdicts drift between runs: hours after the benchmark, both production judges approved a €4,800 claim against a $5,000 limit 4 times out of 5. For a large refund, two judges that happen to agree are not enough.
+
+### Design: more scrutiny where the money is
+- **Routing by amount (converted to USD):** under $1,000 stays on today's pipeline; **$1,000–$5,000 goes to the court**; over $5,000 goes to human review, as the refund policy already requires. Part B's deterministic checks run first for every amount.
+- **Four judges, four model families, unanimous.** All four must approve. The court counts families, not models, because judges that share a family share blind spots.
+- **A superior judge that can't approve.** On any rejection, a stronger model (candidate: Gemini Pro) reviews the four verdicts, and it can only **confirm the rejection** or **send the claim to a human**. A tie-breaker that could approve over a "no" would bring back the risk the extra judges remove.
+- **Cheap in aggregate:** high-value claims are a small share of traffic, so the extra calls barely move the average cost per claim. False rejections rise, but for $1,000+ a valid claim goes to a human, not to a denial.
+
+### Scope
+1. Part B first (deterministic evidence checks, including currency conversion).
+2. Choose the four families and the superior judge with the Promptfoo eval, not by assumption.
+3. Build the court behind amount-based routing, configurable (`HIGH_VALUE_THRESHOLD_USD`, default $1,000).
+4. Validate the whole tier as one Promptfoo provider on new $1,000–$5,000 cases, with repeats spread over time. Acceptance bar: zero false approvals.
+
+Full design: [High-Value Court](docs/architecture/high_value_court.md).
 
 <p align="right"><a href="#table-of-contents">↑ Back to index</a></p>
 
