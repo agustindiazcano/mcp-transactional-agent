@@ -36,6 +36,7 @@ Only what is current: read this first in every session. When an item here is don
 - **CV and public claims:** list Google Cloud, Cloud SQL, Terraform and CI/CD only once each one runs. Today only CI exists; CD means a merge to `main` deploys to Cloud Run through Workload Identity Federation. Vertex AI can already be listed.
 - **Evaluation tools:** Promptfoo and Langfuse next, Ragas later. LangSmith and TruLens are not adopted.
 - **Resolver agent (agent B):** it changes the Phase 1.E design, so it needs the user's go-ahead.
+- **High-Value Court (Phase 1.G), planned (user decision 2026-09-24):** refunds of $1,000–$5,000 (in USD, after conversion) need four judges from four model families to all approve; a superior judge (candidate Gemini Pro) reviews any rejection and can only confirm it or route to a human, **never approve over a rejection**. Threshold configurable, default $1,000. After Part B. Design: `docs/architecture/high_value_court.md`.
 - **Public docs are recruiter-facing:** no "human in the loop" anecdotes, and nothing presented as done before it is.
 
 ## Waiting on the user
@@ -70,7 +71,7 @@ Only what is current: read this first in every session. When an item here is don
 4. After Part B (item 2, **next**), re-run the eval: `b2-reject-04` ($3,000 refund on a "$30 charger") must become impossible to approve. Then the RAG chunker fix (headings separated from their rules, found by the eval) and re-ingestion.
 4b. **Public API abuse protection** (user decides; analysis in `docs/architecture/api_abuse_protection.md`): the gateway has no login and no limit per IP or per user. Suggested: a `slowapi` per-IP limit + `claim_text` `max_length` before the next public demo; a per-user limit with the login and Phase 1.E.
 5. **Reliability backlog** in `PENDING.md`: MCP server replicas, the dead-letter queue, not retrying 4xx responses, and a stepped ingestion load test.
-6. Then Phase 1.E (a real primary agent), 1.F, 2 and 3, and AWS.
+6. Then Phase 1.E (a real primary agent), 1.F, **1.G (High-Value Court, planned)**, 2 and 3, and AWS.
 
 ## Environment state
 - **Infrastructure reference:** `docs/infrastructure/gcp_infrastructure.md` (what runs where, service accounts, secrets, exposure, operating commands, cost). Update it with any `infra/` change.
