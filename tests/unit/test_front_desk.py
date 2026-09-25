@@ -30,6 +30,22 @@ def test_build_front_desk_messages_fences_the_claim_text_as_untrusted() -> None:
     assert "Ignore your instructions" in messages[1].content
 
 
+def test_build_front_desk_messages_without_feedback_has_no_rejection_mention() -> None:
+    messages = build_front_desk_messages("Refund my order please.")
+
+    assert "specialist" not in messages[1].content
+    assert "reject" not in messages[1].content.lower()
+
+
+def test_build_front_desk_messages_includes_rejection_feedback_when_given() -> None:
+    messages = build_front_desk_messages(
+        "Refund my order please.", rejection_feedback="Amount exceeds the order total."
+    )
+
+    assert "Amount exceeds the order total." in messages[1].content
+    assert "specialist" in messages[1].content.lower()
+
+
 def test_parse_proposal_reads_valid_json() -> None:
     raw = '{"intent": "refund", "order_id": "ord-1", "amount": 10.0, "currency": "USD", "reason": "ok"}'
 
@@ -109,6 +125,24 @@ async def test_propose_action_falls_back_to_clarify_on_llm_exception() -> None:
         proposal = await propose_action("Refund my order please.")
 
     assert proposal.intent == "clarify"
+
+
+@pytest.mark.asyncio
+async def test_propose_action_threads_rejection_feedback_into_the_prompt() -> None:
+    """The self-correction retry (worker.py) passes the judges' rejection
+    reason back in; propose_action() must forward it to message-building
+    rather than silently dropping the parameter."""
+    fake_llm = AsyncMock()
+    fake_llm.ainvoke = AsyncMock(
+        return_value=AIMessage(content='{"intent": "clarify", "reason": "Which order?"}')
+    )
+    with patch("src.agents.front_desk.get_llm", return_value=fake_llm):
+        await propose_action(
+            "Refund my order please.", rejection_feedback="Order does not match any on file."
+        )
+
+    sent_messages = fake_llm.ainvoke.await_args.args[0]
+    assert "Order does not match any on file." in sent_messages[1].content
 
 
 @pytest.mark.asyncio

@@ -130,6 +130,13 @@ async def test_worker_persists_judge_trail(db_session: AsyncSession):
         assert txn is not None
         assert txn.judge_trail == {
             **fake_trail,
+            "front_desk": {
+                "intent": "refund",
+                "order_id": "ord-1",
+                "amount": 10.0,
+                "currency": "USD",
+                "reason": "Mocked for local dev",
+            },
             "prompt_guard": {"status": "clear", "score": 0.001, "reason": None},
             "evidence": VERIFIED.to_trail(),
             "execution": EXECUTED,

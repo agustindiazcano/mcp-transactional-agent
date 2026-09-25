@@ -20,6 +20,8 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from src.agents.prompt_guard import GuardResult
+from src.agents.proposal import ClaimProposal
+from src.core.currency import Currency
 from src.core.services.evidence_check import EvidenceCheck
 from src.worker.evidence import EvidenceUnavailableError
 from src.worker.refund_executor import RefundExecutionError
@@ -34,6 +36,12 @@ EXECUTED = {
     "amount": 50.0,
     "currency": "USD",
 }
+
+REFUND_PROPOSAL = ClaimProposal(
+    intent="refund", order_id="ord-001", amount=50.0, currency="USD", reason="Wants $50 back."
+)
+CLARIFY_PROPOSAL = ClaimProposal(intent="clarify", reason="What order and amount?")
+OUT_OF_SCOPE_PROPOSAL = ClaimProposal(intent="out_of_scope", reason="Not a refund request.")
 
 ORDER = {
     "order_id": "ord-001",
@@ -265,13 +273,16 @@ async def test_approved_claim_without_refund_details_goes_to_human_review() -> N
 
 @pytest.mark.asyncio
 async def test_judge_reject_routes_to_human_review_without_retrying() -> None:
-    """The primary agent's proposal is still hardcoded (Phase 1.E not
-    implemented yet), so every retry would send evaluate_decision the exact
-    same action_name/action_args as the first call. Retrying an unchanged
-    proposal isn't self-correction -- it's a re-vote against judges whose
-    verdicts aren't perfectly stable between runs, which only inflates the
-    false-approval rate. So a REJECT is called exactly once, not retried up
-    to MAX_LLM_RETRIES."""
+    """evaluate_decision's own action_args are still the claim's own body on
+    every attempt (intent-gate-only, Step 2.55), so re-calling it on the same
+    args would be a re-vote against judges whose verdicts aren't perfectly
+    stable between runs, not self-correction. The one thing a REJECT can
+    trigger is a single Front-Desk reclassification attempt (Step 3.5,
+    covered by the 'reclassif*' tests below) -- but the judges themselves are
+    never called a second time for an unchanged proposal, and never retried
+    up to MAX_LLM_RETRIES. Here propose_action isn't patched, so it runs for
+    real against LLM_PROVIDER=mock, which keeps proposing 'refund' on the
+    retry too -- so evaluate_decision stays a single call."""
     message = _make_message(BODY)
     db_session = _make_db_session()
     reject_result = {"verdict": "REJECT", "reason": "Missing amount field."}
@@ -369,6 +380,13 @@ async def test_skipped_guard_is_recorded_alongside_judge_trail() -> None:
     assert locked_row.status == "COMPLETED"
     assert locked_row.judge_trail == {
         **judge_trail,
+        "front_desk": {
+            "intent": "refund",
+            "order_id": "ord-1",
+            "amount": 10.0,
+            "currency": Currency.USD,
+            "reason": "Mocked for local dev",
+        },
         "prompt_guard": {
             "status": "skipped",
             "score": None,
@@ -453,6 +471,234 @@ async def test_a_claim_without_refund_details_is_judged_without_evidence() -> No
     mocks["evidence"].assert_not_awaited()
     assert "evidence" not in mocks["judge"].await_args.kwargs["context"]
     assert "evidence" not in _locked_row(db_session).judge_trail
+
+
+# ── Front-Desk proposal, intent gate only (Phase 1.E, step 3/7) ──────────────
+# 2026-09-25 decision: propose_action() gates *intent* only. A refund
+# proposal doesn't override order_id/amount/currency -- the claim's own
+# structured fields, already validated at the gateway, still drive evidence
+# and execution exactly as before this phase. A non-refund intent
+# (clarify/out_of_scope) is never evidence-checked or judged.
+
+
+@pytest.mark.asyncio
+async def test_front_desk_clarify_intent_skips_evidence_and_judges() -> None:
+    message = _make_message(BODY)
+    db_session = _make_db_session()
+
+    with (
+        _pipeline() as mocks,
+        patch(
+            "src.worker.worker.propose_action",
+            new_callable=AsyncMock,
+            return_value=CLARIFY_PROPOSAL,
+        ),
+    ):
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    mocks["evidence"].assert_not_awaited()
+    mocks["judge"].assert_not_awaited()
+    mocks["executor"].assert_not_awaited()
+    locked_row = _locked_row(db_session)
+    assert locked_row.status == "PENDING_HUMAN_REVIEW"
+    assert locked_row.judge_trail["front_desk"]["intent"] == "clarify"
+    assert locked_row.judge_trail["front_desk"]["reason"] == "What order and amount?"
+    message.ack.assert_awaited_once()
+    message.nack.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_front_desk_out_of_scope_intent_skips_evidence_and_judges() -> None:
+    message = _make_message(BODY)
+    db_session = _make_db_session()
+
+    with (
+        _pipeline() as mocks,
+        patch(
+            "src.worker.worker.propose_action",
+            new_callable=AsyncMock,
+            return_value=OUT_OF_SCOPE_PROPOSAL,
+        ),
+    ):
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    mocks["evidence"].assert_not_awaited()
+    mocks["judge"].assert_not_awaited()
+    locked_row = _locked_row(db_session)
+    assert locked_row.status == "PENDING_HUMAN_REVIEW"
+    assert locked_row.judge_trail["front_desk"]["reason"] == "Not a refund request."
+    message.ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_front_desk_refund_intent_still_uses_the_claims_own_fields() -> None:
+    message = _make_message(BODY)
+    db_session = _make_db_session()
+
+    with (
+        _pipeline() as mocks,
+        patch(
+            "src.worker.worker.propose_action",
+            new_callable=AsyncMock,
+            return_value=REFUND_PROPOSAL,
+        ) as mock_propose,
+    ):
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    mock_propose.assert_awaited_once_with(BODY["claim_text"])
+    mocks["evidence"].assert_awaited_once()
+    assert mocks["evidence"].await_args.args[0] == BODY
+    call = mocks["executor"].await_args
+    assert call.kwargs["transaction_id"] == "ord-001"
+    assert call.kwargs["amount"] == 50.0
+    locked_row = _locked_row(db_session)
+    assert locked_row.status == "COMPLETED"
+    assert locked_row.judge_trail["front_desk"]["intent"] == "refund"
+
+
+@pytest.mark.asyncio
+async def test_front_desk_not_consulted_when_claim_text_is_empty() -> None:
+    message = _make_message({**BODY, "claim_text": ""})
+    db_session = _make_db_session()
+
+    with (
+        _pipeline(),
+        patch("src.worker.worker.propose_action", new_callable=AsyncMock) as mock_propose,
+    ):
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    mock_propose.assert_not_awaited()
+    locked_row = _locked_row(db_session)
+    assert "front_desk" not in locked_row.judge_trail
+    assert locked_row.status == "COMPLETED"
+
+
+# ── Self-correction: reclassify on REJECT (Phase 1.E, step 4/7) ──────────────
+# 2026-09-25 decision (narrow scope): a REJECT can't change what the judges
+# already evaluated (action_args is still the claim's own body, per the
+# intent-gate-only design). What it CAN change is whether the claim was
+# correctly classified as a refund at all -- one reclassification attempt,
+# fed the judges' own rejection reason. If it still says "refund", there is
+# nothing new to act on: no second judge call, ever.
+
+
+@pytest.mark.asyncio
+async def test_reject_triggers_one_reclassification_attempt() -> None:
+    message = _make_message(BODY)
+    db_session = _make_db_session()
+    reject_result = {"verdict": "REJECT", "reason": "Amount exceeds the order total."}
+
+    with (
+        _pipeline(judge=reject_result) as mocks,
+        patch(
+            "src.worker.worker.propose_action",
+            new_callable=AsyncMock,
+            side_effect=[REFUND_PROPOSAL, REFUND_PROPOSAL],
+        ) as mock_propose,
+    ):
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    assert mock_propose.await_count == 2
+    mock_propose.assert_awaited_with(
+        BODY["claim_text"], rejection_feedback="Amount exceeds the order total."
+    )
+    assert mocks["judge"].await_count == 1
+    locked_row = _locked_row(db_session)
+    assert locked_row.status == "PENDING_HUMAN_REVIEW"
+
+
+@pytest.mark.asyncio
+async def test_reclassification_to_clarify_replaces_the_human_review_reason() -> None:
+    """When the retry reclassifies away from 'refund', the objective
+    reclassification reason -- not the raw judge rationale -- is what's
+    surfaced, matching the Feedback Loop's 'never a raw judge rationale'
+    contract (CLAUDE.md Section 5a-iv, item 3)."""
+    message = _make_message(BODY)
+    db_session = _make_db_session()
+    reject_result = {"verdict": "REJECT", "reason": "Internal judge reasoning, not for the user."}
+    reclassified = ClaimProposal(intent="clarify", reason="Which order is this about, exactly?")
+
+    with (
+        _pipeline(judge=reject_result) as mocks,
+        patch(
+            "src.worker.worker.propose_action",
+            new_callable=AsyncMock,
+            side_effect=[REFUND_PROPOSAL, reclassified],
+        ),
+    ):
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    assert mocks["judge"].await_count == 1
+    locked_row = _locked_row(db_session)
+    assert locked_row.status == "PENDING_HUMAN_REVIEW"
+    assert locked_row.judge_trail["front_desk_retry"]["intent"] == "clarify"
+    assert locked_row.judge_trail["front_desk_retry"]["reason"] == "Which order is this about, exactly?"
+
+
+@pytest.mark.asyncio
+async def test_reclassification_still_refund_does_not_call_judges_twice() -> None:
+    message = _make_message(BODY)
+    db_session = _make_db_session()
+    reject_result = {"verdict": "REJECT", "reason": "Missing supporting evidence."}
+
+    with (
+        _pipeline(judge=reject_result) as mocks,
+        patch(
+            "src.worker.worker.propose_action",
+            new_callable=AsyncMock,
+            side_effect=[REFUND_PROPOSAL, REFUND_PROPOSAL],
+        ),
+    ):
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    assert mocks["judge"].await_count == 1
+    mocks["executor"].assert_not_awaited()
+    locked_row = _locked_row(db_session)
+    assert locked_row.status == "PENDING_HUMAN_REVIEW"
+    assert "front_desk_retry" not in locked_row.judge_trail
+
+
+@pytest.mark.asyncio
+async def test_approve_never_triggers_a_reclassification_attempt() -> None:
+    message = _make_message(BODY)
+    db_session = _make_db_session()
+
+    with (
+        _pipeline(),
+        patch(
+            "src.worker.worker.propose_action", new_callable=AsyncMock, return_value=REFUND_PROPOSAL
+        ) as mock_propose,
+    ):
+        from src.worker.worker import process_message
+        await process_message(message, db_session)
+
+    assert mock_propose.await_count == 1
+    assert _locked_row(db_session).status == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_a_claim_trace_nests_the_front_desk_proposal(trace_exporter) -> None:
+    """propose_action() carries its own `propose-action` chain observation
+    (front_desk.py); it must nest under the claim's root trace like every
+    other real step, without worker.py needing to wrap it in its own span."""
+    from tests.support.tracing import finished_spans, is_child_of, span_attr
+
+    with _pipeline():
+        from src.worker.worker import process_message
+        await process_message(_make_message(BODY), _make_db_session())
+
+    spans = finished_spans(trace_exporter)
+    root = spans["process-claim"]
+    proposal_span = spans["propose-action"]
+    assert is_child_of(proposal_span, root)
+    assert span_attr(proposal_span, "langfuse.observation.type") == "chain"
 
 
 @pytest.mark.asyncio
