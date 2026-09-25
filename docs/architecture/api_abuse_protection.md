@@ -14,9 +14,9 @@ The gateway's `POST /api/v1/claims` is public on Cloud Run and has no authentica
 | Policy retrieval (embedding, Vertex) | 1 |
 | Double Judge (Judge 1 on Vertex, Judge 2 on Groq) | 2 per attempt |
 | Supreme Court, when the judges reject or disagree | 1 per attempt |
-| Self-correction attempts (`MAX_LLM_RETRIES`, default 3) | × up to 3 |
+| Self-correction attempts (`MAX_LLM_RETRIES`, default 3) | not live yet — see below |
 
-A claim that approves on the first try costs 4 calls. A claim that keeps getting rejected costs up to 11 (1 + 1 + 3 × 3). The measured cost of a happy-path claim is ~$0.0004 (see the README's Cost per Transaction), so one claim is cheap. The risk is volume: nothing stops a script from sending claims in a loop, and the demo runs on a free-trial credit.
+The primary agent is still mocked, so a rejected proposal never changes between attempts and the Double Judge evaluates it exactly once, regardless of `MAX_LLM_RETRIES`. A claim both judges approve costs 2 calls; a claim either judge rejects costs 3 (2 + the Supreme Court's tie-break). The `× up to 3` multiplier from `MAX_LLM_RETRIES` returns once Phase 1.E ships a real proposer that can revise its proposal from judge feedback — at that point a claim that keeps getting rejected costs up to 11 (1 + 1 + 3 × 3). The measured cost of a happy-path claim is ~$0.0004 (see the README's Cost per Transaction), so one claim is cheap. The risk is volume: nothing stops a script from sending claims in a loop, and the demo runs on a free-trial credit.
 
 ---
 
@@ -25,7 +25,7 @@ A claim that approves on the first try costs 4 calls. A claim that keeps getting
 | Layer | Protection | Status |
 |---|---|---|
 | Client retries to the API | A claim's `request_id` is its idempotency key: a duplicate still gets its 202, but it's never processed twice (the `UNIQUE` constraint on `transactions.request_id` plus the worker's lookup before any LLM call). **Caveat:** `request_id` is optional in `ClaimRequest` (`src/api/schemas.py`). If the client leaves it out, the gateway generates a new UUID per request, so a client that retries without sending an id creates a new claim each time. | ✅ with caveat |
-| Internal retries | LLM calls retry up to `MAX_LLM_RETRIES`. MCP tool calls use exponential backoff (`MCP_TOOL_MAX_RETRIES`, `MCP_TOOL_BACKOFF_BASE_SECONDS`), with a fresh session per attempt. After the last retry the message is NACKed. | ✅ |
+| Internal retries | Judge self-correction retries up to `MAX_LLM_RETRIES` are designed but not live yet (the primary agent is still mocked — see above). MCP tool calls use exponential backoff (`MCP_TOOL_MAX_RETRIES`, `MCP_TOOL_BACKOFF_BASE_SECONDS`), with a fresh session per attempt. After the last retry the message is NACKed. | ✅ |
 | MCP server (internal) | Phase 1.B boundary: bearer-token authentication, a per-client tool allowlist, argument limits (`REFUND_MAX_AMOUNT`, currency enum, no unknown fields), and a rate limit per client and per tool (`MCP_RATE_LIMIT_PER_MIN`, default 30, sliding 1-minute window counted from the audit table). See [MCP Security Boundary](mcp_security_boundary.md). | ✅ |
 | Gateway input validation | `amount` is bounded by `REFUND_MAX_AMOUNT` and `currency` is an enum, so an out-of-range refund fails with a 422 before it's queued. | ✅ |
 | Public gateway `POST /api/v1/claims` | No authentication, no limit per IP, no limit per user. | ❌ |

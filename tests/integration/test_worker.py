@@ -155,10 +155,17 @@ async def test_worker_judge_reject(db_session: AsyncSession):
         await process_message(mock_message, db_session)
 
         mock_message.ack.assert_called_once()
-        # The self-correction loop retries up to MAX_LLM_RETRIES times on a
-        # REJECT verdict before giving up, so a judge that always rejects is
-        # called that many times, not once.
-        assert MockJudge.call_count == settings.MAX_LLM_RETRIES
+        # The primary agent's proposal is still hardcoded (Phase 1.E is not
+        # implemented yet): every retry would send evaluate_decision the exact
+        # same action_name/action_args as the first call. Retrying on REJECT
+        # in that case isn't self-correction, it's re-asking the same
+        # question until the judges happen to agree -- with judge verdicts
+        # that aren't perfectly stable between runs (see
+        # docs/testing/judge_evaluation_results.md), that inflates the false-
+        # approval rate instead of catching anything. So evaluate_decision is
+        # called exactly once per claim until a real proposer (Phase 1.E) can
+        # actually revise the proposal based on judge feedback.
+        assert MockJudge.call_count == 1
 
         result = await db_session.execute(select(Transaction).where(Transaction.request_id == request_id))
         txn = result.scalar_one_or_none()
