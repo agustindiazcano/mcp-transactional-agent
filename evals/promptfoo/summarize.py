@@ -2,6 +2,11 @@
 
 Usage (from the repo root):
     python evals/promptfoo/summarize.py results.json [--prices evals/promptfoo/prices.json]
+        [--relabel CASE_ID=LABEL ...] [--save-compact compact.json]
+
+`results.json` is either promptfoo's output (`promptfoo eval -o`) or a compact
+file this script saved. `--relabel` applies a label changed after review at
+scoring time, so the saved results stay exactly as the models answered.
 
 Per model it reports accuracy, false approvals (a REJECT-labeled claim the
 judge approved: the dangerous error), false rejections, stability (the share
@@ -72,8 +77,48 @@ def _percentile(values: list[float], share: float) -> float:
     return ordered[min(len(ordered) - 1, round(share * (len(ordered) - 1)))]
 
 
-def summarize(results: list[dict[str, Any]], prices: dict[str, Price]) -> list[ModelSummary]:
+LABELS = ("APPROVE", "REJECT")
+
+# The fields of a promptfoo response the report reads.
+_COMPACT_RESPONSE_KEYS = ("output", "tokenUsage")
+
+
+def compact(result: dict[str, Any]) -> dict[str, Any]:
+    """A result row reduced to what the report reads (drops the prompt, etc.)."""
+    response = result.get("response")
+    return {
+        "provider": {"label": result["provider"].get("label") or result["provider"]["id"]},
+        "description": (result.get("testCase") or {}).get("description"),
+        "vars": {k: result["vars"][k] for k in ("request_id", "expected")},
+        "response": (
+            {k: response[k] for k in _COMPACT_RESPONSE_KEYS if k in response} if response else None
+        ),
+        "latencyMs": result.get("latencyMs"),
+    }
+
+
+def parse_relabel(pairs: list[str]) -> dict[str, str]:
+    """{case id: label} from CLI pairs like "eval-b2-approve-09=REJECT"."""
+    relabel = {}
+    for pair in pairs:
+        case_id, _, label = pair.partition("=")
+        if label not in LABELS:
+            raise ValueError(f"{pair!r}: the label must be one of {LABELS}")
+        relabel[case_id] = label
+    return relabel
+
+
+def summarize(
+    results: list[dict[str, Any]],
+    prices: dict[str, Price],
+    relabel: dict[str, str] | None = None,
+) -> list[ModelSummary]:
     """One ModelSummary per provider label, in first-seen order."""
+    relabels = relabel or {}
+
+    def expected(result: dict[str, Any]) -> str:
+        return str(relabels.get(result["vars"]["request_id"], result["vars"]["expected"]))
+
     by_provider: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for result in results:
         by_provider[result["provider"].get("label") or result["provider"]["id"]].append(result)
@@ -98,14 +143,14 @@ def summarize(results: list[dict[str, Any]], prices: dict[str, Price]) -> list[M
                 cases=len(verdicts_per_case),
                 runs=len(scored),
                 errors=len(rows) - len(scored),
-                correct=sum(v == r["vars"]["expected"] for r, v in scored),
+                correct=sum(v == expected(r) for r, v in scored),
                 false_approvals=sum(
-                    r["vars"]["expected"] == "REJECT" and v == "APPROVE" for r, v in scored
+                    expected(r) == "REJECT" and v == "APPROVE" for r, v in scored
                 ),
                 false_rejections=sum(
-                    r["vars"]["expected"] == "APPROVE" and v == "REJECT" for r, v in scored
+                    expected(r) == "APPROVE" and v == "REJECT" for r, v in scored
                 ),
-                reject_runs=sum(r["vars"]["expected"] == "REJECT" for r, _ in scored),
+                reject_runs=sum(expected(r) == "REJECT" for r, _ in scored),
                 stability=(
                     sum(len(v) == 1 for v in verdicts_per_case.values()) / len(verdicts_per_case)
                     if verdicts_per_case
@@ -158,11 +203,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("results", type=Path, help="promptfoo eval -o <file>.json")
     parser.add_argument("--prices", type=Path, help="JSON of USD per million tokens per model")
+    parser.add_argument("--relabel", action="append", default=[], metavar="CASE_ID=LABEL")
+    parser.add_argument("--save-compact", type=Path, help="write the compact results here")
     args = parser.parse_args(argv)
 
-    results = json.loads(args.results.read_text(encoding="utf-8"))["results"]["results"]
+    data = json.loads(args.results.read_text(encoding="utf-8"))
+    # promptfoo's own file nests the rows; a compact file is a list under "results".
+    rows = data["results"]["results"] if isinstance(data["results"], dict) else data["results"]
+    if args.save_compact:
+        args.save_compact.write_text(
+            json.dumps({"results": [compact(r) for r in rows]}, indent=1), encoding="utf-8"
+        )
     prices = load_prices(args.prices) if args.prices else {}
-    sys.stdout.write(to_markdown(summarize(results, prices)) + "\n")
+    summaries = summarize(rows, prices, parse_relabel(args.relabel))
+    sys.stdout.write(to_markdown(summaries) + "\n")
     return 0
 
 

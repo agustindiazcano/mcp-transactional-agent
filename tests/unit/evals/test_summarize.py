@@ -99,3 +99,33 @@ def test_markdown_table_has_a_row_per_provider_and_no_cost_when_unpriced() -> No
     assert "| m | 100% |" in table
     assert "1.2 s" in table
     assert "n/a" in table
+
+
+def test_relabel_rescores_a_case_without_editing_the_raw_results() -> None:
+    """A label changed after review is applied at scoring time, so the saved
+    results stay exactly as the models answered."""
+    rows = [row("m", "a", "APPROVE", "REJECT")]
+
+    (s,) = summarize.summarize(rows, prices={}, relabel={"a": "REJECT"})
+
+    assert (s.correct, s.false_rejections) == (1, 0)
+    assert rows[0]["vars"]["expected"] == "APPROVE"
+
+
+def test_parse_relabel_reads_case_equals_label() -> None:
+    assert summarize.parse_relabel(["eval-1=REJECT", "eval-2=APPROVE"]) == {
+        "eval-1": "REJECT",
+        "eval-2": "APPROVE",
+    }
+    with pytest.raises(ValueError):
+        summarize.parse_relabel(["eval-1=MAYBE"])
+
+
+def test_compact_keeps_what_the_report_needs_and_scores_the_same() -> None:
+    raw = [row("m", "a", "REJECT", "APPROVE"), row("m", "b", "APPROVE", "APPROVE")]
+    raw[0]["prompt"] = {"raw": "a long prompt the report never reads"}
+
+    compacted = [summarize.compact(r) for r in raw]
+
+    assert "prompt" not in compacted[0]
+    assert summarize.summarize(compacted, prices={}) == summarize.summarize(raw, prices={})
