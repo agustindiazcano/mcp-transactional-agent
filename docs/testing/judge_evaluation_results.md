@@ -19,7 +19,7 @@ Counts are over judgments (50 cases × 3 repeats = 150 per model): 34 REJECT-lab
 
 **Main findings:**
 1. **No single model is safe on its own.** Every Gemini model auto-approved at least one claim that must go to a human. GPT-OSS never did, but it rejected valid claims 5 times.
-2. **The two judges together are safe, but the tie-breaker undoes it.** In the 150 paired judgments of today's production pair, the two judges never both approved a claim they shouldn't have. But they disagreed 14 times, and a disagreement goes to the Supreme Court, which runs **the same model and the same prompt as Judge 1**. Gemini gave the same verdict on every repeat, so on those cases the Supreme Court would most likely repeat Judge 1's wrong APPROVE and override Judge 2's correct REJECT (section 5.2). The tie-breaker adds no independent opinion.
+2. **The two judges together were safe in this run, but the tie-breaker undid it.** In the 150 paired judgments of the production pair, the two judges never both approved a claim they shouldn't have (but see section 10: a later run did). But they disagreed 14 times, and a disagreement goes to the Supreme Court, which runs **the same model and the same prompt as Judge 1**. Gemini gave the same verdict on every repeat, so on those cases the Supreme Court would most likely repeat Judge 1's wrong APPROVE and override Judge 2's correct REJECT (section 5.2). The tie-breaker adds no independent opinion.
 3. **One false approval is exactly what a deterministic check prevents.** Judge 1 approved a **$3,000 refund for a claim about a $30 charger**, inventing "$30 (3000 cents)" to reconcile them. Comparing the refund to the order amount in code, with no LLM, catches this with certainty ("Part B" in `PENDING.md`).
 4. **The eval found a real bug in the RAG pipeline.** The chunker can leave a policy heading at the end of one chunk and its rules at the start of the next (section 6).
 
@@ -51,7 +51,7 @@ All 50 labels were reviewed and accepted by the project owner. One label changed
 | Accuracy | Judgments whose verdict matches the label | Overall quality |
 | **False approvals** | REJECT-labeled judgments the model approved | **The dangerous error:** money out without the review the policy requires |
 | False rejections | APPROVE-labeled judgments the model rejected | Costs time, not money: the claim goes to a human |
-| Stable cases | Cases that got the same verdict on all 3 repeats | Determinism measured, not assumed from `temperature=0` |
+| Stable cases | Cases that got the same verdict on all 3 repeats **within this run** | Determinism measured, not assumed from `temperature=0`. It underestimates drift between runs (section 10) |
 | Latency | Wall time of the model call, median and P95 | Inside the worker, not user-facing |
 | Cost per judgment | Mean tokens × price per million, thinking billed as output | Prices fetched on the run date (`evals/promptfoo/prices.json`) |
 
@@ -111,7 +111,7 @@ Production auto-approves only if both judges approve. Pairing Judge 1 (gemini-3.
 | The judges disagreed, so the claim escalates | 14 |
 | An APPROVE-labeled claim not approved by both | 5 |
 
-Cross-model judges work as designed: Judge 1's 9 false approvals are all caught by Judge 2.
+Cross-model judges worked as designed in this run: Judge 1's 9 false approvals were all caught by Judge 2. A later run shows this isn't guaranteed (section 10).
 
 ### 5.2 The Supreme Court undoes it
 On a disagreement the claim goes to the Supreme Court, which uses the same provider as Judge 1 (`src/agents/provider_roles.py`), so the same model (`gemini-3.5-flash-lite`), with **the same messages** at the same temperature. That model gave the same verdict on all 3 repeats of every case. On `b2-reject-04` ($3,000 charger) and `b2-reject-13` (€4,800), the Supreme Court would most likely answer APPROVE again and override Judge 2's correct REJECT.
@@ -142,7 +142,7 @@ In the first run, GPT-OSS approved $7,500 and $9,000 claims with "no policy exce
 - **The cases are written, not sampled from real traffic.** They are designed to probe known weak spots, so they are harder than an average day of claims.
 - **Retrieval is held fixed** at the correct chunk; real retrieval can be wrong (section 6).
 - **Single judges, not the full cascade.** Section 5.2 is inferred.
-- **3 repeats.** Enough to show instability, not to estimate a small flip rate.
+- **3 repeats, back to back.** Enough to show instability within a run, not to estimate a flip rate, and they underestimate drift between runs (section 10).
 - **Prices change.** They were fetched on 2026-09-24; gemini-3.8-flash is on an introductory price until 2026-12-31 ($0.75 / $3.75 per million tokens, then $1.50 / $7.50).
 
 ---
@@ -176,3 +176,21 @@ This run took 45 minutes and cost well under $1. The saved results (`evals/promp
 python evals/promptfoo/summarize.py evals/promptfoo/results/2026-09-24-benchmark.json `
   --prices evals/promptfoo/prices.json --relabel eval-b2-approve-09=REJECT
 ```
+
+---
+
+## 10. Follow-up: the Supreme Court moved to gemini-3.8-flash (2026-09-24)
+
+Acting on section 5.2, the Supreme Court now runs its own model (`SUPREME_COURT_MODEL`, default `gemini-3.8-flash`), while Judge 1 and Judge 2 are unchanged. The two claims section 5.2 worried about were then sent through the **full production cascade** (`evaluate_decision()`: both judges, then the Supreme Court on a disagreement), 5 times each, on Vertex and Groq:
+
+| Claim | Judge 1 | Judge 2 | Supreme Court (3.8 Flash) | Final |
+|---|---|---|---|---|
+| `b2-reject-04`: $3,000 for a "$30 charger" | REJECT ×5 | REJECT ×5 | REJECT ×5 | ✅ REJECT ×5 |
+| `b2-reject-13`: €4,800 vs a $5,000 limit | APPROVE ×5 | APPROVE ×4, REJECT ×1 | REJECT ×1 (the only escalation) | ❌ **APPROVE ×4**, REJECT ×1 |
+
+What it shows:
+1. **The new Supreme Court decides correctly when it's reached:** 6 of 6, including *"The refund amount of $3000.00 significantly contradicts the claim text"*.
+2. **Verdicts drift between runs far more than within one.** In the benchmark, Judge 1 approved `b2-reject-04` 3 of 3 and Judge 2 rejected `b2-reject-13` 3 of 3; a few hours later Judge 1 rejected `b2-reject-04` 5 of 5 and Judge 2 approved `b2-reject-13` 4 of 5. Same code, same prompt, same inputs, `temperature=0`. So "stable across 3 repeats" (section 1) describes a single run only.
+3. **The pair can approve wrongly together.** On the euro claim both judges approved 4 times out of 5, so there was no disagreement and the Supreme Court was never asked. No choice of tie-breaker fixes that. A deterministic check (convert the currency, compare with the $5,000 limit) does, which is why Part B comes next.
+
+Next measurement: the full cascade as its own Promptfoo provider, with repeats spread over time instead of back to back.

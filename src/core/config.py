@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     VERTEX_EMBEDDING_LOCATION: str = "us-central1"
     VERTEX_MODEL: str = "gemini-3.5-flash-lite"
     VERTEX_EMBEDDING_MODEL: str = "gemini-embedding-001"
+    # The Supreme Court's own model (Gemini, on AI Studio or Vertex). On Judge 1's
+    # model it would repeat Judge 1's verdict on a disagreement; gemini-3.8-flash
+    # scored best in the judge benchmark (docs/testing/judge_evaluation_results.md).
+    SUPREME_COURT_MODEL: str = "gemini-3.8-flash"
 
     # Langfuse tracing (src/core/tracing.py). Off unless both keys are set.
     # Empty LANGFUSE_BASE_URL means the SDK's default (the EU cloud); this

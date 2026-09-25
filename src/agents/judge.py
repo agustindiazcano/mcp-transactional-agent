@@ -7,7 +7,7 @@ import structlog
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from src.agents.llm_factory import get_llm
-from src.agents.provider_roles import provider_for_role
+from src.agents.provider_roles import model_for_role, provider_for_role
 from src.agents.token_usage import extract_usage
 from src.core.tracing import langchain_config, observe
 
@@ -97,8 +97,16 @@ def parse_verdict(content_raw: str | list[str | dict[Any, Any]]) -> dict[str, An
     return cast(dict[str, Any], result)
 
 
-async def _run_single_judge(provider: str, temperature: float, messages: list[Any], stage: str) -> dict[str, Any]:
+async def _run_single_judge(
+    provider: str,
+    temperature: float,
+    messages: list[Any],
+    stage: str,
+    model_name: str | None = None,
+) -> dict[str, Any]:
     """Run one judge, traced as a Langfuse `evaluator`; fails closed to REJECT.
+
+    `model_name` overrides the provider's default model (the Supreme Court's).
 
     A judge that crashes or returns an unusable verdict is marked ERROR on its
     observation, so guardrail errors are distinguishable from real rejections.
@@ -106,9 +114,9 @@ async def _run_single_judge(provider: str, temperature: float, messages: list[An
     with observe(
         _JUDGE_OBSERVATION_NAMES.get(stage, stage),
         as_type="evaluator",
-        metadata={"provider": provider, "role": stage},
+        metadata={"provider": provider, "role": stage, "model": model_name},
     ) as observation:
-        result, error = await _invoke_judge(provider, temperature, messages, stage)
+        result, error = await _invoke_judge(provider, temperature, messages, stage, model_name)
         observation.update(
             output=result,
             level="ERROR" if error else None,
@@ -118,11 +126,15 @@ async def _run_single_judge(provider: str, temperature: float, messages: list[An
 
 
 async def _invoke_judge(
-    provider: str, temperature: float, messages: list[Any], stage: str
+    provider: str,
+    temperature: float,
+    messages: list[Any],
+    stage: str,
+    model_name: str | None = None,
 ) -> tuple[dict[str, Any], str | None]:
     """Return (verdict dict, error message or None) for one judge call."""
     try:
-        llm = get_llm(provider=provider, temperature=temperature)
+        llm = get_llm(provider=provider, temperature=temperature, model_name=model_name)
         response = await llm.ainvoke(messages, config=langchain_config("generate-verdict"))
 
         usage = extract_usage(response)
@@ -207,7 +219,11 @@ async def _evaluate(action_name: str, action_args: dict[str, Any], context: dict
         try:
             # Supreme Court tie-breaker
             supreme_res = await _run_single_judge(
-                provider_for_role("supreme_court"), 0.0, messages, stage="supreme_court"
+                provider_for_role("supreme_court"),
+                0.0,
+                messages,
+                stage="supreme_court",
+                model_name=model_for_role("supreme_court"),
             )
             sv = supreme_res.get("verdict")
             trail["supreme_court"] = {"verdict": sv, "reason": supreme_res.get("reason")}

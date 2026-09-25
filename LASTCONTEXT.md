@@ -14,7 +14,7 @@ Only what is current: read this first in every session. When an item here is don
   - Ingestion: P95 of 87 ms.
   - Real claim on Vertex: 6.6 s end to end.
   - Cost: ~$0.0004 per transaction on AI Studio (2026-09-21). Per judgment on Vertex (2026-09-24): gemini-3.5-flash-lite $0.00036, gemini-3.8-flash $0.00199; gpt-oss-20b on Groq $0.00016.
-  - **Judge benchmark (Promptfoo, 2026-09-24):** 50 labeled claims × 3 repeats × 4 models. gemini-3.8-flash 98% / 3 false approvals; gpt-oss-20b 97% / 0; gemini-3.5-flash-lite (Judge 1 + Supreme Court) 94% / 9. The pair never both approved wrongly, but the Supreme Court runs Judge 1's model, so it would repeat Judge 1's errors on a disagreement. Details: `docs/testing/judge_evaluation_results.md`.
+  - **Judge benchmark (Promptfoo, 2026-09-24):** 50 labeled claims × 3 repeats × 4 models. gemini-3.8-flash 98% / 3 false approvals; gpt-oss-20b 97% / 0; gemini-3.5-flash-lite (Judge 1 + Supreme Court) 94% / 9. The Supreme Court now runs `gemini-3.8-flash` (it ran Judge 1's model); 6 of 6 correct in the real cascade. But verdicts drift between runs: both judges later approved a €4,800 claim (over $5,000) 4 of 5 times, so only a deterministic currency-aware check (Part B) closes it. Details: `docs/testing/judge_evaluation_results.md`.
 
 ## Decisions in force
 - **Vertex setup:** `langchain-google-genai` with `vertexai=True`, not the deprecated `ChatVertexAI`. Chat on `global`, embeddings on `us-central1`. ADC only, never an API key.
@@ -49,7 +49,7 @@ Only what is current: read this first in every session. When an item here is don
 | 5 | 🟢 | GitHub profile text: says 232 tests, the count is 248 | ⬜ |
 | 6 | 🟢 | Langfuse Cloud account (free tier), keys in `.env` | ✅ US region |
 | 7 | 🟢 | Settings → Branches: branch protection on `main`, requiring the CI checks | ⬜ |
-| 9 | 🟡 | Decide the Supreme Court model: today it's Judge 1's model (gemini-3.5-flash-lite), so it can't break a tie independently; candidate gemini-3.8-flash (see the judge benchmark) | ⬜ |
+| 9 | 🟡 | Decide the Supreme Court model | ✅ gemini-3.8-flash (2026-09-24, `SUPREME_COURT_MODEL`) |
 | 8 | 🟡 | Decide the public API protection: which option, and when ([analysis](docs/architecture/api_abuse_protection.md)). Until then, `demo-down` when not demoing | ⬜ |
 
 ## Next, in order

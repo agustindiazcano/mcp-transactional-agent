@@ -269,3 +269,14 @@ def test_get_llm_vertex_model_name_overrides_the_configured_model():
         get_llm(temperature=0.0, model_name="gemini-other")
 
         assert MockVertex.call_args.kwargs["model"] == "gemini-other"
+
+
+def test_get_llm_gemini_model_name_overrides_the_default_model():
+    """AI Studio honors model_name too, so the Supreme Court can run its own
+    model when LLM_PROVIDER=gemini (locally), not only on Vertex."""
+    mock_settings = Settings(LLM_PROVIDER="gemini", GEMINI_API_KEY="k")
+    with patch("src.agents.llm_factory.settings", mock_settings), \
+         patch("src.agents.llm_factory.ChatGoogleGenerativeAI") as MockGemini:
+        get_llm(provider="gemini", temperature=0.0, model_name="gemini-other")
+
+        assert MockGemini.call_args.kwargs["model"] == "gemini-other"
