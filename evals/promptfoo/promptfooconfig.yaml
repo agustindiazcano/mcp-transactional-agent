@@ -7,14 +7,21 @@ description: Judge accuracy on labeled refund claims
 prompts:
   - "{{claim_text}}"
 
-# One entry per model under test. `provider`/`model` go to get_llm().
+# One entry per model under test. `provider`/`model` go to get_llm(); the
+# labels are the keys of prices.json.
 providers:
   - id: file://judge_provider.py
     label: mock
     config: { provider: mock }
   - id: file://judge_provider.py
+    label: gemini-3.1-flash-lite (Vertex)
+    config: { provider: vertex, model: gemini-3.1-flash-lite }
+  - id: file://judge_provider.py
     label: gemini-3.5-flash-lite (Vertex)
     config: { provider: vertex, model: gemini-3.5-flash-lite }
+  - id: file://judge_provider.py
+    label: gemini-3.8-flash (Vertex)
+    config: { provider: vertex, model: gemini-3.8-flash }
   - id: file://judge_provider.py
     label: gpt-oss-20b (Groq)
     config: { provider: groq, model: openai/gpt-oss-20b }
