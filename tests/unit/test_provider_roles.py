@@ -3,7 +3,7 @@ import pytest
 from src.agents.provider_roles import DEFAULT_ROLE_PROVIDERS, LlmRole, provider_for_role
 from src.core.config import settings
 
-ALL_ROLES: list[LlmRole] = ["judge1", "judge2", "supreme_court", "prompt_guard"]
+ALL_ROLES: list[LlmRole] = ["judge1", "judge2", "supreme_court", "prompt_guard", "front_desk"]
 
 
 @pytest.mark.parametrize("role", ALL_ROLES)
@@ -35,6 +35,7 @@ def test_real_provider_keeps_the_fixed_role_pairing(
     assert provider_for_role("judge2") == "groq"
     assert provider_for_role("supreme_court") == "gemini"
     assert provider_for_role("prompt_guard") == "groq"
+    assert provider_for_role("front_desk") == "gemini"
 
 
 def test_vertex_mode_moves_the_gemini_roles_to_vertex(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -45,6 +46,7 @@ def test_vertex_mode_moves_the_gemini_roles_to_vertex(monkeypatch: pytest.Monkey
 
     assert provider_for_role("judge1") == "vertex"
     assert provider_for_role("supreme_court") == "vertex"
+    assert provider_for_role("front_desk") == "vertex"
     assert provider_for_role("judge2") == "groq"
     assert provider_for_role("prompt_guard") == "groq"
 
@@ -86,3 +88,27 @@ def test_supreme_court_default_is_the_benchmarked_model() -> None:
     from src.core.config import Settings
 
     assert Settings().SUPREME_COURT_MODEL == "gemini-3.8-flash"
+
+
+@pytest.mark.parametrize("configured", ["gemini", "vertex"])
+def test_front_desk_runs_its_own_model(monkeypatch: pytest.MonkeyPatch, configured: str) -> None:
+    from src.agents.provider_roles import model_for_role
+
+    monkeypatch.setattr(settings, "LLM_PROVIDER", configured)
+    monkeypatch.setattr(settings, "FRONT_DESK_MODEL", "gemini-test-front-desk")
+
+    assert model_for_role("front_desk") == "gemini-test-front-desk"
+
+
+def test_mock_mode_gives_the_front_desk_no_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.agents.provider_roles import model_for_role
+
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "mock")
+
+    assert model_for_role("front_desk") is None
+
+
+def test_front_desk_default_is_a_reasoning_capable_model() -> None:
+    from src.core.config import Settings
+
+    assert Settings().FRONT_DESK_MODEL == "gemini-3.8-flash"

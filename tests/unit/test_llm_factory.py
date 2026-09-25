@@ -30,6 +30,22 @@ def test_get_llm_mock_prompt_guard_returns_benign_score():
     assert llm.responses == ["0.0"]
 
 
+def test_get_llm_mock_front_desk_returns_a_proposal_shape():
+    """The Front-Desk (Phase 1.E) parses a ClaimProposal shape, not the
+    judges' verdict JSON, so its mock needs a response of its own."""
+    from src.agents.llm_factory import FRONT_DESK_MOCK_MODEL
+
+    llm = get_llm(provider="mock", temperature=0.0, model_name=FRONT_DESK_MOCK_MODEL)
+
+    assert isinstance(llm, FakeListChatModel)
+    assert len(llm.responses) == 1
+    import json
+
+    parsed = json.loads(llm.responses[0])
+    assert parsed["intent"] == "refund"
+    assert parsed["order_id"] and parsed["amount"] and parsed["currency"] and parsed["reason"]
+
+
 def test_get_llm_gemini():
     """Test that the factory returns a Gemini model when LLM_PROVIDER=gemini."""
     mock_settings = Settings(LLM_PROVIDER="gemini", GEMINI_API_KEY="test_key")

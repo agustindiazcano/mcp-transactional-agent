@@ -40,6 +40,13 @@ except ImportError:
 # score, not the judges' JSON, so the mock provider needs a response of its own.
 PROMPT_GUARD_MODEL = "meta-llama/llama-prompt-guard-2-22m"
 
+# Phase 1.E: the Front-Desk proposer (src/agents/front_desk.py) answers with a
+# ClaimProposal shape, not the judges' verdict JSON. Under LLM_PROVIDER=mock,
+# model_for_role("front_desk") returns None like every other role, so
+# front_desk.py passes this fixed sentinel as model_name instead -- it is
+# never a real model id, only a marker the mock branch below matches on.
+FRONT_DESK_MOCK_MODEL = "mock-front-desk-proposal"
+
 
 def resolve_provider(provider: str | None = None) -> str:
     """Normalize ``provider``, or LLM_PROVIDER when it's None.
@@ -65,6 +72,15 @@ def get_llm(provider: str | None = None, temperature: float = 0.7, model_name: s
         if model_name == PROMPT_GUARD_MODEL:
             # A benign score, so the guard reports 'clear' instead of 'skipped'
             return FakeListChatModel(responses=["0.0"])
+        if model_name == FRONT_DESK_MOCK_MODEL:
+            # A valid ClaimProposal shape, for plumbing tests only -- a fixed
+            # response like every other mocked role (CLAUDE.md's Promptfoo
+            # rules: mock is for infra, not for judging intelligence).
+            mock_proposal = (
+                '{"intent": "refund", "order_id": "ord-1", "amount": 10.0, '
+                '"currency": "USD", "reason": "Mocked for local dev"}'
+            )
+            return FakeListChatModel(responses=[mock_proposal])
         # Returns a valid JSON matching what the LLM-as-a-Judge expects
         return FakeListChatModel(
             responses=['{"verdict": "APPROVE", "reason": "Mocked for local dev"}']

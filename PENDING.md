@@ -6,9 +6,9 @@ Personal working notes: only what is still open, in priority order. Everything d
 
 ### 1 — 🔴 Front-Desk / Back-Office Asymmetric Agentic Workflow (Phase 1.E) — promoted 2026-09-25
 Part B (below) is merged, so this is unblocked. Replaces `worker.py`'s hardcoded `mock_primary_action = "execute_refund"` with a real primary-agent LLM call, and extends "never trust LLM output, validate server-side" to the agent's proposed intent. Decided 2026-09-25: **single-turn first** (claim text → validated proposal → judges); the multi-turn chat variant is a later increment on top of it, not this pass.
-- [ ] Proposal schema (Pydantic, `extra="forbid"`): intent (refund / clarify / out_of_scope), order_id, amount, currency, reason.
-- [ ] Front-Desk: a real LLM call in `src/agents/` (structured output through `llm_factory`), minimal privilege (no DB/RAG table/MCP access), that translates free text into that schema — or asks a clarifying question if it can't.
-- [ ] Back-Office: re-validate that payload server-side against the schema before it reaches the Double Judge; wire it into `worker.py` in place of the mock.
+- [x] Proposal schema (Pydantic, `extra="forbid"`): intent (refund / clarify / out_of_scope), order_id, amount, currency, reason. `src/agents/proposal.py`'s `ClaimProposal`, branch `claude/awesome-wright-bipend`, 2026-09-25.
+- [x] Front-Desk: a real LLM call in `src/agents/` (structured output through `llm_factory`), minimal privilege (no DB/RAG table/MCP access), that translates free text into that schema — or asks a clarifying question if it can't. `src/agents/front_desk.py`'s `propose_action()`, same branch. Fails closed to `clarify` on any malformed reply or provider failure.
+- [ ] Back-Office: re-validate that payload server-side against the schema before it reaches the Double Judge; wire it into `worker.py` in place of the mock. Not started — `worker.py` still calls neither of the above.
 - [ ] Real self-correction loop: now that a proposal can actually change, route a REJECT's feedback back to the proposer and retry up to `MAX_LLM_RETRIES` only when the new proposal differs from the one just rejected (the 2026-09-25 re-vote fix made this explicit — see `docs/worklog/2026-09-25-lastcontext-snapshot.md`).
 - [ ] `NEEDS_CLARIFICATION` outcome: a new status with the agent's question, shown on the dashboard.
 - [ ] Feedback loop: the objective verdict contract (`REJECTED: <objective reason>`, never raw judge rationale) that the Front-Desk phrases into a reply, without re-interpreting or overriding it.

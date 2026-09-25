@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     # model it would repeat Judge 1's verdict on a disagreement; gemini-3.8-flash
     # scored best in the judge benchmark (docs/testing/judge_evaluation_results.md).
     SUPREME_COURT_MODEL: str = "gemini-3.8-flash"
+    # Phase 1.E: the Front-Desk proposer's model (Gemini, on AI Studio or
+    # Vertex). Reasoning-capable, since it has to turn free text into a
+    # structured proposal or recognize it can't and ask a clarifying question.
+    FRONT_DESK_MODEL: str = "gemini-3.8-flash"
 
     # Langfuse tracing (src/core/tracing.py). Off unless both keys are set.
     # Empty LANGFUSE_BASE_URL means the SDK's default (the EU cloud); this

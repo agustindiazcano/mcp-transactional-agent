@@ -9,7 +9,7 @@ from typing import Literal
 
 from src.core.config import settings
 
-LlmRole = Literal["judge1", "judge2", "supreme_court", "prompt_guard"]
+LlmRole = Literal["judge1", "judge2", "supreme_court", "prompt_guard", "front_desk"]
 
 # The asymmetric Double Judge needs two different model families, and the
 # Prompt Guard is a Groq-hosted classifier, so these don't follow LLM_PROVIDER.
@@ -18,6 +18,7 @@ DEFAULT_ROLE_PROVIDERS: dict[LlmRole, str] = {
     "judge2": "groq",
     "supreme_court": "gemini",
     "prompt_guard": "groq",
+    "front_desk": "gemini",
 }
 
 
@@ -41,10 +42,17 @@ def provider_for_role(role: LlmRole) -> str:
 def model_for_role(role: LlmRole) -> str | None:
     """Return the model ``role`` runs on, or None for its provider's default.
 
-    Only the Supreme Court has its own model: on Judge 1's model it would repeat
-    Judge 1's verdict on the very disagreements it exists to break (measured in
-    docs/testing/judge_evaluation_results.md). The mock takes no model name.
+    The Supreme Court and the Front-Desk each have their own model setting:
+    the Supreme Court so it doesn't repeat Judge 1's verdict on the very
+    disagreements it exists to break (measured in
+    docs/testing/judge_evaluation_results.md); the Front-Desk (Phase 1.E)
+    because it needs reasoning capability distinct from the judges' pairing.
+    The mock takes no model name.
     """
-    if role == "supreme_court" and provider_for_role(role) in ("gemini", "vertex"):
+    if provider_for_role(role) not in ("gemini", "vertex"):
+        return None
+    if role == "supreme_court":
         return settings.SUPREME_COURT_MODEL
+    if role == "front_desk":
+        return settings.FRONT_DESK_MODEL
     return None
