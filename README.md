@@ -6,7 +6,7 @@
 
 **Overview**
 - [Summary](#summary) · [Project Status](#project-status) · [Tech Stack](#tech-stack) · [Roadmap](#roadmap)
-- [LLM Evaluation & Observability](#llm-evaluation--observability): Promptfoo, Langfuse, Ragas
+- [LLM Evaluation & Observability](#llm-evaluation--observability): Promptfoo, Langfuse, Ragas · [Judge Benchmark](#judge-benchmark-promptfoo)
 
 **Phases**
 - [Phase 1 — Core Engine](#phase-1--core-engine-feature-complete-running-locally)
@@ -38,7 +38,7 @@
 - Architecture: [Core Engine](docs/phases/phase_1_core_engine.md) · [MCP Security Boundary](docs/architecture/mcp_security_boundary.md) · [Public API Abuse Protection](docs/architecture/api_abuse_protection.md) · [Microservices Debugging Protocol](docs/architecture/microservices_debugging_protocol.md)
 - Infrastructure: [Local Stack and Google Cloud Deployment](docs/infrastructure/gcp_infrastructure.md)
 - Roadmaps: [Deterministic Guardrails](docs/deterministic_guardrails_roadmap.md) · [Advanced AI](docs/architecture/advanced_ai_roadmap.md)
-- Testing: [Test Coverage](docs/testing/tdd_coverage.md) · [Failure Injection](docs/testing/chaos_engineering_armageddon.md) · [Telemetry & Performance](docs/testing/telemetry_performance.md) · [LLMOps & Observability](docs/testing/llmops_observability.md)
+- Testing: [Test Coverage](docs/testing/tdd_coverage.md) · [Failure Injection](docs/testing/chaos_engineering_armageddon.md) · [Telemetry & Performance](docs/testing/telemetry_performance.md) · [LLMOps & Observability](docs/testing/llmops_observability.md) · [Judge Evaluation & Benchmark](docs/testing/judge_evaluation_results.md)
 - Postmortems: [2026-09-21 MCP Transport Failures](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md)
 - Operations and agent context: [Runbook](RUNBOOK.md) · [Refund Policy (RAG source)](docs/policies/refund_policy.md) · [CLAUDE.md](CLAUDE.md) · [PENDING.md](PENDING.md) · [LASTCONTEXT.md](LASTCONTEXT.md) · [Work Log](docs/worklog/)
 
@@ -48,7 +48,7 @@
 
 An asynchronous workflow engine for running LLM agents against transactional business logic (refunds, fraud checks) without giving the model direct access to the database or internal APIs.
 
-**Evaluation:** every decision is checked at runtime by a Prompt Guard and two LLM judges, and every claim is traced end to end in **[Langfuse](#llm-evaluation--observability)**: each guardrail, retrieval, judge, and tool step, with the model, tokens, and cost of every LLM call, and PII masked before export. The next increment measures the judges offline with **Promptfoo**: a labeled regression set and prompt-injection red-teaming gated in CI.
+**Evaluation:** every decision is checked at runtime by a Prompt Guard and two LLM judges, and every claim is traced end to end in **[Langfuse](#llm-evaluation--observability)**: each guardrail, retrieval, judge, and tool step, with the model, tokens, and cost of every LLM call, and PII masked before export. The judges are also measured offline with **[Promptfoo](#judge-benchmark-promptfoo)** on 50 human-labeled claims, benchmarking four models for accuracy, false approvals, verdict stability, latency and cost.
 
 It addresses three problems that appear when LLMs are placed in a write path: non-deterministic output, uncontrolled access to side-effecting operations, and synchronous blocking on slow inference calls. The engine combines an event-driven pipeline (FastAPI → RabbitMQ → worker), a Model Context Protocol (MCP) server as the only route to side-effecting tools, and retrieval over business rules stored in PostgreSQL/pgvector (Phase 1.D).
 
@@ -105,7 +105,7 @@ The project also examines a second question: **how much of an AI system's decisi
 | **RAG Ingestion (Phase 1.D)** | Provider-agnostic embeddings (Gemini `gemini-embedding-001`, truncated to 768 dims, by default), `pgvector` |
 | **LLM Providers** | Gemini AI Studio, Google Vertex AI (the cloud deployment's provider, authenticated by service account), Groq, OpenAI (GPT-4o), AWS Bedrock (secondary) |
 | **Frontend** | Streamlit + pandas (Ops Dashboard, Phase 4) |
-| **LLM Evaluation & Tracing** | Runtime Double LLM-as-a-Judge and Prompt Guard (implemented); Langfuse tracing (implemented, Python SDK v4 + LangChain callback); Promptfoo (next); Ragas (later). See [LLM Evaluation & Observability](#llm-evaluation--observability) |
+| **LLM Evaluation & Tracing** | Runtime Double LLM-as-a-Judge and Prompt Guard (implemented); Langfuse tracing (implemented, Python SDK v4 + LangChain callback); Promptfoo offline evaluation and model benchmark (implemented); Ragas (later). See [LLM Evaluation & Observability](#llm-evaluation--observability) |
 | **Testing** | Pytest, pytest-asyncio, pytest-cov, Locust |
 | **Infrastructure** | Docker, Docker Compose (local); Google Cloud — Cloud Run, Cloud SQL for PostgreSQL, Secret Manager, Artifact Registry; Terraform; AWS (secondary) |
 | **CI/CD** | GitHub Actions: CI on every push, CD to Cloud Run on every merge to `main`, authenticated through Workload Identity Federation |
@@ -136,14 +136,14 @@ The project also examines a second question: **how much of an AI system's decisi
 
 ## LLM Evaluation & Observability
 
-The runtime guardrails decide each claim. This section covers how their quality gets measured. The runtime pieces and tracing run today; offline evaluation is the next increment ([PENDING.md](PENDING.md), Step 3).
+The runtime guardrails decide each claim. This section covers how their quality gets measured: the runtime pieces, tracing, and offline evaluation run today; RAG evaluation comes later.
 
 | Layer | Tool | Status | What it answers |
 |---|---|---|---|
 | Runtime decision check | Asymmetric Double LLM-as-a-Judge + Supreme Court tie-break | Implemented | Should this claim be approved? |
 | Pre-execution shield | Prompt Guard (`llama-prompt-guard-2-22m`) | Implemented | Is this input a jailbreak or an injection attempt? |
 | Cost accounting | Structured `llm_token_usage` logs (`src/agents/token_usage.py`) | Implemented | Tokens and cost per stage (see [Cost per Transaction](#cost-per-transaction)) |
-| Offline evaluation, gated in CI | **Promptfoo** | Next | How accurate the judges are on a labeled set of about 100 cases: legitimate claims, obvious fraud, borderline refunds, and prompt injection. Reports precision, recall, false approvals, and verdict stability across repeated runs, plus red-teaming for prompt injection. A change that drops accuracy below the threshold fails CI. |
+| Offline evaluation and model benchmark | **Promptfoo** | Implemented (CI gate next) | How accurate each candidate judge model is on 50 human-labeled claims (legitimate, outside policy, human review, borderline, malformed, prompt injection), graded on production's own prompt and parser: accuracy, false approvals, false rejections, verdict stability over repeats, latency and cost. See [Judge Benchmark](#judge-benchmark-promptfoo). |
 | Tracing | **Langfuse** | Implemented | One trace per claim: every LLM call with its input, output, latency, tokens, and cost, nested under the step that made it. See [Tracing with Langfuse](#tracing-with-langfuse). |
 | RAG evaluation | **Ragas** | Later | Context relevance and groundedness of the retrieval → judge path. Deferred because the knowledge base has 4 chunks today, too few for these scores to mean much. |
 
@@ -152,6 +152,25 @@ The runtime guardrails decide each claim. This section covers how their quality 
 - **TruLens** covers tracing plus the RAG triad, which Langfuse and Ragas already cover separately, without adding a second dashboard.
 
 Details: [LLMOps & Observability](docs/testing/llmops_observability.md).
+
+### Judge Benchmark (Promptfoo)
+
+Run on 2026-09-24: 50 human-labeled claims × 3 repeats × 4 models = 600 judgments. Each judge is graded **on production's own code** (the same message builder and verdict parser `evaluate_decision()` uses, tested byte-for-byte), with the correct policy chunk as context. Full method, every miss, and limitations: **[Judge Evaluation & Benchmark](docs/testing/judge_evaluation_results.md)**.
+
+| Model | Accuracy | False approvals | False rejections | Stable cases | Median latency | Cost per judgment |
+|---|---|---|---|---|---|---|
+| gemini-3.5-flash-lite (Vertex), Judge 1 and Supreme Court today | 94% | **9/102** | 0/48 | 100% | 9.3 s | $0.00036 |
+| gemini-3.1-flash-lite (Vertex) | 92% | 6/102 | 6/48 | 100% | 9.8 s | $0.00026 |
+| gemini-3.8-flash (Vertex) | **98%** | 3/102 | 0/48 | 100% | 14.7 s | $0.00199 |
+| gpt-oss-20b (Groq), Judge 2 today | 97% | **0/102** | 5/48 | 98% | 4.0 s | $0.00016 |
+
+A **false approval** is a claim that must not be auto-approved (outside the policy, requiring human review, or an attack) that the judge approved: the dangerous error. All four models blocked all 9 prompt-injection attempts on every repeat.
+
+**What it found:**
+- **No single model is safe alone, but the pair is.** Judge 1 approved a **$3,000 refund for a "$30 charger"** (rationalizing "3000 cents") and a €4,800 claim against a $5,000 limit. Judge 2 rejected both, and in 150 paired judgments the two never both approved a claim they shouldn't have. Cross-model judges work as designed.
+- **The tie-breaker undoes it.** A disagreement escalates to the Supreme Court, which runs the same model and prompt as Judge 1, and Gemini gave the same verdict on every repeat. So it would most likely repeat Judge 1's wrong approval (inferred; measuring the full cascade is next). The fixes, in order: deterministic checks before the judges (refund ≤ order amount, same currency) and a different Supreme Court model (gemini-3.8-flash got both cases right).
+- **Determinism is measured, not assumed:** the Gemini models gave the same verdict on all 3 repeats of every case. GPT-OSS was stable on 49 of 50; the exception was an empty reply to a claim in Spanish, which production's parser failed closed to REJECT.
+- **It found a real RAG bug:** the chunker can leave a policy heading at the end of one chunk and its rules in the next, so retrieval can return a heading with no rules. Logged for a test-first fix.
 
 ### Tracing with Langfuse
 
@@ -197,7 +216,8 @@ Code: `src/core/tracing.py`. Rules for changing it: CLAUDE.md, Section 4 ("LLM T
 - **[Test Coverage Report](docs/testing/tdd_coverage.md):** Unit and integration test coverage.
 - **[Failure Injection Tests](docs/testing/chaos_engineering_armageddon.md):** Ten failure scenarios, their severity, and the invariants each one verifies.
 - **[Telemetry & Performance Testing](docs/testing/telemetry_performance.md):** Concurrency testing, coverage, and LLM tracing.
-- **[LLMOps & Observability](docs/testing/llmops_observability.md):** The evaluation and tracing plan: Promptfoo, Langfuse, and Ragas, and why LangSmith and TruLens were left out.
+- **[LLMOps & Observability](docs/testing/llmops_observability.md):** The evaluation and tracing plan: Promptfoo, Langfuse, and Ragas, how to run the eval, and why LangSmith and TruLens were left out.
+- **[Judge Evaluation & Benchmark](docs/testing/judge_evaluation_results.md):** The Promptfoo evaluation of the LLM judges: method, the 50 labeled cases, metric definitions, the four-model benchmark (accuracy, false approvals, stability, latency, cost), every miss explained, what it means for the production pipeline, and limitations.
 
 ### Postmortems
 - **[2026-09-21: Phase 1.C Load Test — MCP Transport Failures](docs/postmortems/2026-09-21-phase-1c-load-test-mcp-transport-failure.md):** Three MCP-adjacent bugs found while attempting the Phase 1.C load test. All three fixed and verified against the real containerized stack, including a re-run of the Locust load test. Full timeline, root cause, and every reproduction attempt that didn't work.
@@ -537,7 +557,7 @@ What runs where, who can read which secret, and how to operate it: [Infrastructu
 - **Demo switch:** the cloud environment is demo-only. One Terraform variable (`demo_up`, wrapped by `scripts/demo-up.ps1` / `demo-down.ps1`) stops Cloud SQL and scales the worker pools to zero; the HTTP services scale to zero on their own.
 - **Database (done):** **Cloud SQL for PostgreSQL 16** with `pgvector`, on the smallest tier. It has a public IP but no authorized networks, so the only way in is Cloud Run's built-in Cloud SQL connection, which checks IAM and shows up in the container as a Unix socket. The connection string lives in **Secret Manager**, so the application code is unchanged. Alembic runs as a one-shot **Cloud Run job**, the cloud counterpart of the local `migrate` service, and all 8 migrations are applied. Two more one-shot jobs of the same worker image load the demo data, each with its own service account: `seed-orders` (sample orders) and `ingest-knowledge-base` (chunks the refund policy and embeds it on Vertex). A real claim sent to the cloud gateway was judged with the retrieved policy as context and completed its refund in 4.6 s.
 - **Inference (validated locally):** **Vertex AI** through `langchain-google-genai`'s Vertex mode, authenticated by ADC — the Cloud Run service account in the cloud, the developer's `gcloud auth application-default login` locally (mounted read-only into the worker by `docker-compose.gcp.yml`). No API key in the environment. Chat runs on the `global` location (the Gemini 3.5 models aren't served regionally) and embeddings on `us-central1` (~1 s instead of ~12 s on `global`). Vertex embeddings are identical to AI Studio's (cosine 1.0), so moving to Vertex needed no re-ingestion. A real claim through the containerized stack completes in 6.6 s, including one run where the Supreme Court on Vertex broke a Judge 1/Judge 2 split.
-- **Model benchmark (next):** a cost, latency and verdict-stability comparison of the Gemini models on Vertex (3.1 and 3.5 Flash-Lite, 3.8 Flash) and GPT-OSS 20B on Groq, to decide which model fills which judge role. Partner models on Vertex (Claude, Grok) are out of scope for now: the project runs on GCP's free-trial credit, which doesn't cover them. Not started.
+- **Model benchmark (done, 2026-09-24):** accuracy, false approvals, verdict stability, latency and cost of the Gemini models on Vertex (3.1 and 3.5 Flash-Lite, 3.8 Flash) and GPT-OSS 20B on Groq, on 50 labeled claims — see [Judge Benchmark](#judge-benchmark-promptfoo). Partner models on Vertex (Claude, Grok) are out of scope for now: the project runs on GCP's free-trial credit, which doesn't cover them.
 - **Secrets (done) and TLS:** the database URL, broker URL, Groq key, MCP client token and MCP client registry are in **Secret Manager**, and each service account can read only the secrets its service uses. The cloud MCP client gets its own random token rather than the local-dev one. Cloud Run terminates TLS for every service. Together these address two of the [Known Limitations](#known-limitations) for the cloud deployment.
 - **Messaging:** a managed AMQP 0-9-1 broker (CloudAMQP), so the per-message ACK/NACK contract is unchanged and only the connection URL differs. Moving to Pub/Sub would mean re-validating the idempotency/retry contract first.
 - **Public API exposure (open):** the gateway and dashboard are public with no login and no rate limit per IP or per user; the only bound is the gateway's 2-instance cap and the single worker. The options and their costs are in [Public API Abuse Protection](docs/architecture/api_abuse_protection.md); no option is chosen yet.
@@ -1014,7 +1034,7 @@ Beyond the phases above, the following are candidate directions, not planned wor
 - `validate_fraud_score` is still a stub (fixed `0.12`). The `orders` table and the `get_order` / `get_refund_history` read tools exist, but the worker doesn't fetch them yet, so a refund is still not checked against the original purchase amount.
 - No dead-letter exchange is configured: a message NACKed after `EXECUTION_FAILED` is dropped from the queue. The transaction row keeps the status and the error for an operator. A 4xx from the MCP boundary (e.g. a 422) is also retried like any other failure, even though it can't succeed. The retries are bounded, but they use up rate-limit quota.
 - A redelivered message whose row is still `PROCESSING` (its worker died mid-claim) is discarded as a duplicate, and recovery waits for the Recovery Sweeper's stale threshold (5 min by default). Nothing is lost, but that claim is delayed.
-- No offline evaluation of the judges yet: Promptfoo is the next increment (see [LLM Evaluation & Observability](#llm-evaluation--observability)). Today the only evaluation is the runtime Double Judge.
+- The offline evaluation grades single judges on 50 written cases, not the full cascade on real traffic, and it isn't gated in CI yet (see [Judge Benchmark](#judge-benchmark-promptfoo)). The Supreme Court runs the same model as Judge 1, so it adds no independent opinion on disagreements.
 - Performance and cost figures are local measurements on a 4-core laptop (see tables above), not yet re-measured on cloud infrastructure. Throughput is a median of 3–6 runs per point; the cost figure is still a single transaction.
 - The worker keeps a database transaction open from the retrieval query through the judges and the refund call. With real LLMs that means one connection sitting "idle in transaction" for seconds per claim. It is one connection per worker, so it's harmless at this scale, but it doesn't scale well.
 - The MCP server runs as one Python process, at about 29 ms of CPU per claim, which caps it near 34 claims/s. Past that point it needs replicas, which the audit-table rate limiter already supports.
