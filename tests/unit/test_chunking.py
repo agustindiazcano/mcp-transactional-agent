@@ -68,3 +68,36 @@ def test_real_refund_policy_document_produces_multiple_chunks() -> None:
     joined = "\n".join(chunks)
     assert "Standard Refund Window" in joined
     assert "Refund Amount Limits and Fraud Flags" in joined
+
+
+def _ends_with_heading(chunk: str) -> bool:
+    return chunk.rstrip().split("\n\n")[-1].lstrip().startswith("#")
+
+
+def test_a_heading_never_ends_a_chunk() -> None:
+    """The heading must travel with the rules under it, or retrieval returns a bare title."""
+    text = (
+        "Intro paragraph that fills most of the first chunk of this document.\n\n"
+        "## Limits\n\n"
+        "A refund above 5000 dollars goes to human review."
+    )
+
+    chunks = chunk_markdown(text, chunk_size=90, chunk_overlap=10)
+
+    assert not any(_ends_with_heading(chunk) for chunk in chunks)
+    assert any("## Limits" in chunk and "5000 dollars" in chunk for chunk in chunks)
+
+
+def test_the_heading_is_not_duplicated_across_the_split() -> None:
+    text = f"{'A' * 60}\n\n## Limits\n\nRule under the heading."
+
+    chunks = chunk_markdown(text, chunk_size=80, chunk_overlap=10)
+
+    assert sum(chunk.count("## Limits") for chunk in chunks) == 1
+
+
+def test_real_policy_chunks_do_not_end_with_a_heading() -> None:
+    with open("docs/policies/refund_policy.md", encoding="utf-8") as f:
+        chunks = chunk_markdown(f.read())
+
+    assert [i for i, chunk in enumerate(chunks) if _ends_with_heading(chunk)] == []
