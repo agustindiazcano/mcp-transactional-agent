@@ -68,7 +68,7 @@ Part B (below) is merged, so this is unblocked. Replaces `worker.py`'s hardcoded
 - [ ] Login for the dashboard and gateway (public today; anyone can send claims that cost LLM calls).
 - [ ] Add `deletion_policy = "ABANDON"` to `google_sql_user.app` before any teardown (`app` owns the tables, so dropping the user fails).
 - [ ] Mojibake in Judge 2's reasons (`userâ€™s` for `user’s`), stored that way in `judge_trail`. Find where the Groq text is mis-decoded; test first.
-- [ ] `/api/v1/system-health` reports the MCP server down on the first call after idle (3 s timeout < cold start). Raise the timeout, or accept it for the demo.
+- [x] (code done 2026-10-14, takes effect on the next cloud deploy) `/api/v1/system-health` reports the MCP server down on the first call after idle (3 s timeout < cold start). Raise the timeout, or accept it for the demo.
 - [ ] Add `bandit` / Ruff's `S` rules to CI (security lint).
 - [ ] **SQLAlchemy 2.1:** capped at `<2.1` since 2.1.0 broke fresh builds (no `greenlet` by default). Upgrade on its own branch, run the full suite, then lift the cap.
 - [ ] Automatic rotation of the cloud secrets (today a new version is added by hand).

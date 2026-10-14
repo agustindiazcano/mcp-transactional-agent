@@ -376,6 +376,7 @@ When refusing an action under this section, always state the correct alternative
 | `MCP_ALLOWED_HOSTS` | Phase 6, server side: comma-separated extra `Host` headers the MCP SSE transport's DNS-rebinding protection accepts, on top of the local defaults (e.g. the Cloud Run hostname; exact, no scheme or port). Empty by default |
 | `REFUND_MAX_AMOUNT` | Phase 1.B: upper bound enforced by `execute_refund` validation (default: 10000) |
 | `MCP_TOOL_TIMEOUT_SECONDS` | Worker side: read timeout per MCP tool-call attempt; bounds the MCP SDK's hang when the security boundary rejects a call with a 4xx (default: 10) |
+| `MCP_HEALTH_TIMEOUT_SECONDS` | Gateway side: how long `/api/v1/system-health` waits for the MCP server (default: 10; covers a Cloud Run cold start) |
 | `MCP_TOOL_MAX_RETRIES` | Worker side: attempts at `execute_refund` before the transaction is marked `EXECUTION_FAILED` (default: 3) |
 | `MCP_TOOL_BACKOFF_BASE_SECONDS` | Worker side: base delay of the exponential backoff between tool-call attempts (default: 1.0) |
 | `REFUND_HUMAN_REVIEW_THRESHOLD_USD` | Worker side, evidence check: a refund above this amount in USD goes to `PENDING_HUMAN_REVIEW` without the judges (default: 5000, the refund policy's limit) |

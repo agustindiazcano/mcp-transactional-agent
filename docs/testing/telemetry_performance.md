@@ -6,7 +6,7 @@ To ensure the Agentic MCP Engine is truly enterprise-grade, we rely on empirical
 A high test coverage percentage (targeting 80%+) ensures that the core transactional logic is actively executed and validated by our test suites, preventing regressions during refactors.
 
 - **Tooling:** `pytest-cov`
-- **Current result (2026-10-14):** 436 tests collected (381 unit + 55 integration); the 381 unit tests passed that day, the integration tier was not re-run (stack down). Line coverage was **86%** at the last CI run. CI fails under 80%.
+- **Current result (2026-10-14):** 438 tests collected (383 unit + 55 integration); the 383 unit tests passed that day, the integration tier was not re-run (stack down). Line coverage was **86%** at the last CI run. CI fails under 80%.
 - **Execution:** We generate a detailed missing-line report to explicitly identify which edge cases or error-handling blocks remain untested.
 - **Command:**
   ```bash

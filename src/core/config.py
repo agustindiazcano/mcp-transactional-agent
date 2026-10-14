@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     # timeout bounds each attempt, since MCP SDK 2.2.0 hangs in call_tool when
     # the security boundary rejects a request with a 4xx.
     MCP_TOOL_TIMEOUT_SECONDS: float = 10.0
+    # Gateway: how long /system-health waits for the MCP server. Longer than a
+    # Cloud Run cold start, or the first call after idle reports it down.
+    MCP_HEALTH_TIMEOUT_SECONDS: float = 10.0
     MCP_TOOL_MAX_RETRIES: int = 3
     MCP_TOOL_BACKOFF_BASE_SECONDS: float = 1.0
 

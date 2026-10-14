@@ -1,8 +1,9 @@
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 
+from src.core.config import settings as core_settings
 from src.ui.api_client import get_system_health, get_transactions, post_claim
 
 
@@ -105,3 +106,19 @@ async def test_post_claim_omits_refund_details_left_blank() -> None:
         await post_claim(user_id="u1", claim_text="Refund $50", order_id="", amount=None)
 
     assert mock_post.call_args.kwargs["json"] == {"user_id": "u1", "claim_text": "Refund $50"}
+
+
+@pytest.mark.asyncio
+async def test_get_system_health_waits_longer_than_the_gateways_mcp_check() -> None:
+    """The gateway may wait for a cold MCP server; the dashboard must not give up first."""
+    response = httpx.Response(
+        200,
+        json={"gateway": True, "db": True, "mcp": True},
+        request=httpx.Request("GET", "http://gateway/api/v1/system-health"),
+    )
+
+    with patch("httpx.AsyncClient") as client_cls:
+        client_cls.return_value.__aenter__.return_value.get = AsyncMock(return_value=response)
+        await get_system_health()
+
+    assert client_cls.call_args.kwargs["timeout"] > core_settings.MCP_HEALTH_TIMEOUT_SECONDS
