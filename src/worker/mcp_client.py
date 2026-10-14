@@ -14,6 +14,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from mcp import ClientSession, types
 from mcp.client.sse import sse_client
 
@@ -86,13 +87,32 @@ def describe_error(error: BaseException) -> str:
     return f"{type(error).__name__}: {error}"
 
 
+_RETRYABLE_CLIENT_ERRORS = frozenset({408, 429})
+
+
+def is_permanent_rejection(error: BaseException) -> bool:
+    """True when the MCP boundary rejected the call with a 4xx a retry can't fix.
+
+    A 401/403/404/422 depends only on the request or the caller's identity, so
+    repeating it just spends rate-limit quota. 408 and 429 are transient. The
+    SSE client wraps the HTTP error in an ExceptionGroup, so look at its leaves.
+    """
+    if isinstance(error, BaseExceptionGroup):
+        return any(is_permanent_rejection(inner) for inner in error.exceptions)
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        return 400 <= status < 500 and status not in _RETRYABLE_CLIENT_ERRORS
+    return False
+
+
 async def call_tool_with_retry(
     tool: str, arguments: dict[str, Any], policy: McpCallPolicy
 ) -> dict[str, Any]:
     """Call `tool` via MCP, retrying with exponential backoff.
 
     Returns the tool's structured result. Raises McpCallError once
-    `policy.max_retries` attempts have all failed.
+    `policy.max_retries` attempts have all failed, or at once on a 4xx
+    rejection from the boundary that a retry can't fix.
     """
     last_error: Exception | None = None
 
@@ -106,6 +126,8 @@ async def call_tool_with_retry(
             logger.warning(
                 f"{tool} attempt {attempt + 1}/{policy.max_retries} failed: {describe_error(e)}"
             )
+            if is_permanent_rejection(e):
+                break
 
     detail = describe_error(last_error) if last_error else "no attempts made"
     raise McpCallError(detail) from last_error

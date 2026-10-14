@@ -77,7 +77,7 @@ Part B (below) is merged, so this is unblocked. Replaces `worker.py`'s hardcoded
 ### 5 — 🟢 Reliability backlog
 - [ ] MCP server replicas: its single process caps near 34 claims/s (~29 ms CPU per claim). The audit-table rate limiter already works across replicas.
 - [ ] **Stepped ingestion load:** Locust 100 → 250 → 500 → 1000 users with `--processes`; max RPS with P95 under a threshold, plus the hardware.
-- [ ] Don't retry 4xx responses from the MCP boundary (they can't succeed and use rate-limit quota).
+- [x] Don't retry 4xx responses from the MCP boundary (`is_permanent_rejection()` in `src/worker/mcp_client.py`, 2026-10-14; 408/429 still retry). Open: confirm against the live stack that a rejected POST surfaces as an `HTTPStatusError` and not only as a read timeout.
 - [ ] Dead-letter queue for `EXECUTION_FAILED` messages (today they are dropped; the row keeps the error).
 - [ ] A redelivered message whose row is still `PROCESSING` waits for the sweeper's stale threshold (5 min) — delayed, not lost.
 - [ ] **Real `validate_fraud_score` (Part C):** a formula over the refund history; changes the tool's arguments (contract change, confirm first). May belong in Phase 2.
