@@ -4,6 +4,25 @@ Personal working notes: only what is still open, in priority order. Everything d
 
 ## Priority Order
 
+### 0 — 🔴 Audit findings (2026-10-14): verified against the code, README already corrected
+An external review of the README was checked claim by claim. The doc inconsistencies are fixed in README.md; these are the code and process items that remain. Verified TRUE unless noted.
+- [ ] 🔴 **`execute_refund` enforces no business invariant** (`src/mcp_server/mcp_server.py`, `refund_repository.record_refund`). Idempotency is by `request_id` only; the "refund + history <= order" cap lives in the worker's evidence check as check-then-act (TOCTOU between concurrent workers, and two `request_id`s on one order refund twice). Move the check inside the tool, in one transaction with a row lock on the order (`SELECT ... FOR UPDATE` on `orders`), test-first with a concurrency test. Touches the MCP tool contract: confirm with the user first (CLAUDE.md §8).
+- [ ] 🔴 **Decide the cascade rule.** `evaluate_decision()` lets the Supreme Court APPROVE over two REJECTs (`judge.py`). Benchmark: Judge 2 had 0 false approvals, Judge 1 had 3 cases; "any reject goes to a human" gave 0. Phase 1.G forbids approving over a rejection, the live pipeline does it. Options: keep, require unanimity, or let the Supreme Court only confirm/route. User decision; changing it needs the eval re-run.
+- [x] 🟡 **Dead setting `IDEMPOTENCY_TTL_SECONDS`** removed from `config.py`, `.env.example`, README and CLAUDE.md (2026-10-14). Left in the user's own `.env` (harmless: settings ignore extras; CLAUDE.md §8 needs approval to edit it).
+- [ ] 🟡 **Fail-open on security inputs** (Prompt Guard, retrieval) and Groq as both Judge 2 and the Prompt Guard. Decide per input: fail closed to `PENDING_HUMAN_REVIEW`, or accept and keep documenting. Consider a second guard provider.
+- [ ] 🟡 **Audit row never records the outcome** (`"invoked"` only). Needs a second correlated row or a result-update path; weigh against the insert-only design.
+- [ ] 🟡 **Throughput headline vs. the default rate limit:** the 9–19.6 claims/s figures used the limit lifted; default `MCP_RATE_LIMIT_PER_MIN=30` on the shared `worker-default` client caps `execute_refund` near 0.5/s. Decide: per-worker clients, a higher default, or document only (README status table now says so).
+- [ ] 🟡 **Re-run Locust** against the stack now (the 87 ms numbers predate the persistent-message fix). Publisher confirms are NOT a gap: aio-pika 10 publishes with confirms by default and the chaos test lost nothing.
+- [ ] 🟡 **Benchmark statistics:** repeats are not independent (effective n = 34 non-approvable / 16 approvable). Add more cases (toward ~100), real-retrieval context instead of the oracle chunk, runs spread over time, then report intervals. Re-run after Part B.
+- [ ] 🟡 **Explain the latency gap:** benchmark median 9.3 s (Judge 1) / 4.0 s (Judge 2) vs. 4.6-6.6 s for a whole claim. Hypothesis: eval concurrency. Measure with concurrency 1.
+- [ ] 🟡 **Re-measure cost per transaction** (stale: prompts ~600 tokens, not 320; the Supreme Court is 5.5x costlier; Front-Desk call missing; no Vertex cost row).
+- [ ] 🟡 **Claim text goes unmasked to Gemini/Groq.** Decide whether to mask PII before the LLM calls or to document it as accepted (it is now in README Known Limitations).
+- [ ] 🟢 **Phases 2, 3, 5 have nothing falsifiable.** `rule_base.py`, `fuzzy_layer.py`, `kalman_monitor.py`, `alerting.py` are empty files (README previously said Phase 3 had built parts: FALSE, they are 0 bytes). Before building: give each an acceptance criterion; Phase 3 needs a numeric score series (judges emit binary verdicts); Phase 2's tier/freshness are constant with one document; Phase 5 needs labels (fraud score is fixed at 0.12).
+- [ ] 🟢 **Cloud Run traces** (Langfuse keys into Secret Manager) so the README's tracing claim holds in the cloud.
+- [ ] 🟢 **README is too long for a first read** (~1,100 lines): move the Phase 1.B-1.G detail into `docs/` and keep status and results. Use one source for counts (done for tests: Testing section) and a dynamic coverage badge (the 86% badge is static).
+- [ ] 🟢 **Housekeeping:** the comments in `worker.py` (~lines 104, 136) still say the primary agent is "still mocked"; CLAUDE.md §5a step 4 and §2 were stale (fixed 2026-10-14). Dashboard exposes transactions and judge reasoning publicly (see §4 login item).
+- Checked and NOT a problem / already correct: evidence check exists (README sections that said otherwise are fixed); the DLQ row in the contract claimed a dead-letter queue that doesn't exist (fixed to match Known Limitations).
+
 ### 1 — 🔴 Front-Desk / Back-Office Asymmetric Agentic Workflow (Phase 1.E) — promoted 2026-09-25
 Part B (below) is merged, so this is unblocked. Replaces `worker.py`'s hardcoded `mock_primary_action = "execute_refund"` with a real primary-agent LLM call, and extends "never trust LLM output, validate server-side" to the agent's proposed intent. Decided 2026-09-25: **single-turn first** (claim text → validated proposal → judges); the multi-turn chat variant is a later increment on top of it, not this pass.
 - [x] Proposal schema (Pydantic, `extra="forbid"`): intent (refund / clarify / out_of_scope), order_id, amount, currency, reason. `src/agents/proposal.py`'s `ClaimProposal`, branch `claude/awesome-wright-bipend`, 2026-09-25.
@@ -12,7 +31,7 @@ Part B (below) is merged, so this is unblocked. Replaces `worker.py`'s hardcoded
 - [x] Self-correction loop, narrow scope (user decision, 2026-09-25): on a judge REJECT, `worker.py` gives the Front-Desk one reclassification attempt (`propose_action(claim_text, rejection_feedback=<judge's reason>)`). A reclassification away from `refund` becomes the human-review reason (`judge_trail["front_desk_retry"]`); an unchanged `refund` means the judges are never called twice. Deliberately doesn't let a REJECT revise `order_id`/`amount`/`currency` — those still come from the claim's structured fields, not the proposal (would need the declined "full replacement" design). Branch `claude/awesome-wright-bipend`, same date.
 - [x] `NEEDS_CLARIFICATION` outcome: a new status with the agent's question, shown on the dashboard. `worker.py` routes a `clarify` intent (initial proposal or the retry reclassification) to `NEEDS_CLARIFICATION` instead of `PENDING_HUMAN_REVIEW`; `out_of_scope` still routes to `PENDING_HUMAN_REVIEW` (nothing to ask). Dashboard: `src/ui/trail.py`'s `describe_clarification_question()` surfaces the question in the decision-inspector expander, and `NEEDS_CLARIFICATION` is in `theme.py`'s `ALERT_STATUSES`. Branch `claude/awesome-wright-bipend`, 2026-09-25.
 - [ ] Feedback loop: the objective verdict contract (`REJECTED: <objective reason>`, never raw judge rationale) that the Front-Desk phrases into a reply, without re-interpreting or overriding it.
-- [ ] Promptfoo eval for the proposer: ~30 labeled claims (user reviews labels), accuracy of extracted intent/arguments.
+- [x] Promptfoo eval for the proposer built (commit `dc79858`, branch `feat/front-desk-eval`, `evals/promptfoo/`). Still open: confirm the user reviewed the labels, and run it against real models.
 - [ ] A real run on Vertex, docs, PR. Real cost here is Gemini/Groq/Vertex API usage, a separate budget from the $100 Anthropic cloud credits (those cover Claude Code cloud sessions, not LLM provider calls).
 - [ ] Chat abuse limits (only once the chat variant is built): per-user message rate and daily token budget ([analysis](docs/architecture/api_abuse_protection.md), section 4).
 - [ ] Re-measure cost per transaction once the primary agent is real, averaged over more transactions (today: one happy-path measurement, ~$0.0004).
@@ -45,7 +64,7 @@ Part B (below) is merged, so this is unblocked. Replaces `worker.py`'s hardcoded
 ### 4 — 🟡 Google Cloud leftovers (Phase 6)
 - [ ] Test the first real `demo-up` (down → up cycle): Cloud SQL, the pools, one claim.
 - [ ] Re-run the Locust load test against Cloud Run and compare with the local baseline (P95 87 ms, 0 failures).
-- [ ] **Public API abuse protection — decision pending** ([analysis](docs/architecture/api_abuse_protection.md)). No limit per IP or per user on `POST /api/v1/claims`; one claim can trigger up to 11 LLM calls. Options: `slowapi` per-IP limit in the gateway (free, ~1–2 h), per-user limit in Postgres (after a login), Cloud Armor (~$18+/month), or `demo-down` when not demoing. Small fixes in any case: `max_length` on `claim_text`; `request_id` is optional, so a client retry without one isn't deduplicated.
+- [ ] **Public API abuse protection — decision pending** ([analysis](docs/architecture/api_abuse_protection.md)). No limit per IP or per user on `POST /api/v1/claims`; one claim can trigger up to 11 LLM calls. Options: `slowapi` per-IP limit in the gateway (free, ~1–2 h), per-user limit in Postgres (after a login), Cloud Armor (~$18+/month), or `demo-down` when not demoing. Small fix in any case (the `claim_text` `max_length` is done, 2026-10-14): `request_id` is optional, so a client retry without one isn't deduplicated.
 - [ ] Login for the dashboard and gateway (public today; anyone can send claims that cost LLM calls).
 - [ ] Add `deletion_policy = "ABANDON"` to `google_sql_user.app` before any teardown (`app` owns the tables, so dropping the user fails).
 - [ ] Mojibake in Judge 2's reasons (`userâ€™s` for `user’s`), stored that way in `judge_trail`. Find where the Groq text is mis-decoded; test first.
@@ -77,13 +96,24 @@ Design: [docs/architecture/high_value_court.md](docs/architecture/high_value_cou
 - [ ] Superior judge (candidate: Gemini Pro, check the trial credit covers it): on any rejection it can only confirm the REJECT or route to human review. **Never approves over a rejection** (user decision).
 - [ ] Pick the models with the Promptfoo eval; grade the whole court as one provider on new $1,000–$5,000 cases, repeats spread over time. Acceptance bar: zero false approvals.
 
-### 8 — ⚪ Deterministic Confidence Layer (Phase 2)
+### 8 — ⚪ Internal Review Panel + Resolver Agents (Phase 1.H) — idea noted 2026-10-14, not designed
+An internal-user panel to work the rejected / `PENDING_HUMAN_REVIEW` / `NEEDS_CLARIFICATION` claims. Agents analyze each one with RAG and tools and classify it; a smarter agent sits above them. This is the "resolver agent (agent B)" from LASTCONTEXT's decisions list, which needs the user's go-ahead before it changes the Phase 1.E design: this note is the request, not the approval.
+- [ ] Design doc first (`docs/architecture/`): scope, who the internal user is, what the panel can do (read-only triage vs. approve/reject), and how it relates to Phase 1.E, 1.G and the dashboard.
+- [ ] Review queue: the panel lists claims in the review statuses, with the full `judge_trail` (Front-Desk, evidence, judges, Supreme Court) next to each.
+- [ ] Analyst agents: per claim, retrieve policy with RAG and call **read-only** MCP tools (`get_order`, `get_refund_history`), then **classify** the case (e.g. likely legitimate, likely fraud, needs documents, policy gap) with a short evidence-backed reason.
+- [ ] Smarter agent (stronger model, e.g. Gemini Pro; check the trial credit covers it) that reviews the analysts' classifications and resolves disagreements between them.
+- [ ] Authority boundary (to decide with the user): agents only recommend; any approval or refund still goes through the human and `refund_executor.py`. Per CLAUDE.md §4, no LLM calls a write tool.
+- [ ] Security: the panel reads through the gateway API like the dashboard (no direct DB); its MCP client gets its own `client_id` with a read-only allowlist (Phase 1.B). Login required, since it exposes claim data.
+- [ ] Trace in Langfuse (new observation names) and add a Promptfoo eval for the classification.
+- [ ] Open questions: new Streamlit page or separate service? Does the human's decision feed back as labels for the evals (judge calibration)?
+
+### 9 — ⚪ Deterministic Confidence Layer (Phase 2)
 - [ ] Integrate the fuzzy-scoring layer and the Belief Rule Base alongside the AI Judge, so critical transactions (`execute_refund`, `validate_fraud_score`) require double approval — probabilistic (LLM judge) *and* symbolic (rule base) — before auto-approving.
 
-### 9 — ⚪ Quality Drift Detection (Phase 3)
+### 10 — ⚪ Quality Drift Detection (Phase 3)
 - [ ] Implement the async monitor with a statistical filter (EWMA default, CUSUM/Page-Hinkley/Kalman as options) to detect whether model responses are degrading over time. Runs off the critical path — never blocks transaction processing.
 
-### 10 — ⚪ AWS (Phase 6, secondary target)
+### 11 — ⚪ AWS (Phase 6, secondary target)
 - [ ] Configure IAM credentials and AWS Bedrock access (least privilege, VPC PrivateLink).
 - [ ] Swap the embeddings module to Amazon Titan behind `get_embeddings()`.
 - [ ] Serverless topology: AWS API Gateway + SQS + Lambda + serverless PostgreSQL (Neon with pgvector).

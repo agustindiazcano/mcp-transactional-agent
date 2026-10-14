@@ -1,10 +1,11 @@
-# Last Context — Current State (2026-09-25)
+# Last Context — Current State (2026-10-14)
 
 Only what is still open: read this first in every session. When an item here is done, move it to `docs/worklog/` and take it out of this file. What was done earlier today: [docs/worklog/2026-09-25-lastcontext-snapshot-2.md](docs/worklog/2026-09-25-lastcontext-snapshot-2.md), and before that [docs/worklog/2026-09-25-lastcontext-snapshot.md](docs/worklog/2026-09-25-lastcontext-snapshot.md). Older history: [docs/worklog/](docs/worklog/).
 
 ## Where things stand
 - **`main`** has everything through PR #73 plus one direct commit (`167be36`, a 3-line docs fix — see the gotcha below, this shouldn't happen again): Part B (#69), the session-start-hook (#70), cloud-environment setup (#71), the self-correction fix + doc sync (#72), and a doc-attribution correction (#73). Branch `docs/high-value-court` (Phase 1.G design) is merged (#68).
-- **Phase 1.E is now in progress** (branch `claude/awesome-wright-bipend`, pushed but not yet a PR — see "Waiting on the user"). Two of seven steps done:
+- **Update 2026-10-14:** Phase 1.E steps 3-6 are done and merged (PRs #75, #76: `worker.py` intent gate, narrow self-correction, `NEEDS_CLARIFICATION` + dashboard) and the proposer's Promptfoo eval is built on `feat/front-desk-eval` (`dc79858`). Still open: the objective-verdict contract, a real Vertex run, the PR for the eval. A README audit the same day found code issues (no refund invariant inside `execute_refund`, a cascade that can approve over two rejects, a dead `IDEMPOTENCY_TTL_SECONDS`): see `PENDING.md` §0. Test count: 425 (370 unit + 55 integration); the 370 unit tests passed on 2026-10-14, integration not run (stack down). The notes below this line about steps 1-2 are the original 2026-09-25 snapshot.
+- **Phase 1.E (original snapshot, 2026-09-25)** (branch `claude/awesome-wright-bipend`). Two of seven steps were done then:
   1. **`src/agents/proposal.py`'s `ClaimProposal`** (Pydantic, `extra="forbid"`): `intent` (`refund`/`clarify`/`out_of_scope`), `order_id`, `amount`, `currency`, `reason`. A model-level check keeps each intent's shape unambiguous — `refund` requires all three refund fields together (propose `clarify` instead of guessing one), the other two intents must carry none of them.
   2. **`src/agents/front_desk.py`'s `propose_action()`**: the actual proposer call. New `front_desk` role in `provider_roles.py` (defaults to Gemini, moves to Vertex under `LLM_PROVIDER=vertex`, its own model via new setting `FRONT_DESK_MODEL`, default `gemini-3.8-flash`). Fails closed to `intent="clarify"` on any malformed JSON, invalid proposal shape, or provider exception. Prompt injection defense mirrors `judge.py`: claim text fenced as `<untrusted_data>`, an in-band redirect attempt is itself `out_of_scope`. Mock provider extended (`FRONT_DESK_MOCK_MODEL` sentinel) to return a `ClaimProposal` shape instead of the judges' verdict JSON.
   - **Not done:** `worker.py` calls neither one yet — the mock (`mock_primary_action = "execute_refund"`) is untouched, nothing in the live pipeline has changed. Remaining steps (3–7): wire into `worker.py` with server-side re-validation, a real self-correction loop, a `NEEDS_CLARIFICATION` outcome, a Promptfoo eval (~30 labeled claims), then a real Vertex run + PR. See `PENDING.md` §1 for the full breakdown.
@@ -39,7 +40,7 @@ Only what is still open: read this first in every session. When an item here is 
 ## Waiting on the user
 | # | | What | Status |
 |---|---|---|---|
-| 1 | 🔴 | Open (or approve opening) the PR for `claude/awesome-wright-bipend` (Phase 1.E steps 1–2) | ⬜ |
+| 1 | 🔴 | PR for `feat/front-desk-eval` (Phase 1.E step 6) and decisions in `PENDING.md` §0 (cascade rule, `execute_refund` invariant) | ⬜ |
 | 2 | 🟡 | Decide the public API protection: which option, and when ([analysis](docs/architecture/api_abuse_protection.md)). Until then, `demo-down` when not demoing | ⬜ |
 | 3 | 🟢 | Rotate the Groq key (printed once in a session's output; low risk, local only) | optional |
 | 4 | 🟢 | GitHub profile text: says 232 tests, the count is 390 | ⬜ |

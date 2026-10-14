@@ -101,10 +101,9 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
             # ── Step 2.5: Retrieval (Phase 1.D RAG, provider-agnostic) ──────────
             # Best-effort: a retrieval/embeddings failure must never block
             # transaction processing (same fail-open principle as prompt_guard.py).
-            # Once the primary agent's own LangChain loop exists (still mocked
-            # below), this is what its system prompt should be built from; today
-            # the Double Judge's `context` is the only real LLM call site
-            # available to carry it, so that's where it's threaded in.
+            # The policy text is threaded into the Double Judge's `context`.
+            # The Front-Desk proposer deliberately gets no retrieval (minimal
+            # privilege, Phase 1.E).
             retrieved_policy: str | None = None
             if claim_text:
                 try:
@@ -133,7 +132,7 @@ async def process_message(message: Any, db_session: AsyncSession) -> None:
                 judge_context["retrieved_policy"] = retrieved_policy
 
             # ── Step 2.55: Front-Desk proposal (Phase 1.E, intent gate) ─────────
-            # propose_action() replaces the hardcoded mock_primary_action: the
+            # propose_action() replaced the old hardcoded primary action: the
             # primary agent's own classification of the claim decides whether
             # there is a refund to evaluate at all. A non-refund intent
             # (clarify/out_of_scope) is never evidence-checked or judged --

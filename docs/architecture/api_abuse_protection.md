@@ -16,7 +16,7 @@ The gateway's `POST /api/v1/claims` is public on Cloud Run and has no authentica
 | Supreme Court, when the judges reject or disagree | 1 per attempt |
 | Self-correction attempts (`MAX_LLM_RETRIES`, default 3) | not live yet — see below |
 
-The primary agent is still mocked, so a rejected proposal never changes between attempts and the Double Judge evaluates it exactly once, regardless of `MAX_LLM_RETRIES`. A claim both judges approve costs 2 calls; a claim either judge rejects costs 3 (2 + the Supreme Court's tie-break). The `× up to 3` multiplier from `MAX_LLM_RETRIES` returns once Phase 1.E ships a real proposer that can revise its proposal from judge feedback — at that point a claim that keeps getting rejected costs up to 11 (1 + 1 + 3 × 3). The measured cost of a happy-path claim is ~$0.0004 (see the README's Cost per Transaction), so one claim is cheap. The risk is volume: nothing stops a script from sending claims in a loop, and the demo runs on a free-trial credit.
+The Double Judge evaluates a claim exactly once, regardless of `MAX_LLM_RETRIES`. Since Phase 1.E, every claim also makes one Front-Desk call, and a judge REJECT adds one more (the reclassification attempt, never a second judge vote). So a claim both judges approve costs 3 calls (Front-Desk + 2 judges); one either judge rejects costs up to 5 (Front-Desk, 2 judges, the Supreme Court, the reclassification). The measured cost of a happy-path claim is ~$0.0004 (see the README's Cost per Transaction), so one claim is cheap. The risk is volume: nothing stops a script from sending claims in a loop, and the demo runs on a free-trial credit.
 
 ---
 
@@ -25,7 +25,7 @@ The primary agent is still mocked, so a rejected proposal never changes between 
 | Layer | Protection | Status |
 |---|---|---|
 | Client retries to the API | A claim's `request_id` is its idempotency key: a duplicate still gets its 202, but it's never processed twice (the `UNIQUE` constraint on `transactions.request_id` plus the worker's lookup before any LLM call). **Caveat:** `request_id` is optional in `ClaimRequest` (`src/api/schemas.py`). If the client leaves it out, the gateway generates a new UUID per request, so a client that retries without sending an id creates a new claim each time. | ✅ with caveat |
-| Internal retries | Judge self-correction retries up to `MAX_LLM_RETRIES` are designed but not live yet (the primary agent is still mocked — see above). MCP tool calls use exponential backoff (`MCP_TOOL_MAX_RETRIES`, `MCP_TOOL_BACKOFF_BASE_SECONDS`), with a fresh session per attempt. After the last retry the message is NACKed. | ✅ |
+| Internal retries | The judges are never retried; a REJECT triggers one Front-Desk reclassification attempt instead (Phase 1.E). MCP tool calls use exponential backoff (`MCP_TOOL_MAX_RETRIES`, `MCP_TOOL_BACKOFF_BASE_SECONDS`), with a fresh session per attempt. After the last retry the message is NACKed. | ✅ |
 | MCP server (internal) | Phase 1.B boundary: bearer-token authentication, a per-client tool allowlist, argument limits (`REFUND_MAX_AMOUNT`, currency enum, no unknown fields), and a rate limit per client and per tool (`MCP_RATE_LIMIT_PER_MIN`, default 30, sliding 1-minute window counted from the audit table). See [MCP Security Boundary](mcp_security_boundary.md). | ✅ |
 | Gateway input validation | `amount` is bounded by `REFUND_MAX_AMOUNT` and `currency` is an enum, so an out-of-range refund fails with a 422 before it's queued. | ✅ |
 | Public gateway `POST /api/v1/claims` | No authentication, no limit per IP, no limit per user. | ❌ |
@@ -40,7 +40,7 @@ What does bound the spend today, indirectly: the cloud worker pool runs one inst
 
 1. **No limit per IP.** One client can send any number of claims per minute.
 2. **No limit per user.** `user_id` comes from the request body, so the caller chooses it. A per-user limit keyed on it could be bypassed by changing the field. A real per-user limit needs an authenticated identity first.
-3. **`claim_text` has no length limit.** A long text raises the token count of every LLM call for that claim. A `max_length` on the field is a small, independent fix.
+3. **`claim_text` length limit (closed 2026-10-14).** A long text raised the token count of every LLM call for that claim. The field now has `max_length` (`CLAIM_TEXT_MAX_LENGTH`, default 2000).
 4. **`request_id` is optional.** A client that retries without an id isn't deduplicated (section 2).
 5. **The dashboard and the gateway are public.** A login is already on the roadmap (`PENDING.md`, Step 9).
 
