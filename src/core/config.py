@@ -85,7 +85,9 @@ class Settings(BaseSettings):
 
     # Worker Settings
     MAX_LLM_RETRIES: int = 3
-    IDEMPOTENCY_TTL_SECONDS: int = 86400
+    # Gateway: longest claim_text accepted. Every claim triggers several LLM
+    # calls, so unbounded text is a cost lever (docs/architecture/api_abuse_protection.md).
+    CLAIM_TEXT_MAX_LENGTH: int = 2000
 
     # Recovery Sweeper Settings
     SWEEPER_INTERVAL_SECONDS: int = 300        # How often the sweeper polls (default 5 min)

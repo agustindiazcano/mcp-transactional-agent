@@ -20,7 +20,7 @@ class ClaimRequest(BaseModel):
     """
 
     user_id: str
-    claim_text: str
+    claim_text: str = Field(max_length=settings.CLAIM_TEXT_MAX_LENGTH)
     request_id: str = Field(default_factory=lambda: str(uuid4()))
     order_id: str | None = Field(default=None, min_length=1)
     amount: float | None = Field(default=None, gt=0, le=settings.REFUND_MAX_AMOUNT)

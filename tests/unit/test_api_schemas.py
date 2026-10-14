@@ -65,3 +65,17 @@ def test_currency_serializes_as_plain_string_for_the_queue() -> None:
     claim = ClaimRequest(user_id="usr-1", claim_text="Refund", amount=10.0, currency="GBP")
 
     assert '"currency":"GBP"' in claim.model_dump_json()
+
+
+def test_claim_text_at_the_length_limit_is_valid() -> None:
+    text = "x" * settings.CLAIM_TEXT_MAX_LENGTH
+
+    claim = ClaimRequest(user_id="usr-1", claim_text=text)
+
+    assert claim.claim_text == text
+
+
+def test_claim_text_above_the_length_limit_is_rejected() -> None:
+    """Every claim triggers several LLM calls, so unbounded text is a cost lever."""
+    with pytest.raises(ValidationError):
+        ClaimRequest(user_id="usr-1", claim_text="x" * (settings.CLAIM_TEXT_MAX_LENGTH + 1))
