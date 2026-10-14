@@ -8,6 +8,7 @@ between attempts. Used by the refund executor and the evidence fetch.
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from mcp import types
 
@@ -68,3 +69,46 @@ async def test_exhausted_retries_raise_mcp_call_error_naming_the_tool() -> None:
 
     assert call_tool.await_count == 2
     mock_sleep.assert_awaited_once_with(0.25)
+
+
+def _http_error(status: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "http://mcp_server:8080/messages/")
+    return httpx.HTTPStatusError(
+        f"{status}", request=request, response=httpx.Response(status, request=request)
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [401, 403, 404, 422])
+async def test_a_4xx_rejection_is_not_retried(status: int) -> None:
+    """The boundary's 4xx can't succeed on a retry, and each retry spends rate-limit quota."""
+    call_tool = AsyncMock(side_effect=ExceptionGroup("tg", [_http_error(status)]))
+
+    with (
+        patch("src.worker.mcp_client.sse_client") as mock_sse,
+        patch("src.worker.mcp_client.ClientSession") as mock_cs,
+        patch("src.worker.mcp_client.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+    ):
+        _wire(mock_sse, mock_cs, call_tool)
+        with pytest.raises(McpCallError, match=str(status)):
+            await call_tool_with_retry("execute_refund", {"request_id": "r"}, POLICY)
+
+    assert call_tool.await_count == 1
+    mock_sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [408, 429, 500, 503])
+async def test_a_transient_http_status_is_still_retried(status: int) -> None:
+    call_tool = AsyncMock(side_effect=ExceptionGroup("tg", [_http_error(status)]))
+
+    with (
+        patch("src.worker.mcp_client.sse_client") as mock_sse,
+        patch("src.worker.mcp_client.ClientSession") as mock_cs,
+        patch("src.worker.mcp_client.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        _wire(mock_sse, mock_cs, call_tool)
+        with pytest.raises(McpCallError):
+            await call_tool_with_retry("get_order", {"order_id": "o"}, POLICY)
+
+    assert call_tool.await_count == 2

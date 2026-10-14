@@ -1,0 +1,44 @@
+# Offline evaluation of the Front-Desk proposer on labeled claims.
+# How to run: same pattern as promptfooconfig.yaml (the judge eval), pointed
+# at this file: `promptfoo eval -c front_desk_promptfooconfig.yaml -o results.json`
+description: Front-Desk intent classification on labeled refund claims
+
+# front_desk_provider.py builds production's real Front-Desk messages from
+# each case's vars, so this prompt is only a label for promptfoo's report.
+prompts:
+  - "{{claim_text}}"
+
+# One entry per model under test. `provider`/`model` go to get_llm(); the
+# labels are the keys of prices.json. `mock` needs the FRONT_DESK_MOCK_MODEL
+# sentinel explicitly, or get_llm() falls back to the judges' mock response.
+providers:
+  - id: file://front_desk_provider.py
+    label: mock
+    config: { provider: mock, model: mock-front-desk-proposal }
+  - id: file://front_desk_provider.py
+    label: gemini-3.1-flash-lite (Vertex)
+    config: { provider: vertex, model: gemini-3.1-flash-lite }
+  - id: file://front_desk_provider.py
+    label: gemini-3.5-flash-lite (Vertex)
+    config: { provider: vertex, model: gemini-3.5-flash-lite }
+  - id: file://front_desk_provider.py
+    label: gemini-3.8-flash (Vertex)
+    config: { provider: vertex, model: gemini-3.8-flash }
+  - id: file://front_desk_provider.py
+    label: gpt-oss-20b (Groq)
+    config: { provider: groq, model: openai/gpt-oss-20b }
+
+# A case passes when the proposer's intent matches its label. Labels are
+# refund / clarify / out_of_scope -- worker.py only ever reads
+# proposal.intent (intent-gate-only design), so that's what this eval scores.
+defaultTest:
+  assert:
+    - type: javascript
+      value: JSON.parse(output).intent === context.vars.expected_intent
+      metric: correct_intent
+
+tests: file://cases/front_desk/*.yaml
+
+# Real LLM calls: few at a time, to stay under provider rate limits.
+evaluateOptions:
+  maxConcurrency: 2

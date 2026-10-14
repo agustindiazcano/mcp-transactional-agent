@@ -33,7 +33,7 @@ async def check_mcp() -> bool:
     Phase 1.B security boundary, so it counts as healthy.
     """
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(timeout=settings.MCP_HEALTH_TIMEOUT_SECONDS) as client:
             response = await client.get(settings.MCP_SERVER_URL)
     except httpx.HTTPError as e:
         logger.warning("system_health_mcp_check_failed", error=str(e))

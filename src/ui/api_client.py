@@ -9,6 +9,10 @@ import httpx
 
 from src.ui.config import settings
 
+# Longer than the gateway's own MCP_HEALTH_TIMEOUT_SECONDS (10 s), so the gateway
+# answers (even "mcp: false") before the dashboard gives up on it.
+HEALTH_TIMEOUT_SECONDS = 15.0
+
 
 async def get_transactions(*, limit: int = 50) -> list[dict[str, Any]]:
     async with httpx.AsyncClient(timeout=5.0) as client:
@@ -25,7 +29,7 @@ async def get_transactions(*, limit: int = 50) -> list[dict[str, Any]]:
 
 
 async def get_system_health() -> dict[str, bool]:
-    async with httpx.AsyncClient(timeout=3.0) as client:
+    async with httpx.AsyncClient(timeout=HEALTH_TIMEOUT_SECONDS) as client:
         response = await client.get(f"{settings.GATEWAY_URL}/api/v1/system-health")
         response.raise_for_status()
     return cast(dict[str, bool], response.json())

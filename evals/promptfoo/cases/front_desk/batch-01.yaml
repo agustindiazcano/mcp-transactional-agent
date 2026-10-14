@@ -1,0 +1,130 @@
+# Batch 01 (DRAFT, PENDING REVIEW): refund and clarify cases for the
+# Front-Desk proposer eval. NOT yet reviewed by the project owner -- per
+# CLAUDE.md's Promptfoo rules, a label counts only after that review. Do not
+# run a real (non-mock) provider against this file, or fold its numbers into
+# any report, before it's been reviewed.
+#
+# expected_intent: refund     = claim_text gives order id, amount AND
+#                                currency, unambiguously.
+#                   clarify    = a refund is plausible but one of those three
+#                                is missing or ambiguous -- the Front-Desk
+#                                should ask, not guess.
+# Only claim_text (and, for the two retry cases, rejection_feedback) reaches
+# front_desk_provider.py: worker.py is intent-gate-only, so order_id/amount/
+# currency aren't separately graded here (see summarize_front_desk.py's
+# docstring).
+
+# --- Should propose refund (all three fields present, unambiguous) --------
+- description: "fd-refund-01: complete refund request, order id + amount + currency"
+  vars:
+    request_id: eval-fd-refund-01
+    claim_text: "Please refund order ORD-4021. It's $45.50 and the headphones arrived broken."
+    expected_intent: refund
+  metadata: { category: refund }
+
+- description: "fd-refund-02: currency spelled out, order number embedded in a sentence"
+  vars:
+    request_id: eval-fd-refund-02
+    claim_text: "I'd like a refund of 89.99 euros for order number ORD-1188 -- the shoes are the wrong size and unworn."
+    expected_intent: refund
+  metadata: { category: refund }
+
+- description: "fd-refund-03: terse, all fields present"
+  vars:
+    request_id: eval-fd-refund-03
+    claim_text: "Refund ORD-9902, $120, USD. Never opened it, changed my mind."
+    expected_intent: refund
+  metadata: { category: refund }
+
+- description: "fd-refund-04: GBP, order id given as a longer alphanumeric code"
+  vars:
+    request_id: eval-fd-refund-04
+    claim_text: "Order ORD-7734-B, amount 65.00 GBP. The blender's motor doesn't turn on at all."
+    expected_intent: refund
+  metadata: { category: refund }
+
+- description: "fd-refund-05: Spanish, all fields present"
+  vars:
+    request_id: eval-fd-refund-05
+    claim_text: "Quiero un reembolso del pedido ORD-3345 por 40.00 USD, la cafetera llegó dañada."
+    expected_intent: refund
+  metadata: { category: refund }
+
+- description: "fd-refund-06: amount given as a rounded figure, still unambiguous"
+  vars:
+    request_id: eval-fd-refund-06
+    claim_text: "My order is ORD-2210. I paid about $30 and want it refunded, the charger doesn't hold a charge."
+    expected_intent: refund
+  metadata: { category: refund }
+
+- description: "fd-refund-07: fields present but out of order, casual tone"
+  vars:
+    request_id: eval-fd-refund-07
+    claim_text: "so this jacket i bought is way too small. can i get my 55 usd back? order was ORD-6611"
+    expected_intent: refund
+  metadata: { category: refund }
+
+- description: "fd-refund-08: currency symbol only, no ISO code, but unambiguous"
+  vars:
+    request_id: eval-fd-refund-08
+    claim_text: "Order ORD-8843: €22.50 for a phone case that split down the seam. Please refund."
+    expected_intent: refund
+  metadata: { category: refund }
+
+# --- Should propose clarify (missing/ambiguous order id, amount, or currency) --
+- description: "fd-clarify-01: no order id at all"
+  vars:
+    request_id: eval-fd-clarify-01
+    claim_text: "I want a refund for the blender I bought last week, it's $40."
+    expected_intent: clarify
+  metadata: { category: clarify }
+
+- description: "fd-clarify-02: order id given, no amount"
+  vars:
+    request_id: eval-fd-clarify-02
+    claim_text: "Please refund order ORD-5567, it arrived damaged. Not sure what I paid."
+    expected_intent: clarify
+  metadata: { category: clarify }
+
+- description: "fd-clarify-03: amount and order id given, no currency and genuinely ambiguous (could be USD, EUR or local)"
+  vars:
+    request_id: eval-fd-clarify-03
+    claim_text: "Refund order ORD-9081 please, it was 75. Wrong item shipped."
+    expected_intent: clarify
+  metadata: { category: clarify }
+
+- description: "fd-clarify-04: vague reference to 'my last order', no id"
+  vars:
+    request_id: eval-fd-clarify-04
+    claim_text: "Can I get a refund for my last order? It never arrived. I paid around $60 I think."
+    expected_intent: clarify
+  metadata: { category: clarify }
+
+- description: "fd-clarify-05: two possible orders mentioned, unclear which"
+  vars:
+    request_id: eval-fd-clarify-05
+    claim_text: "One of my two orders from this week (ORD-1200 or ORD-1201) arrived broken, $50 total. Not sure which one it was."
+    expected_intent: clarify
+  metadata: { category: clarify }
+
+- description: "fd-clarify-06: asks about refund eligibility without giving any details yet"
+  vars:
+    request_id: eval-fd-clarify-06
+    claim_text: "Hi, my order arrived damaged, can you help me get a refund?"
+    expected_intent: clarify
+  metadata: { category: clarify }
+
+- description: "fd-clarify-07: order id and currency given, amount vague ('a lot')"
+  vars:
+    request_id: eval-fd-clarify-07
+    claim_text: "Order ORD-4471 cost me a lot of money in USD and it broke on day one, I want it back."
+    expected_intent: clarify
+  metadata: { category: clarify }
+
+# Retry/rejection_feedback cases are deliberately not included here: what the
+# Front-Desk *should* reclassify to after a judge REJECT is a genuine
+# judgment call (a policy-ineligible claim is still, factually, a refund
+# ask -- the Front-Desk isn't the one applying policy), not a clean-cut
+# label. front_desk_provider.py supports a rejection_feedback var if this
+# gets revisited, but seeding it with a confident expected_intent here would
+# manufacture a misleading signal rather than measure a real one.
